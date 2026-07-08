@@ -42,17 +42,25 @@ No ESP required for P0 if notifications come from the DLL
   DLL, serialized as a versioned `'POCH'` record. Revert callback zeroes them
   (new game / load ordering safety).
 - **Conversion rule**: when a `TESObjectREFR`-to-player container-changed event
-  carries an `IngredientItem`, remove it from the player and credit the pouch
-  by tier. Log every conversion to `MAO.log`; fire a debug notification
-  (`+2 Base Essence (Blue Mountain Flower)`).
+  carries an `IngredientItem`, remove it from the player and credit the pouch.
+  **Tier picks the bucket; the ingredient's gold value picks the amount** — a
+  rarer, more valuable ingredient yields more essence than a cheap one *within
+  the same tier* (Nightshade credits more Catalyst than Deathbell if it's worth
+  more). Yield derives from `IngredientItem` value (`goldValue`), passed
+  through a per-tier curve (`essence = ceil(value * tierRate)`, rates TBD and
+  MCM-tunable later). Applies identically on pickup and on vendor purchase, so
+  buying an expensive ingredient costs gold for proportionally more essence.
+  Log every conversion to `MAO.log`; fire a per-pickup debug notification
+  (`+3 Base Essence (Blue Mountain Flower)`) — see notification note below.
 - **Double-credit guard**: a harvest fires #1 *and* lands the item in
   inventory, firing #2. Rule: **#2 is the only place that credits**; #1 only
   tags the acquisition as "harvested" for the perk bonuses that will care
   later. P0 must prove one harvest = one credit.
 - **Tier map**: hardcoded for P0 — everything Tier I except a token Tier II
   set (Deathbell, Nightshade) and Tier III set (Daedra Heart) to exercise all
-  three buckets. P1 generates the real map from the masters (MEO catalog
-  pattern; `DYNAMIC_OR_DROP.md` applies).
+  three buckets. Pick the Tier II tokens with *different* gold values so the
+  value-weighted yield is visible in testing. P1 generates the real map from
+  the masters (MEO catalog pattern; `DYNAMIC_OR_DROP.md` applies).
 - **Exclusion list**: quest-critical ingredients must NOT convert (Crimson
   Nirnroot / "A Return To Your Roots" is the canonical case; also anything
   quest-flagged). P0 ships a hardcoded FormID exclusion list + a quest-item
@@ -68,14 +76,21 @@ Console reads pouch state via `MAO.log` + on-screen notifications.
 3. **Loot a corpse ingredient** (e.g. Skeever Tail from a kill): converts.
 4. **Take from a container** (chest with an ingredient): converts.
 5. **Pick up a world-placed loose ingredient**: converts.
-6. **Buy an ingredient from an alchemy vendor**: converts on transfer.
+6. **Buy an ingredient from an alchemy vendor**: converts on transfer, same
+   value-weighted yield as pickup.
 7. **`player.additem` an ingredient**: converts (proves script-path coverage).
 8. **Tier routing**: Deathbell → Catalyst; Daedra Heart → Apex.
-9. **Exclusion**: Crimson Nirnroot enters inventory normally, no conversion.
-10. **Persistence**: gather, save, quit to desktop, reload — counts survive.
-11. **New game / revert**: counters start at 0; loading an older save after a
+9. **Value weighting**: two same-tier ingredients of different gold value
+   yield different essence amounts (cheaper < pricier).
+10. **Follower scope**: a follower looting an ingredient converts nothing —
+    player pouch unchanged, and the ingredient does not linger as a player
+    item (essence is never an inventory object; it exists only in the pouch
+    surfaced on menus).
+11. **Exclusion**: Crimson Nirnroot enters inventory normally, no conversion.
+12. **Persistence**: gather, save, quit to desktop, reload — counts survive.
+13. **New game / revert**: counters start at 0; loading an older save after a
     newer one doesn't leak counts across (revert callback).
-12. **Co-save absence**: loading a pre-MAO save = empty pouch, no crash, log
+14. **Co-save absence**: loading a pre-MAO save = empty pouch, no crash, log
     line notes fresh init.
 
 ## Explicitly NOT in P0
@@ -84,12 +99,17 @@ Flasks, charges, drinking, blueprints, potion stripping/interception, perk
 overrides, refill timers, MCM, FOMOD, Requiem patch. The ESP (if one exists at
 all in P0) contains nothing but identity.
 
-## Open decisions for the user
+## Decisions (resolved 2026-07-08)
 
-1. **Vendor barter**: converting on purchase (test 6) is the consistent rule,
-   but it means ingredient stock is effectively an essence shop. Confirm
-   that's the intended economy, or exclude barter transfers.
-2. **NPC/follower inventories**: P0 converts only player-received items.
-   Followers looting ingredients keep them as items — acceptable long-term?
-3. **Notification volume**: per-pickup notifications can get noisy in a
-   flower field. Per-pickup, or batched ("+6 Base Essence" on a short timer)?
+1. **Vendor barter → convert, value-weighted.** Bought ingredients convert on
+   the same footing as picked-up ones. Essence yield scales with the
+   ingredient's gold value within its tier (rarer/pricier = more essence), so
+   the vendor path is an essence-for-gold trade priced by rarity, not a flat
+   shop. Yield model lives in the conversion rule above.
+2. **Player-only conversion.** Only ingredients reaching the *player* convert;
+   followers/NPCs are ignored. Rationale (user): essence must never be an
+   inventory item — it exists solely in the abstracted pouch shown on menus,
+   so there is no cross-actor essence object to move around.
+3. **Per-pickup notifications for P0**, but treat this (and most surface
+   behavior like it) as INI/MCM-toggleable — the toggle framework arrives with
+   the P1 MCM; P0 hardcodes per-pickup + always-on `MAO.log`.
