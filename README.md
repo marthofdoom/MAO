@@ -58,13 +58,14 @@ sibling repos ([MRO](https://github.com/marthofdoom/MRO),
 
 ## Roadmap
 
-- **P0 — prototype.** Minimal plugin validating the load-bearing assumptions:
-  native harvest interception → essence counter, potion-pickup interception →
-  blueprint unlock, and one working flask (configure / drink / deplete /
-  refill) persisting across save/load via the SKSE co-save.
-- **P1 — core.** Full blueprint catalog generated from the masters, the
-  13-perk override matrix, the three-tier essence economy, the automated
-  refill pipeline, and an MCM.
+- **P0 — the gathering loop (current).** Minimal DLL validating the
+  load-bearing assumptions: ingredient acquisition intercepted on every path
+  (harvest, loot, container, barter, script), essence counters persisting in
+  the SKSE co-save, and the full hook inventory for the rest of the design.
+  See `Docs/P0_PLAN.md`.
+- **P1 — core.** Flasks (configure / drink / deplete / refill), potion-pickup
+  → blueprint interception, the catalog generated from the masters, the
+  13-perk override matrix, and an MCM.
 - **P2 — coatings & polish.** Weapon coating conversion (Vanguard Coating /
   Corrosive Retention), manual-drink animation handling, field kit UI.
 - **P3 — packaging & compat.** FOMOD, the Requiem/LoreRim compatibility

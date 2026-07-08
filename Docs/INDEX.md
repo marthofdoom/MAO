@@ -13,6 +13,11 @@ from these docs alone. Load documents on demand, not all at once.
    potion-pickup interception, the magnitude ceiling rules (standalone caps at
    Requiem max; over-cap is MRO-gated), and the automated-potion-mod
    compatibility contract. This is the spec.
+2. **P0_PLAN.md** (current phase) — the gathering-loop prototype: the full
+   hook inventory for the whole design (feature → public reference → phase),
+   the P0 architecture (harvest + container-changed sinks, `'POCH'` co-save
+   record, double-credit guard, quest-ingredient exclusion), and the 12-check
+   in-game matrix that gates P1.
 
 ## Sibling projects (the toolchain lives there — reuse, don't re-derive)
 
