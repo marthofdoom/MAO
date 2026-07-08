@@ -178,3 +178,31 @@ To guarantee that third-party Papyrus scripts and independent SKSE plugins can d
 * **The Potion Type Flag:** Configured flask items always maintain their base `AlchemyItem` (Potion) record types in memory. They are never converted into custom script types or script-heavy active magic effects.
 * **Charge Inventory Faking:** When an automated potion mod queries the player inventory via `GetItemCount` or internal SKSE array iterations, the native layer intercepts the query. If a Flask has $\ge 1$ charge, the engine reports an inventory count of `1`. If the Flask is dry (0 charges), it reports `0`.
 * **The Consumption Intercept:** When an external automation tool forces the player actor to consume a flask via `Actor::EquipItem`, the native hook catches the call immediately. It bypasses standard inventory destruction logic, applies the blueprint payload directly to the actor's active magic effect graph, and subtracts 1 charge natively from the SKSE co-save tracking register.
+
+### 6.2 Load-Order-Aware Installation
+
+MAO installs *on top of* whatever alchemy implementation the load order already
+has — vanilla, Requiem, or another overhaul — and should **detect that
+implementation and replace it smartly where applicable**, rather than blindly
+stacking and hoping conflict resolution wins. The mechanism is a later-build
+concern (P3 packaging), but the design commits to it now so earlier phases
+don't make choices that preclude it:
+
+* **Detection:** the FOMOD installer (and/or the DLL at `kDataLoaded`) probes
+  for known alchemy overhauls by plugin name / signature records and by the
+  presence of the perk records MAO intends to override, then selects the
+  matching compatibility profile instead of assuming vanilla.
+* **Smart replacement:** where MAO owns a system (the 13 alchemy perk records,
+  potion loot, ingredient behavior) it overrides in place with the detected
+  baseline's records as the diff source — so, e.g., a Requiem load order keeps
+  Requiem's de-leveled integrity and MAO's over-cap gating defers to MRO,
+  exactly as the magnitude model already specifies (§2). Where another mod owns
+  a system MAO doesn't touch, it leaves it alone.
+* **Portability caveat:** any detection baked from *this* machine's load order
+  at generation time is subject to the `DYNAMIC_OR_DROP` rule — it must resolve
+  at install/runtime against the user's actual load order, not ship a decision
+  hardcoded from the developer's setup.
+
+This is the same load-order-style adaptivity intended for the sibling MRO
+(detect deleveled vs. encounter-zones vs. vanilla-leveled and tune from there);
+MAO inherits the principle for its alchemy footprint.

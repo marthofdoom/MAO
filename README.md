@@ -68,9 +68,11 @@ sibling repos ([MRO](https://github.com/marthofdoom/MRO),
   13-perk override matrix, and an MCM.
 - **P2 — coatings & polish.** Weapon coating conversion (Vanguard Coating /
   Corrosive Retention), manual-drink animation handling, field kit UI.
-- **P3 — packaging & compat.** FOMOD, the Requiem/LoreRim compatibility
-  plugin, and the automated-potion-mod compatibility contract (inventory
-  faking, consumption intercept).
+- **P3 — packaging & compat.** FOMOD with load-order-aware installation
+  (detect the existing alchemy implementation — vanilla / Requiem / other —
+  and smartly replace it where applicable rather than blindly stacking), the
+  Requiem/LoreRim compatibility plugin, and the automated-potion-mod
+  compatibility contract (inventory faking, consumption intercept).
 - **P4 — MRO integration.** Over-cap magnitude framework gated behind MRO.
 
 ## Requirements
