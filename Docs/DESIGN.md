@@ -107,6 +107,36 @@ Once a Flask hits 0 charges, it enters a dry state. Flasks automatically attempt
 1. **Rest State Trigger:** Sleeping immediately initiates a full kit check.
 2. **Real-Time Clock Trigger:** Every 5 minutes of real-world time passing triggers a background kit maintenance pass.
 
+### 3.3 The Field Kit Interface (UI)
+
+The Field Kit is opened by a **lesser power** ("Open Field Kit"), granted to
+the player natively by the DLL — no crafting station, no menu takeover of a
+vanilla screen. This reuses the sibling MEO menu architecture wholesale; only
+the menu *content* differs:
+
+* **Power → menu:** the DLL grants a `SpellItem` power and a `TESSpellCastEvent`
+  sink catches its cast, opening the interface via the SKSE task interface
+  (identical to MEO's Gem Pouch power).
+* **Rendering:** a self-contained **ImGui** menu drawn through a D3D11
+  DXGI-present hook with its own input routing — the exact render/input
+  framework MEO already ships. MAO re-skins the layout; the plumbing (device
+  grab, present thunk, ImGui init, task-deferred open) is copied, not
+  re-derived. NOTE: this is a code hook (the present-call thunk), not an event
+  sink — it carries higher risk than the gathering sinks and must pass
+  `verify_hook_site_live.py`, and per MRO doctrine lands as its own isolated
+  milestone so a CTD bisects cleanly.
+* **Layout (MAO-specific content):** the menu shows the **essence stores**
+  (Base / Catalyst / Apex counts from the Pouch), the **flask slots** with each
+  slot's assigned blueprint and remaining charges, and the **known blueprints**
+  available to assign. Actions: configure/reallocate a flask (with the §3.1
+  overwrite penalty and upfront essence cost applied natively), consistent with
+  the Gem menu's socket/unsocket action model.
+* **MCM parity:** configuration uses the same INI + MCM Helper settings surface
+  as MEO (a dev/seed `SKSE/Plugins/MAO.ini` plus the MCM Helper file read last
+  so it wins; re-read live on menu close), including a menu-skin/style option.
+  The MCM option *set* is MAO's own (essence/flask toggles), but the mechanism
+  is inherited.
+
 ---
 
 ## 4. Recipe Acquisition & Blueprint Learning

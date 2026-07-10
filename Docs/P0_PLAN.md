@@ -93,11 +93,35 @@ Console reads pouch state via `MAO.log` + on-screen notifications.
 14. **Co-save absence**: loading a pre-MAO save = empty pouch, no crash, log
     line notes fresh init.
 
+## The Field Kit UI framework (see DESIGN §3.3)
+
+The Flask Kit is a **lesser power → ImGui menu**, reusing MEO's render/input
+framework wholesale (D3D11 present thunk, power-cast `TESSpellCastEvent` open,
+task-deferred, MCM-via-INI). Only the menu content is MAO's. This is a **code
+hook**, not an event sink — higher risk than the gathering sinks, must pass
+`verify_hook_site_live.py`, and per MRO doctrine ("one hook per release, a CTD
+bisects to one change") it should land as its own isolated step, not tangled
+into the gathering sinks.
+
+Proposed P0 split so hook classes stay separable:
+
+* **P0a — gathering loop:** the two event sinks + `'POCH'` co-save. Verified
+  via `MAO.log` + notifications. No render hook. (M1-level risk.)
+* **P0b — essence viewer:** stand up the reused menu framework with a
+  **read-only** first screen — the Field Kit power opens the ImGui menu and it
+  displays the three essence counts P0a produces. No flask setup yet. This
+  de-risks the whole D3D11 render pipeline early, on a screen that can't
+  corrupt game state, and gives immediate visual confirmation that gathering
+  works. Flask configuration is built on this screen in P1.
+
+Whether P0b is in-scope for P0 or deferred is an open question below.
+
 ## Explicitly NOT in P0
 
 Flasks, charges, drinking, blueprints, potion stripping/interception, perk
-overrides, refill timers, MCM, FOMOD, Requiem patch. The ESP (if one exists at
-all in P0) contains nothing but identity.
+overrides, refill timers, the full MCM option set, FOMOD, Requiem patch. The
+ESP (if one exists at all in P0) contains nothing but identity. (The essence
+*viewer* menu may land as P0b — see above — but flask *setup* does not.)
 
 ## Decisions (resolved 2026-07-08)
 
@@ -113,3 +137,16 @@ all in P0) contains nothing but identity.
 3. **Per-pickup notifications for P0**, but treat this (and most surface
    behavior like it) as INI/MCM-toggleable — the toggle framework arrives with
    the P1 MCM; P0 hardcodes per-pickup + always-on `MAO.log`.
+4. **Flask Kit is a power → ImGui menu, reusing MEO's framework** (DESIGN
+   §3.3). Same power-cast-opens-menu model and MCM-via-INI surface as MEO's Gem
+   Pouch; MAO re-skins the layout to show essence stores + flask slots +
+   blueprints. Resolved 2026-07-08.
+
+## Open question
+
+* **Does the read-only essence viewer (P0b) land in P0, or defer to P1?**
+  In-scope P0b de-risks the render pipeline early and lets gathering be
+  *seen* in-game, at the cost of introducing a code hook alongside the P0
+  sinks. Deferring keeps P0 to pure event-sink risk. (Recommendation: include
+  P0b as a *separate* milestone after P0a is green — clean bisection, early
+  render de-risk, visible payoff.)
