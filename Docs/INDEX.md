@@ -16,8 +16,9 @@ from these docs alone. Load documents on demand, not all at once.
 2. **P0_PLAN.md** (current phase) — the gathering-loop prototype: the full
    hook inventory for the whole design (feature → public reference → phase),
    the P0 architecture (harvest + container-changed sinks, `'POCH'` co-save
-   record, double-credit guard, quest-ingredient exclusion), and the 12-check
-   in-game matrix that gates P1.
+   record, double-credit guard, quest-ingredient exclusion) plus a read-only
+   essence-viewer menu (the Field Kit power → reused MEO ImGui framework), and
+   the 16-check in-game matrix that gates P1.
 
 ## Sibling projects (the toolchain lives there — reuse, don't re-derive)
 

@@ -92,6 +92,12 @@ Console reads pouch state via `MAO.log` + on-screen notifications.
     newer one doesn't leak counts across (revert callback).
 14. **Co-save absence**: loading a pre-MAO save = empty pouch, no crash, log
     line notes fresh init.
+15. **Field Kit power**: the "Open Field Kit" power is granted to the player and
+    appears in the Powers list; casting it opens the ImGui menu (no CTD — the
+    present-hook gate).
+16. **Essence viewer**: the open menu shows the three essence counts matching
+    the co-save / log; gather more, reopen, counts update. Menu is read-only
+    (no flask actions yet) and closes cleanly, game resumes.
 
 ## The Field Kit UI framework (see DESIGN §3.3)
 
@@ -103,25 +109,25 @@ hook**, not an event sink — higher risk than the gathering sinks, must pass
 bisects to one change") it should land as its own isolated step, not tangled
 into the gathering sinks.
 
-Proposed P0 split so hook classes stay separable:
+**P0 is combined** (user, 2026-07-08): the gathering loop **and** a read-only
+essence-viewer menu ship as one P0 — the Field Kit power opens the reused ImGui
+menu and displays the three essence counts gathering produces. No flask setup
+yet (that's P1); the viewer is read-only and cannot corrupt game state.
 
-* **P0a — gathering loop:** the two event sinks + `'POCH'` co-save. Verified
-  via `MAO.log` + notifications. No render hook. (M1-level risk.)
-* **P0b — essence viewer:** stand up the reused menu framework with a
-  **read-only** first screen — the Field Kit power opens the ImGui menu and it
-  displays the three essence counts P0a produces. No flask setup yet. This
-  de-risks the whole D3D11 render pipeline early, on a screen that can't
-  corrupt game state, and gives immediate visual confirmation that gathering
-  works. Flask configuration is built on this screen in P1.
-
-Whether P0b is in-scope for P0 or deferred is an open question below.
+Build order within P0 (preserves clean CTD diagnosis despite the single
+milestone): **get the gathering sinks + `'POCH'` co-save green and tested
+first, THEN wire the render/present hook + viewer on top.** Commit and, ideally,
+grab an in-game smoke test at the sink stage before the code hook goes in — so
+if a crash appears once the present thunk lands, it bisects to the render hook,
+not the sinks. Shipping them as one P0 doesn't mean writing them as one blob.
 
 ## Explicitly NOT in P0
 
-Flasks, charges, drinking, blueprints, potion stripping/interception, perk
-overrides, refill timers, the full MCM option set, FOMOD, Requiem patch. The
-ESP (if one exists at all in P0) contains nothing but identity. (The essence
-*viewer* menu may land as P0b — see above — but flask *setup* does not.)
+Flask *setup*/configuration, charges, drinking, blueprints, potion
+stripping/interception, perk overrides, refill timers, the full MCM option set,
+FOMOD, Requiem patch. The ESP (if one exists at all in P0) contains nothing but
+identity. (The read-only essence *viewer* menu **is** in P0 — see above — but
+flask *setup* is not; the menu shows essence counts only.)
 
 ## Decisions (resolved 2026-07-08)
 
@@ -142,11 +148,7 @@ ESP (if one exists at all in P0) contains nothing but identity. (The essence
    Pouch; MAO re-skins the layout to show essence stores + flask slots +
    blueprints. Resolved 2026-07-08.
 
-## Open question
-
-* **Does the read-only essence viewer (P0b) land in P0, or defer to P1?**
-  In-scope P0b de-risks the render pipeline early and lets gathering be
-  *seen* in-game, at the cost of introducing a code hook alongside the P0
-  sinks. Deferring keeps P0 to pure event-sink risk. (Recommendation: include
-  P0b as a *separate* milestone after P0a is green — clean bisection, early
-  render de-risk, visible payoff.)
+5. **Combined P0 with read-only essence viewer** (user, 2026-07-08). Gathering
+   loop + viewer menu ship as one P0; flask setup stays P1. Build sinks first,
+   render hook second (see Field Kit UI framework section for the bisection
+   rationale).
