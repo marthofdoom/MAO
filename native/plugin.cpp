@@ -226,9 +226,9 @@ void RecomputeCapacity(const char* a_why) {
             f.charges = std::min(f.charges, charges);
         }
     }
-    spdlog::info("[perks] {}: Alchemist rank {}, Purity {}, Benefactor {}, Experimenter {} "
+    spdlog::info("[perks] {}: Alchemist rank {}, Capstone {}, Benefactor {}, Experimenter {} "
                  "-> {} flasks / {} charges",
-                 a_why, rank, purity, g_hasBenefactor.load(), g_hasExperimenter.load(), flasks,
+                 a_why, rank, capstone, g_hasBenefactor.load(), g_hasExperimenter.load(), flasks,
                  charges);
 }
 
