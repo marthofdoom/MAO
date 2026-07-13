@@ -54,8 +54,16 @@ of one-hook builds when their phase begins. Listed so the runway is visible:
 
 `tools/release_native.sh <version> "desc"` pulls the latest successful `native`
 run's DLL and wraps it MO2-style (zip root = virtual `Data/`). Releases are
-immutable under `releases/<version>/`. Until M2 adds the ESP, releases are
+immutable under `releases/<version>/`. Until the ESP lands (P1), releases are
 DLL + `MAO.ini` only.
+
+**Steam Deck (the P0 test target).** The Deck runs a plain, non-MO2 install, so
+`tools/deploy_deck.sh` skips the archive and scp's `MAO.dll` (+ seeds `MAO.ini`)
+straight into `Data/SKSE/Plugins` over SSH (`deck@marthdeck`, game at
+`~/.local/share/Steam/steamapps/common/Skyrim Special Edition`, runtime 1.6.1170,
+CrashLogger installed). The Deck has **no keyboard** — the viewer opens from the
+gamepad (`iOpenButtonGamepad`, default `0x20` = Back/View). `MAO.log` lands under
+`compatdata/489830/pfx/.../My Games/Skyrim Special Edition/SKSE/`.
 
 ## Per-build checklist
 
