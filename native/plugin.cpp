@@ -8,29 +8,53 @@
 // Built in staged, individually CI-green milestones (Docs/BUILD.md), one hook
 // class per step so a CTD bisects to one change (MRO doctrine):
 //   M0: skeleton — DLL loads, logs version. Zero hooks.
-//   M1 (this build): THE GATHERING LOOP. TESContainerChanged sink is the sole
-//       essence-credit point (catches harvest, loot, container, barter,
-//       script AddItem); the ingredient is removed so nothing lingers in bags
-//       (essence is never an inventory item). Tier picks the bucket, gold
-//       value picks the amount. TESHarvested sink tags harvests for the future
-//       Field-Extraction / Pouch-Expansion perks (logs only — never credits,
-//       so one harvest = one credit). Pouch persists in the 'POCH' co-save.
-//   M2: the Field Kit power → ImGui read-only essence viewer (render hook).
+//   M1: THE GATHERING LOOP. TESContainerChanged sink is the sole essence-
+//       credit point; TESHarvested tags harvests; pouch persists in 'POCH'.
+//   M2 (this build): THE FIELD KIT VIEWER. An ImGui overlay (D3D11 present
+//       thunk + input dispatch thunk — the Wheeler pattern, ported verbatim
+//       from MEO's proven hook sites) shows the essence stores, read-only.
+//       Opened by a hotkey for now (Data/SKSE/Plugins/MAO.ini iOpenHotkey);
+//       DESIGN §3.3 makes this a lesser POWER in P1, when the ESP that grants
+//       the power exists for flasks/blueprints anyway. The render hook is a
+//       CODE hook — its address-library IDs are proven live on 1.6.1170 in
+//       MEO; re-verify with tools/verify_hook_site_live.py before trusting a
+//       new runtime.
 //
 // ── SAVE-SAFETY RULES (inherited from MEO; apply from the first co-save) ──
 //   1. The co-save 'POCH' schema is VERSIONED. Readers for every shipped
 //      version stay forever; writers write only the newest. Never reorder or
 //      remove fields — extend via a version bump + migration in LoadCallback.
-//   2. MAO.esp FormIDs (once the ESP exists at M2) are frozen generator
+//   2. MAO.esp FormIDs (once the ESP exists in P1) are frozen generator
 //      constants. Forms are only ever ADDED, never renumbered or deleted.
 
 #include <spdlog/sinks/basic_file_sink.h>
 
+// Render hook pulls in d3d11.h -> windows.h; NG never includes it, so guard
+// the min/max macros and drop wingdi's GetObject (it hijacks
+// RE::BGSDefaultObjectManager::GetObject<T>).
+#ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#    define NOMINMAX
+#endif
+#include <d3d11.h>
+#include <dxgi.h>
+#ifdef GetObject
+#    undef GetObject
+#endif
+
+#include <imgui.h>
+#include <imgui_impl_dx11.h>
+#include <imgui_impl_win32.h>
+
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <format>
 #include <fstream>
 #include <string>
@@ -38,7 +62,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.1.0 (M1 gathering)";
+constexpr auto kPluginVersion = "0.2.0 (M2 essence viewer)";
 
 constexpr std::uint32_t kSerID       = 'MAO1';
 constexpr std::uint32_t kRecPouch    = 'POCH';
@@ -57,9 +81,18 @@ struct Pouch {
 };
 Pouch g_pouch;
 
+// ── Field Kit viewer state (M2). open/close is driven by the input hook and
+// read by the present hook — both run off the game's render/input threads, so
+// these are atomics.
+struct MenuState {
+    std::atomic<bool> open{ false };
+};
+MenuState g_menu;
+
 // ── Config (Data/SKSE/Plugins/MAO.ini). The full MCM option set arrives with
-// P1; P0 seeds the surface with the one toggle it needs.
-bool g_notify = true;  // bNotify — per-pickup on-screen essence notifications
+// P1; P0 seeds the surface with the keys it needs.
+bool          g_notify     = true;    // bNotify — per-pickup essence notifications
+std::uint32_t g_openHotkey = 0x25;    // iOpenHotkey — DirectInput scancode; 0x25 = K
 
 const char* TierName(Tier a_t) {
     switch (a_t) {
@@ -149,8 +182,8 @@ void SetupLog() {
 
 void ApplyIniLine(std::string a_line) {
     // MCM-Helper INI format: strip a UTF-8 BOM, ignore [Section] headers and
-    // comments, parse "key = value". P0 reads one key; the surface is here so
-    // P1's MCM has somewhere to write.
+    // comments, parse "key = value". The surface is here so P1's MCM has
+    // somewhere to write.
     if (a_line.size() >= 3 && static_cast<unsigned char>(a_line[0]) == 0xEF) {
         a_line.erase(0, 3);
     }
@@ -170,6 +203,8 @@ void ApplyIniLine(std::string a_line) {
     const std::string val = trim(a_line.substr(eq + 1));
     if (key == "bNotify") {
         g_notify = !(val == "0" || val == "false");
+    } else if (key == "iOpenHotkey") {
+        g_openHotkey = static_cast<std::uint32_t>(std::strtoul(val.c_str(), nullptr, 0));
     }
 }
 
@@ -181,7 +216,7 @@ void ReadConfig() {
             ApplyIniLine(line);
         }
     }
-    spdlog::info("[config] bNotify={}", g_notify);
+    spdlog::info("[config] bNotify={} iOpenHotkey=0x{:X}", g_notify, g_openHotkey);
 }
 
 // ── The gathering sink: the SOLE essence-credit point. Anything an ingredient
@@ -265,6 +300,161 @@ public:
     }
 };
 
+// ── The Field Kit viewer (M2). Read-only: it renders the pouch, takes no
+// input beyond the open/close toggle, so no mouse/keyboard is routed into
+// ImGui. P1 turns this window into the flask-configuration UI and swaps the
+// hotkey opener for the lesser power (DESIGN §3.3).
+namespace menuhook {
+
+    ID3D11Device*        g_device  = nullptr;
+    ID3D11DeviceContext* g_context = nullptr;
+    std::atomic<bool>    g_d3dReady{ false };
+    float                g_bbW = 0.0f;
+    float                g_bbH = 0.0f;
+
+    void DrawEssenceViewer() {
+        auto& io = ImGui::GetIO();
+        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
+                                ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x * 0.34f, io.DisplaySize.y * 0.30f),
+                                 ImGuiCond_Appearing);
+        if (ImGui::Begin("MAO Field Kit", nullptr,
+                         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+                             ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar)) {
+            ImGui::TextUnformatted("FIELD KIT  —  ESSENCE STORES");
+            ImGui::Separator();
+            ImGui::Spacing();
+            ImGui::Text("Base Essence      %u", g_pouch.base);
+            ImGui::Text("Catalyst Essence  %u", g_pouch.catalyst);
+            ImGui::Text("Apex Essence      %u", g_pouch.apex);
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::TextDisabled("Read-only preview (P0). Flask setup arrives in P1.");
+            ImGui::TextDisabled("Press the Field Kit key or Esc to close.");
+        }
+        ImGui::End();
+    }
+
+    // Renderer-init hook: grab the device/context/swapchain, stand up ImGui.
+    struct D3DInitHook {
+        static void thunk() {
+            func();
+            auto* renderer = RE::BSGraphics::Renderer::GetSingleton();
+            if (!renderer) {
+                spdlog::error("[menu] renderer singleton missing — viewer disabled");
+                return;
+            }
+            auto* swapChain = renderer->data.renderWindows[0].swapChain;
+            if (!swapChain) {
+                spdlog::error("[menu] swapchain missing — viewer disabled");
+                return;
+            }
+            DXGI_SWAP_CHAIN_DESC sd{};
+            if (swapChain->GetDesc(&sd) < 0) {
+                spdlog::error("[menu] IDXGISwapChain::GetDesc failed — viewer disabled");
+                return;
+            }
+            g_device  = renderer->data.forwarder;
+            g_context = renderer->data.context;
+            ImGui::CreateContext();
+            auto& io       = ImGui::GetIO();
+            io.IniFilename = nullptr;  // never write imgui.ini into the game dir
+            if (!ImGui_ImplWin32_Init(sd.OutputWindow) || !ImGui_ImplDX11_Init(g_device, g_context)) {
+                spdlog::error("[menu] ImGui backend init failed — viewer disabled");
+                return;
+            }
+            g_bbW = static_cast<float>(sd.BufferDesc.Width);
+            g_bbH = static_cast<float>(sd.BufferDesc.Height);
+            g_d3dReady.store(true);
+            spdlog::info("[menu] ImGui initialized ({}x{})", sd.BufferDesc.Width,
+                         sd.BufferDesc.Height);
+        }
+        static inline REL::Relocation<decltype(thunk)> func;
+        static constexpr auto                          id     = REL::RelocationID(75595, 77226);
+        static constexpr auto                          offset = REL::VariantOffset(0x9, 0x275, 0x0);
+    };
+
+    // Present hook: draw the viewer each frame while it is open.
+    struct DXGIPresentHook {
+        static void thunk(std::uint32_t a_p1) {
+            func(a_p1);
+            if (!g_d3dReady.load() || !g_menu.open.load()) {
+                return;
+            }
+            ImGui_ImplDX11_NewFrame();
+            ImGui_ImplWin32_NewFrame();
+            auto& io = ImGui::GetIO();
+            if (g_bbW > 0.0f) {
+                io.DisplaySize = ImVec2(g_bbW, g_bbH);
+            }
+            io.FontGlobalScale = std::max(1.0f, io.DisplaySize.y / 1080.0f);
+            ImGui::NewFrame();
+            DrawEssenceViewer();
+            ImGui::EndFrame();
+            ImGui::Render();
+            ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+        }
+        static inline REL::Relocation<decltype(thunk)> func;
+        static constexpr auto                          id     = REL::RelocationID(75461, 77246);
+        static constexpr auto                          offset = REL::Offset(0x9);
+    };
+
+    // Input dispatch hook: toggle the viewer on the hotkey and, while it is
+    // open, swallow all input so the game world stays deaf. Read-only, so no
+    // input is forwarded to ImGui.
+    struct InputDispatchHook {
+        static void thunk(RE::BSTEventSource<RE::InputEvent*>* a_source, RE::InputEvent** a_events) {
+            if (!a_events || !g_d3dReady.load()) {
+                func(a_source, a_events);
+                return;
+            }
+            const bool wasOpen  = g_menu.open.load();
+            bool       justOpen = false;
+            for (auto* e = *a_events; e; e = e->next) {
+                if (e->eventType != RE::INPUT_EVENT_TYPE::kButton) {
+                    continue;
+                }
+                auto* b = static_cast<RE::ButtonEvent*>(e);
+                if (!b->IsDown() || b->device.get() != RE::INPUT_DEVICE::kKeyboard) {
+                    continue;  // act on key press, keyboard only (P0)
+                }
+                const std::uint32_t code = b->GetIDCode();
+                if (!wasOpen) {
+                    if (code == g_openHotkey) {
+                        g_menu.open.store(true);
+                        justOpen = true;
+                    }
+                } else if (code == g_openHotkey || code == 0x01 /* Esc */) {
+                    g_menu.open.store(false);
+                }
+            }
+            if (wasOpen || justOpen) {
+                *a_events = nullptr;  // the game sees no input while the viewer is up
+            }
+            func(a_source, a_events);
+        }
+        static inline REL::Relocation<decltype(thunk)> func;
+        static constexpr auto                          id     = REL::RelocationID(67315, 68617);
+        static constexpr auto                          offset = REL::Offset(0x7B);
+    };
+
+    template <class T>
+    void write_thunk_call() {
+        auto&                                 trampoline = SKSE::GetTrampoline();
+        const REL::Relocation<std::uintptr_t> hook{ T::id, T::offset };
+        T::func = trampoline.write_call<5>(hook.address(), T::thunk);
+    }
+
+    void Install() {
+        SKSE::AllocTrampoline(64);
+        write_thunk_call<D3DInitHook>();
+        write_thunk_call<DXGIPresentHook>();
+        write_thunk_call<InputDispatchHook>();
+        spdlog::info("[menu] render + input hooks installed (viewer key 0x{:X})", g_openHotkey);
+    }
+
+}  // namespace menuhook
+
 // ── SKSE co-save: the 'POCH' record (schema v1). Three tier counters.
 void SaveCallback(SKSE::SerializationInterface* a_intfc) {
     if (!a_intfc->OpenRecord(kRecPouch, kSerVersion)) {
@@ -298,6 +488,7 @@ void LoadCallback(SKSE::SerializationInterface* a_intfc) {
 
 void RevertCallback(SKSE::SerializationInterface*) {
     g_pouch = Pouch{};
+    g_menu.open.store(false);
     spdlog::info("[revert] pouch cleared");
 }
 
@@ -311,7 +502,7 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
         if (auto* console = RE::ConsoleLog::GetSingleton()) {
             console->Print("MAO native v%s loaded", kPluginVersion);
         }
-        spdlog::info("kDataLoaded: MAO v{} live on runtime {}; gathering sinks registered",
+        spdlog::info("kDataLoaded: MAO v{} live on runtime {}; gathering sinks + viewer registered",
                      kPluginVersion, gameVersion.string());
     }
 }
@@ -321,6 +512,10 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse) {
     SKSE::Init(a_skse);
     SetupLog();
+    // The INI is re-read at kDataLoaded, but the render hooks are installed
+    // here (before the renderer initializes), so seed the hotkey now.
+    ReadConfig();
+    menuhook::Install();
 
     const auto gameVersion = REL::Module::get().version();
     spdlog::info("MAO native v{} loading; runtime {}", kPluginVersion, gameVersion.string());
