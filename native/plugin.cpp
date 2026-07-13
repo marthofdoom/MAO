@@ -68,7 +68,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.11.1 (expanded earning tiers)";
+constexpr auto kPluginVersion = "0.12.0 (compound recipe-based cost)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -138,9 +138,14 @@ std::mutex                        g_flasksLock;
 // potion record values which run ~5-7x their ingredients (see
 // essence-economy-tax memory). Built at kDataLoaded; guarded for the render
 // read.
-std::unordered_map<RE::FormID, std::uint32_t> g_effectCost;          // MGEF -> per-charge Base
-std::uint32_t                                 g_effectCostFallback = 25;  // effects w/ no source
-std::mutex                                    g_effectCostLock;
+// Per-effect cheapest 2-ingredient recipe: summed gold value + the tier of that
+// recipe (its rarest required ingredient). The flask BASE cost = recipe value ×
+// concentration × tax, charged in the recipe tier.
+struct Recipe { std::uint32_t value = 10; Tier tier = Tier::Base; };
+std::unordered_map<RE::FormID, Recipe> g_effectRecipe;
+std::uint32_t g_catalystUnit = 40;   // representative Catalyst ingredient value (surcharge unit)
+std::uint32_t g_apexUnit     = 120;  // representative Apex ingredient value
+std::mutex    g_effectCostLock;
 float                                         g_essenceTax = 1.3f;   // fEssenceTax
 // Flask cost = round(effect baseCost * magnitude * g_costRate * tax) per charge
 // (linear in magnitude = "each concentration level costs 1x more"). The flask's
@@ -301,101 +306,101 @@ void CreditPouch(Tier a_tier, std::uint32_t a_amount) {
     }
 }
 
-bool SpendBase(std::uint32_t a_amount) {
-    if (g_pouch.base < a_amount) {
-        return false;
-    }
-    g_pouch.base -= a_amount;
-    return true;
-}
-
-std::uint32_t EffectCostPerCharge(RE::FormID a_effect) {
-    std::scoped_lock lk(g_effectCostLock);
-    auto it = g_effectCost.find(a_effect);
-    return it != g_effectCost.end() ? it->second : g_effectCostFallback;
-}
-
 // Build the per-effect cost table from the actual load order's ingredients.
 // Called once at kDataLoaded. Logs the real distribution so the balance can be
 // eyeballed against MAO.log.
-void BuildEffectCostTable() {
+void BuildRecipeTable() {
     auto* dh = RE::TESDataHandler::GetSingleton();
     if (!dh) {
         return;
     }
-    struct Acc { std::uint64_t sum = 0; std::uint32_t n = 0; };
-    std::unordered_map<RE::FormID, Acc> acc;
-    std::uint32_t                       ingredients = 0;
+    // Per effect, the (value, tier) of every ingredient carrying it; plus the
+    // pool of Catalyst / Apex ingredient values for the surcharge units.
+    std::unordered_map<RE::FormID, std::vector<std::pair<std::uint32_t, Tier>>> byEffect;
+    std::vector<std::uint32_t> catVals, apexVals;
+    std::uint32_t              ingredients = 0;
     for (auto* ingr : dh->GetFormArray<RE::IngredientItem>()) {
         if (!ingr || ingr->value <= 0) {
-            continue;  // skip valueless junk
+            continue;
         }
         ++ingredients;
+        const char*         nm = ingr->GetName();
+        const Tier          it = TierOf(nm ? nm : "");
+        const std::uint32_t v  = static_cast<std::uint32_t>(ingr->value);
+        if (it == Tier::Catalyst) {
+            catVals.push_back(v);
+        } else if (it == Tier::Apex) {
+            apexVals.push_back(v);
+        }
         for (auto* eff : ingr->effects) {
             if (eff && eff->baseEffect) {
-                auto& a = acc[eff->baseEffect->GetFormID()];
-                a.sum += static_cast<std::uint32_t>(ingr->value);
-                a.n += 1;
+                byEffect[eff->baseEffect->GetFormID()].push_back({ v, it });
             }
         }
     }
-
-    std::vector<std::pair<std::uint32_t, std::string>> rows;  // (cost, effect name) for the log
-    std::uint64_t                                      globalSum = 0;
-    {
-        std::scoped_lock lk(g_effectCostLock);
-        g_effectCost.clear();
-        for (const auto& [id, a] : acc) {
-            const double        mean = static_cast<double>(a.sum) / a.n;
-            const std::uint32_t cost =
-                std::max(1u, static_cast<std::uint32_t>(std::lround(2.0 * mean * g_essenceTax)));
-            g_effectCost[id] = cost;
-            globalSum += cost;
-            const char* n = nullptr;
-            if (auto* m = RE::TESForm::LookupByID<RE::EffectSetting>(id)) {
-                n = m->GetName();
-            }
-            rows.emplace_back(cost, (n && *n) ? n : std::format("{:08X}", id));
+    auto median = [](std::vector<std::uint32_t>& v, std::uint32_t dflt) -> std::uint32_t {
+        if (v.empty()) return dflt;
+        std::sort(v.begin(), v.end());
+        return std::max(1u, v[v.size() / 2]);
+    };
+    std::scoped_lock lk(g_effectCostLock);
+    g_effectRecipe.clear();
+    for (auto& [id, vec] : byEffect) {
+        std::sort(vec.begin(), vec.end(),
+                  [](const auto& a, const auto& b) { return a.first < b.first; });
+        // Cheapest 2 ingredients sharing the effect = the vanilla recipe.
+        const std::uint32_t sum  = vec[0].first + (vec.size() > 1 ? vec[1].first : vec[0].first);
+        Tier                tier = vec[0].second;
+        if (vec.size() > 1) {  // recipe is as rare as its rarest required ingredient
+            tier = std::max(tier, vec[1].second);
         }
-        g_effectCostFallback =
-            rows.empty() ? 25u : std::max(1u, static_cast<std::uint32_t>(globalSum / rows.size()));
+        g_effectRecipe[id] = { std::max(1u, sum), tier };
     }
+    g_catalystUnit = median(catVals, 40);
+    g_apexUnit     = median(apexVals, 120);
+    spdlog::info("[econ] recipe table: {} effects from {} ingredients; catalystUnit={} apexUnit={}",
+                 g_effectRecipe.size(), ingredients, g_catalystUnit, g_apexUnit);
+}
+struct FlaskCost { std::uint32_t base = 0, catalyst = 0, apex = 0; };
 
-    std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-    spdlog::info("[econ] cost table: {} effects from {} ingredients; TAX={:.2f}; per-charge Base "
-                 "min={} median={} max={} fallback={}",
-                 rows.size(), ingredients, g_essenceTax, rows.empty() ? 0 : rows.front().first,
-                 rows.empty() ? 0 : rows[rows.size() / 2].first,
-                 rows.empty() ? 0 : rows.back().first, g_effectCostFallback);
-    const std::size_t show = std::min<std::size_t>(6, rows.size());
-    for (std::size_t i = 0; i < show; ++i) {
-        spdlog::info("[econ]   cheapest: {:>5} Base  {}", rows[i].first, rows[i].second);
-    }
-    for (std::size_t i = 0; i < show; ++i) {
-        const auto& r = rows[rows.size() - 1 - i];
-        spdlog::info("[econ]   priciest: {:>5} Base  {}", r.first, r.second);
+void AddTier(FlaskCost& c, Tier t, std::uint32_t amt) {
+    if (t == Tier::Apex) {
+        c.apex += amt;
+    } else if (t == Tier::Catalyst) {
+        c.catalyst += amt;
+    } else {
+        c.base += amt;
     }
 }
+Tier TierAbove(Tier t) { return t == Tier::Base ? Tier::Catalyst : Tier::Apex; }
 
-struct FlaskCost { std::uint32_t perCharge = 1; Tier tier = Tier::Base; };
-
-// Per-charge flask cost + essence tier for a specific variant. Cost is LINEAR
-// in magnitude (concentration): effect baseCost * magnitude * rate * tax — each
-// concentration level costs proportionally more. The essence TIER steps up with
-// concentration = magnitude / the effect's weakest (standard) magnitude.
+// Compound per-charge cost for a specific variant (Marth's model):
+//   BASE = recipe value x concentration x tax, in the recipe's tier.
+//   +CAT = high concentration (>= fCatalystLevel) needs a tier-up ingredient's
+//          worth; doubles at >= fApexLevel (Vigorous -> 1, Extreme+ -> 2).
+//   +APEX = any multi-effect potion needs an Apex ingredient's worth.
+// Concentration = magnitude / the effect's weakest magnitude (magnitude-ranked).
 FlaskCost VariantCost(RE::AlchemyItem* a_alch) {
     FlaskCost fc{};
     if (!a_alch || a_alch->effects.empty() || !a_alch->effects[0] ||
         !a_alch->effects[0]->baseEffect) {
         return fc;
     }
-    auto*       eff      = a_alch->effects[0]->baseEffect;
-    const float baseCost = eff->data.baseCost > 0.0f ? eff->data.baseCost : 1.0f;
-    const float mag =
-        a_alch->effects[0]->effectItem.magnitude > 0.0f ? a_alch->effects[0]->effectItem.magnitude
-                                                        : 1.0f;
-    fc.perCharge = std::max(
-        1u, static_cast<std::uint32_t>(std::lround(baseCost * mag * g_costRate * g_essenceTax)));
+    auto*       eff = a_alch->effects[0]->baseEffect;
+    const float mag = a_alch->effects[0]->effectItem.magnitude > 0.0f
+                          ? a_alch->effects[0]->effectItem.magnitude
+                          : 1.0f;
+    Recipe        rec{};
+    std::uint32_t catUnit = 40, apexUnit = 120;
+    {
+        std::scoped_lock lk(g_effectCostLock);
+        auto             it = g_effectRecipe.find(eff->GetFormID());
+        if (it != g_effectRecipe.end()) {
+            rec = it->second;
+        }
+        catUnit  = g_catalystUnit;
+        apexUnit = g_apexUnit;
+    }
     float minMag = 0.0f;
     {
         std::scoped_lock lk(g_effectPotionLock);
@@ -404,25 +409,42 @@ FlaskCost VariantCost(RE::AlchemyItem* a_alch) {
             minMag = it->second;
         }
     }
-    const float conc = (minMag > 0.01f) ? (mag / minMag) : 1.0f;
-    fc.tier = (conc >= g_apexLevel) ? Tier::Apex
-              : (conc >= g_catalystLevel) ? Tier::Catalyst
-                                          : Tier::Base;
+    const float conc = (minMag > 0.01f) ? std::max(1.0f, mag / minMag) : 1.0f;
+    AddTier(fc, rec.tier,
+            std::max(1u, static_cast<std::uint32_t>(
+                             std::lround(rec.value * conc * g_costRate * g_essenceTax))));
+    if (conc >= g_catalystLevel) {
+        const Tier          su   = TierAbove(rec.tier);
+        const std::uint32_t unit = (su == Tier::Apex) ? apexUnit : catUnit;
+        AddTier(fc, su, unit * (conc >= g_apexLevel ? 2u : 1u));
+    }
+    if (a_alch->effects.size() > 1) {
+        fc.apex += apexUnit;
+    }
     return fc;
 }
 
-std::uint32_t& PouchTier(Tier a_tier) {
-    return a_tier == Tier::Apex       ? g_pouch.apex
-           : a_tier == Tier::Catalyst ? g_pouch.catalyst
-                                      : g_pouch.base;
+FlaskCost operator*(const FlaskCost& c, std::uint32_t m) {
+    return { c.base * m, c.catalyst * m, c.apex * m };
 }
-bool SpendTier(Tier a_tier, std::uint32_t a_amount) {
-    auto& pool = PouchTier(a_tier);
-    if (pool < a_amount) {
+bool CanAfford(const FlaskCost& c) {
+    return g_pouch.base >= c.base && g_pouch.catalyst >= c.catalyst && g_pouch.apex >= c.apex;
+}
+bool SpendCost(const FlaskCost& c) {
+    if (!CanAfford(c)) {
         return false;
     }
-    pool -= a_amount;
+    g_pouch.base -= c.base;
+    g_pouch.catalyst -= c.catalyst;
+    g_pouch.apex -= c.apex;
     return true;
+}
+std::string CostString(const FlaskCost& c) {
+    std::string s;
+    if (c.base) s += std::format("{}B ", c.base);
+    if (c.catalyst) s += std::format("{}C ", c.catalyst);
+    if (c.apex) s += std::format("{}A ", c.apex);
+    return s.empty() ? std::string("free") : s;
 }
 
 RE::FormID RepPotionFor(RE::FormID a_effect) {
@@ -550,14 +572,12 @@ void ConfigureFlask(std::size_t a_slot, RE::FormID a_potion) {
         }
         return;
     }
-    const FlaskCost     fc   = VariantCost(alch);
-    const std::uint32_t cost = fc.perCharge * g_chargesPerFlask;
-    if (!SpendTier(fc.tier, cost)) {
-        spdlog::info("[flask] slot {} configure DENIED — need {} {} (have {})", a_slot, cost,
-                     TierName(fc.tier), PouchTier(fc.tier));
+    const FlaskCost cost = VariantCost(alch) * g_chargesPerFlask;
+    if (!SpendCost(cost)) {
+        spdlog::info("[flask] slot {} configure DENIED — need {} (have B={} C={} A={})", a_slot,
+                     CostString(cost), g_pouch.base, g_pouch.catalyst, g_pouch.apex);
         if (g_notify) {
-            RE::DebugNotification(
-                std::format("Not enough {} Essence ({} needed).", TierName(fc.tier), cost).c_str());
+            RE::DebugNotification(std::format("Not enough essence — need {}.", CostString(cost)).c_str());
         }
         return;
     }
@@ -578,9 +598,10 @@ void ConfigureFlask(std::size_t a_slot, RE::FormID a_potion) {
     }
 
     const char* vName = alch->GetName();
-    spdlog::info("[flask] slot {} <- '{}' (variant {:08X}, {} charges); spent {} Base (was {} "
-                 "charges); pouch B={}",
-                 a_slot, vName ? vName : "?", rep, g_chargesPerFlask, cost, hadCharges, g_pouch.base);
+    spdlog::info("[flask] slot {} <- '{}' (variant {:08X}, {} charges); spent {}(was {} charges); "
+                 "pouch B={} C={} A={}",
+                 a_slot, vName ? vName : "?", rep, g_chargesPerFlask, CostString(cost), hadCharges,
+                 g_pouch.base, g_pouch.catalyst, g_pouch.apex);
     if (g_notify) {
         RE::DebugNotification(
             std::format("Flask {} set: {}", a_slot + 1, vName ? vName : "potion").c_str());
@@ -654,7 +675,7 @@ void RefillFlasks(const char* a_trigger) {
             auto*           valch = RE::TESForm::LookupByID<RE::AlchemyItem>(f.repPotion);
             const FlaskCost fc    = valch ? VariantCost(valch) : FlaskCost{};
             std::uint32_t   added = 0;
-            while (f.charges < g_chargesPerFlask && SpendTier(fc.tier, fc.perCharge)) {
+            while (f.charges < g_chargesPerFlask && SpendCost(fc)) {  // one charge's worth
                 ++f.charges;
                 ++added;
             }
@@ -1273,16 +1294,15 @@ namespace menuhook {
                         !alch->effects[0]->baseEffect) {
                         continue;
                     }
-                    auto*               eff  = alch->effects[0]->baseEffect;
-                    const char*         pn   = alch->GetName();
-                    const bool          coat = eff->IsHostile() || eff->IsDetrimental();
-                    const FlaskCost     fc   = VariantCost(alch);
-                    const std::uint32_t cost = fc.perCharge * g_chargesPerFlask;
-                    char                label[224];
-                    std::snprintf(label, sizeof(label), "%-28.80s %s %u %s##v%08X",
+                    auto*           eff  = alch->effects[0]->baseEffect;
+                    const char*     pn   = alch->GetName();
+                    const bool      coat = eff->IsHostile() || eff->IsDetrimental();
+                    const FlaskCost cost = VariantCost(alch) * g_chargesPerFlask;
+                    char            label[224];
+                    std::snprintf(label, sizeof(label), "%-26.80s %s %s##v%08X",
                                   (pn && *pn) ? pn : "(unknown)", coat ? "[coating]" : "        ",
-                                  cost, TierName(fc.tier), pid);
-                    const bool enabled = g_selectedSlot >= 0 && !coat && PouchTier(fc.tier) >= cost;
+                                  CostString(cost).c_str(), pid);
+                    const bool enabled = g_selectedSlot >= 0 && !coat && CanAfford(cost);
                     if (!enabled) {
                         ImGui::BeginDisabled();
                     }
@@ -1745,7 +1765,7 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
             spdlog::info("[flask] {}/{} flask forms resolved", nf, g_flaskForms.size());
         }
         spdlog::info("[power] Open Field Kit spell: {}", g_fieldKitSpell ? "found" : "MISSING (is MAO.esp enabled?)");
-        BuildEffectCostTable();
+        BuildRecipeTable();
         BuildEffectPotionTable();
         InstallDrinkHook();
         StartRefillTimer();
