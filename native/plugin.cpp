@@ -66,13 +66,13 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.6.0 (ingredient-basis economy)";
+constexpr auto kPluginVersion = "0.7.0 (P1d-1 drinkable flasks)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
 constexpr std::uint32_t kRecBlueprints = 'BLPT';
 constexpr std::uint32_t kRecFlasks     = 'FLSK';
-constexpr std::uint32_t kSerVersion    = 1;
+constexpr std::uint32_t kSerVersion    = 2;  // v2 (P1d): BLPT stores rep potion; FLSK adds repPotion
 constexpr RE::FormID    kPlayerID      = 0x14;
 
 // MAO.esp forms (P1a). FROZEN — must match MAO_GenerateESP.py. ESL-flagged
@@ -93,13 +93,20 @@ struct Pouch {
 };
 Pouch g_pouch;
 
-// ── Known blueprints (P1b): the set of effect profiles the player has
-// discovered by analyzing found potions. Keyed by the potion's primary
-// MagicEffect FormID, so all strength variants of an effect collapse into one
-// blueprint (the design's "family by effect"). Persisted in 'BLPT'. Guarded by
-// a mutex — the render thread reads it while the task thread inserts.
-std::unordered_set<RE::FormID> g_blueprints;
-std::mutex                     g_blueprintsLock;
+// ── Known blueprints (P1b/P1d): effect profiles discovered by analyzing found
+// potions. Keyed by the potion's primary MagicEffect FormID (all strength
+// variants collapse into one blueprint — the design's "family by effect").
+// P1d stores the strongest discovered potion of that effect as the
+// "representative": that real potion form IS the flask item (it already has
+// the right effects and is recognized by potion mods), and the flask casts it
+// on drink. Only BENEFICIAL effects become blueprints; hostile/detrimental
+// ones are the coating path (P2). Persisted in 'BLPT'. Mutex-guarded.
+struct Blueprint {
+    RE::FormID    repPotion = 0;  // strongest discovered potion carrying this effect
+    std::uint32_t repValue  = 0;  // its gold value (to keep the strongest)
+};
+std::unordered_map<RE::FormID, Blueprint> g_blueprints;  // MGEF -> blueprint
+std::mutex                                g_blueprintsLock;
 
 // ── Flasks (P1c). Permanent kit slots, each holding a blueprint payload +
 // charges. Native slots for now (physical drinkable item forms + drinking
@@ -108,7 +115,8 @@ std::mutex                     g_blueprintsLock;
 constexpr std::size_t kMaxFlaskSlots = 6;  // design ceiling (6 flasks / 9 charges)
 
 struct Flask {
-    RE::FormID    blueprint = 0;  // 0 = empty
+    RE::FormID    blueprint = 0;  // 0 = empty (MGEF key into g_blueprints)
+    RE::FormID    repPotion = 0;  // the physical flask item (rep potion form); 0 = none
     std::uint32_t charges   = 0;
 };
 std::array<Flask, kMaxFlaskSlots> g_flasks{};
@@ -302,15 +310,25 @@ void BuildEffectCostTable() {
 // serializes with gathering/discovery. Deducts the essence cost up front and
 // fills the flask to max charges; reassigning a flask that still holds charges
 // purges them with no refund (the §3.1 overwrite penalty).
+bool PlayerHasItem(RE::TESObjectREFR* a_ref, RE::TESBoundObject* a_obj) {
+    if (!a_ref || !a_obj) {
+        return false;
+    }
+    return !a_ref->GetInventoryCounts([&](RE::TESBoundObject& o) { return &o == a_obj; }).empty();
+}
+
 void ConfigureFlask(std::size_t a_slot, RE::FormID a_blueprint) {
     if (a_slot >= g_flaskCount || !a_blueprint) {
         return;
     }
+    RE::FormID rep = 0;
     {
         std::scoped_lock lk(g_blueprintsLock);
-        if (!g_blueprints.contains(a_blueprint)) {
-            return;  // must be a discovered blueprint
+        auto             it = g_blueprints.find(a_blueprint);
+        if (it == g_blueprints.end() || it->second.repPotion == 0) {
+            return;  // must be a discovered blueprint with a real potion to embody it
         }
+        rep = it->second.repPotion;
     }
     const std::uint32_t cost = EffectCostPerCharge(a_blueprint) * g_chargesPerFlask;
     if (!SpendBase(cost)) {
@@ -321,24 +339,108 @@ void ConfigureFlask(std::size_t a_slot, RE::FormID a_blueprint) {
         }
         return;
     }
+    RE::FormID    oldRep     = 0;
     std::uint32_t hadCharges = 0;
     {
         std::scoped_lock lk(g_flasksLock);
+        oldRep               = g_flasks[a_slot].repPotion;
         hadCharges           = g_flasks[a_slot].charges;
-        g_flasks[a_slot].blueprint = a_blueprint;
-        g_flasks[a_slot].charges   = g_chargesPerFlask;
+        g_flasks[a_slot]     = { a_blueprint, rep, g_chargesPerFlask };
     }
+
+    // Swap the physical flask item: a permanent count-1 potion the player can
+    // favorite / put on Wheeler. Only touch inventory when the form changes.
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (player && rep != oldRep) {
+        if (oldRep) {
+            if (auto* oldForm = RE::TESForm::LookupByID<RE::TESBoundObject>(oldRep)) {
+                player->RemoveItem(oldForm, 999, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+            }
+        }
+        auto* newForm = RE::TESForm::LookupByID<RE::TESBoundObject>(rep);
+        if (newForm && !PlayerHasItem(player, newForm)) {
+            player->AddObjectToContainer(newForm, nullptr, 1, nullptr);
+        }
+    }
+
     const char* bpName = nullptr;
     if (auto* mgef = RE::TESForm::LookupByID<RE::EffectSetting>(a_blueprint)) {
         bpName = mgef->GetName();
     }
-    spdlog::info("[flask] slot {} <- blueprint '{}' ({} charges); spent {} Base (purged {} old); "
-                 "pouch B={}",
-                 a_slot, bpName ? bpName : "?", g_chargesPerFlask, cost, hadCharges, g_pouch.base);
+    spdlog::info("[flask] slot {} <- blueprint '{}' rep={:08X} ({} charges); spent {} Base (purged "
+                 "{} old); pouch B={}",
+                 a_slot, bpName ? bpName : "?", rep, g_chargesPerFlask, cost, hadCharges,
+                 g_pouch.base);
     if (g_notify) {
         RE::DebugNotification(
             std::format("Flask {} set: {}", a_slot + 1, bpName ? bpName : "effect").c_str());
     }
+}
+
+// On load, make sure each configured slot's flask item is actually in the
+// player's inventory (the item persists in the save, but re-grant defensively —
+// e.g. a mod removed it, or a pre-P1d save).
+void SyncFlaskItems() {
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) {
+        return;
+    }
+    std::scoped_lock lk(g_flasksLock);
+    for (std::uint32_t i = 0; i < g_flaskCount; ++i) {
+        if (!g_flasks[i].repPotion) {
+            continue;
+        }
+        if (auto* form = RE::TESForm::LookupByID<RE::TESBoundObject>(g_flasks[i].repPotion)) {
+            if (!PlayerHasItem(player, form)) {
+                player->AddObjectToContainer(form, nullptr, 1, nullptr);
+            }
+        }
+    }
+}
+
+// ── Consume intercept (P1d): the flask is a PERMANENT item — it must never be
+// removed (so it stays favorited / on Wheeler). Hooking Actor::DrinkPotion
+// (the funnel all drink paths reach, incl. potion mods) lets us apply the
+// payload and decrement a native charge WITHOUT the vanilla removal. Player-
+// only: we hook the PlayerCharacter vtable.
+struct DrinkPotionHook {
+    static bool thunk(RE::Actor* a_this, RE::AlchemyItem* a_potion, RE::ExtraDataList* a_extra) {
+        if (a_this && a_this->IsPlayerRef() && a_potion) {
+            const int slot = FindFlaskSlot(a_potion->GetFormID());
+            if (slot >= 0) {
+                int remaining = -1;
+                {
+                    std::scoped_lock lk(g_flasksLock);
+                    if (g_flasks[slot].charges > 0) {
+                        g_flasks[slot].charges--;
+                        remaining = static_cast<int>(g_flasks[slot].charges);
+                    }
+                }
+                if (remaining >= 0) {
+                    if (auto* caster =
+                            a_this->GetMagicCaster(RE::MagicSystem::CastingSource::kInstant)) {
+                        caster->CastSpellImmediate(a_potion, false, a_this, 1.0f, false, 0.0f,
+                                                   a_this);
+                    }
+                    spdlog::info("[drink] flask slot {} drunk; {} charge(s) left", slot, remaining);
+                } else {
+                    spdlog::info("[drink] flask slot {} is dry", slot);
+                    if (g_notify) {
+                        RE::DebugNotification("That flask is dry.");
+                    }
+                }
+                return true;  // handled — item is never consumed (permanent flask)
+            }
+        }
+        return func(a_this, a_potion, a_extra);
+    }
+    static inline REL::Relocation<decltype(thunk)> func;
+};
+
+void InstallDrinkHook() {
+    REL::Relocation<std::uintptr_t> vtbl{ RE::PlayerCharacter::VTABLE[0] };
+    DrinkPotionHook::func = vtbl.write_vfunc(0x10F, DrinkPotionHook::thunk);
+    spdlog::info("[drink] DrinkPotion vfunc hook installed (PlayerCharacter idx 0x10F)");
 }
 
 void SetupLog() {
@@ -397,6 +499,20 @@ void ReadConfig() {
         }
     }
     spdlog::info("[config] bNotify={} iOpenHotkey=0x{:X}", g_notify, g_openHotkey);
+}
+
+// Which flask slot (if any) uses this form as its physical item. -1 = none.
+int FindFlaskSlot(RE::FormID a_form) {
+    if (!a_form) {
+        return -1;
+    }
+    std::scoped_lock lk(g_flasksLock);
+    for (std::uint32_t i = 0; i < g_flaskCount; ++i) {
+        if (g_flasks[i].repPotion == a_form) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
 }
 
 // ── The gathering sink: the SOLE essence-credit point. Anything an ingredient
@@ -462,18 +578,32 @@ public:
             if (alch->IsFood()) {
                 return RE::BSEventNotifyControl::kContinue;
             }
+            // A flask being (re)granted is a real potion form landing in the
+            // player's bags — do NOT analyze/destroy it. (Found copies of that
+            // same form also skip conversion; a rare, harmless edge.)
+            if (FindFlaskSlot(a_event->baseObj) >= 0) {
+                return RE::BSEventNotifyControl::kContinue;
+            }
+            // Primary effect → blueprint key, but only if BENEFICIAL: hostile/
+            // detrimental effects (Fear, Ravage, Weakness…) are the coating
+            // path (P2), never drinkable-flask blueprints.
             RE::FormID  bpKey   = 0;
             const char* bpCName = nullptr;
             if (!alch->effects.empty() && alch->effects[0] && alch->effects[0]->baseEffect) {
-                bpKey   = alch->effects[0]->baseEffect->GetFormID();
-                bpCName = alch->effects[0]->baseEffect->GetName();
+                auto* mgef = alch->effects[0]->baseEffect;
+                if (!mgef->IsHostile() && !mgef->IsDetrimental()) {
+                    bpKey   = mgef->GetFormID();
+                    bpCName = mgef->GetName();
+                }
             }
             const int           value   = alch->GetGoldValue();
+            const RE::FormID    potForm = alch->GetFormID();
             const std::uint32_t total   = YieldFor(value, Tier::Base) * static_cast<std::uint32_t>(count);
             const char*         pcName  = alch->GetName();
             const std::string   potName(pcName ? pcName : "potion");
             const std::string   bpName(bpCName ? bpCName : "");
-            SKSE::GetTaskInterface()->AddTask([alch, count, bpKey, total, potName, bpName]() {
+            SKSE::GetTaskInterface()->AddTask([alch, count, bpKey, potForm, value, total, potName,
+                                               bpName]() {
                 auto* player = RE::PlayerCharacter::GetSingleton();
                 if (!player) {
                     return;
@@ -482,13 +612,18 @@ public:
                 bool learned = false;
                 if (bpKey) {
                     std::scoped_lock lk(g_blueprintsLock);
-                    learned = g_blueprints.insert(bpKey).second;
+                    auto&            bp = g_blueprints[bpKey];  // default-inserts if new
+                    learned = (bp.repPotion == 0);
+                    if (learned || static_cast<std::uint32_t>(value) > bp.repValue) {
+                        bp.repPotion = potForm;  // keep the strongest variant as the flask
+                        bp.repValue  = static_cast<std::uint32_t>(std::max(0, value));
+                    }
                 }
                 CreditPouch(Tier::Base, total);
                 spdlog::info("[discover] '{}' analyzed -> blueprint '{}' ({}); +{} Base essence; "
                              "pouch B={} C={} A={}",
                              potName, bpName.empty() ? "?" : bpName,
-                             bpKey ? (learned ? "NEW" : "known") : "no-effect", total,
+                             bpKey ? (learned ? "NEW" : "known") : "not-beneficial", total,
                              g_pouch.base, g_pouch.catalyst, g_pouch.apex);
                 if (g_notify) {
                     if (learned && !bpName.empty()) {
@@ -744,7 +879,7 @@ namespace menuhook {
                     ImGui::TextDisabled("Select a flask above first.");
                 }
                 ImGui::BeginChild("blueprints", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 2.2f));
-                for (const RE::FormID id : g_blueprints) {
+                for (const auto& [id, bp] : g_blueprints) {
                     auto*               m    = RE::TESForm::LookupByID<RE::EffectSetting>(id);
                     const char*         n    = m ? m->GetName() : nullptr;
                     const std::uint32_t cost = EffectCostPerCharge(id) * g_chargesPerFlask;
@@ -1047,24 +1182,27 @@ void SaveCallback(SKSE::SerializationInterface* a_intfc) {
     a_intfc->WriteRecordData(g_pouch.apex);
     spdlog::info("[save] pouch B={} C={} A={}", g_pouch.base, g_pouch.catalyst, g_pouch.apex);
 
-    if (a_intfc->OpenRecord(kRecBlueprints, kSerVersion)) {
+    if (a_intfc->OpenRecord(kRecBlueprints, kSerVersion)) {  // v2: MGEF + repPotion + repValue
         std::scoped_lock lk(g_blueprintsLock);
         const std::uint32_t n = static_cast<std::uint32_t>(g_blueprints.size());
         a_intfc->WriteRecordData(n);
-        for (const RE::FormID id : g_blueprints) {
-            a_intfc->WriteRecordData(id);
+        for (const auto& [mgef, bp] : g_blueprints) {
+            a_intfc->WriteRecordData(mgef);
+            a_intfc->WriteRecordData(bp.repPotion);
+            a_intfc->WriteRecordData(bp.repValue);
         }
         spdlog::info("[save] {} blueprint(s)", n);
     } else {
         spdlog::error("[save] OpenRecord('BLPT') failed");
     }
 
-    if (a_intfc->OpenRecord(kRecFlasks, kSerVersion)) {
+    if (a_intfc->OpenRecord(kRecFlasks, kSerVersion)) {  // v2: adds repPotion per slot
         std::scoped_lock lk(g_flasksLock);
         a_intfc->WriteRecordData(g_flaskCount);
         a_intfc->WriteRecordData(g_chargesPerFlask);
         for (const auto& f : g_flasks) {  // always all kMaxFlaskSlots slots
             a_intfc->WriteRecordData(f.blueprint);
+            a_intfc->WriteRecordData(f.repPotion);
             a_intfc->WriteRecordData(f.charges);
         }
         spdlog::info("[save] flasks: {} slot(s), {} charge cap", g_flaskCount, g_chargesPerFlask);
@@ -1094,11 +1232,21 @@ void LoadCallback(SKSE::SerializationInterface* a_intfc) {
             a_intfc->ReadRecordData(n);
             std::scoped_lock lk(g_blueprintsLock);
             for (std::uint32_t i = 0; i < n; ++i) {
-                RE::FormID id = 0, resolved = 0;
-                a_intfc->ReadRecordData(id);
+                RE::FormID mgef = 0, rep = 0, mRes = 0, rRes = 0;
+                std::uint32_t repValue = 0;
+                a_intfc->ReadRecordData(mgef);
+                if (version >= 2) {  // v2: rep potion + value; v1 had MGEF only
+                    a_intfc->ReadRecordData(rep);
+                    a_intfc->ReadRecordData(repValue);
+                }
                 // Remap across load-order changes; drop forms whose plugin is gone.
-                if (a_intfc->ResolveFormID(id, resolved) && resolved) {
-                    g_blueprints.insert(resolved);
+                if (a_intfc->ResolveFormID(mgef, mRes) && mRes) {
+                    Blueprint bp{};
+                    if (rep && a_intfc->ResolveFormID(rep, rRes)) {
+                        bp.repPotion = rRes;
+                        bp.repValue  = repValue;
+                    }
+                    g_blueprints[mRes] = bp;
                 }
             }
         } else if (type == kRecFlasks) {
@@ -1106,10 +1254,14 @@ void LoadCallback(SKSE::SerializationInterface* a_intfc) {
             a_intfc->ReadRecordData(g_flaskCount);
             a_intfc->ReadRecordData(g_chargesPerFlask);
             for (auto& f : g_flasks) {
-                RE::FormID id = 0, resolved = 0;
-                a_intfc->ReadRecordData(id);
+                RE::FormID bpId = 0, repId = 0, bpRes = 0, repRes = 0;
+                a_intfc->ReadRecordData(bpId);
+                if (version >= 2) {  // v2: rep potion form per slot
+                    a_intfc->ReadRecordData(repId);
+                }
                 a_intfc->ReadRecordData(f.charges);
-                f.blueprint = (id && a_intfc->ResolveFormID(id, resolved)) ? resolved : 0;
+                f.blueprint = (bpId && a_intfc->ResolveFormID(bpId, bpRes)) ? bpRes : 0;
+                f.repPotion = (repId && a_intfc->ResolveFormID(repId, repRes)) ? repRes : 0;
             }
         }
     }
@@ -1151,6 +1303,7 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
         }
         spdlog::info("[power] Open Field Kit spell: {}", g_fieldKitSpell ? "found" : "MISSING (is MAO.esp enabled?)");
         BuildEffectCostTable();
+        InstallDrinkHook();
         const auto gameVersion = REL::Module::get().version();
         if (auto* console = RE::ConsoleLog::GetSingleton()) {
             console->Print("MAO native v%s loaded", kPluginVersion);
@@ -1163,7 +1316,10 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
     case SKSE::MessagingInterface::kNewGame:
         // Player exists here (after LoadCallback/Revert). Grant the power if
         // absent; retries every load, so a mid-save ESP enable still lands.
-        SKSE::GetTaskInterface()->AddTask([]() { GrantFieldKitPower(); });
+        SKSE::GetTaskInterface()->AddTask([]() {
+            GrantFieldKitPower();
+            SyncFlaskItems();
+        });
         break;
     default:
         break;
