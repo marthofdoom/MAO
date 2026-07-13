@@ -1599,6 +1599,12 @@ public:
                                       nullptr);
                     }
                     OpenFieldKit(true);
+                    // Stand the player out of the alchemy furniture immediately.
+                    // Left seated, the engine sees "occupied alchemy table + no
+                    // crafting menu" and re-activates the CraftingMenu every few
+                    // seconds; each ~1-frame re-open flashes the vanilla menu
+                    // chrome through our overlay. Ejecting breaks that loop.
+                    player->NotifyAnimationGraph("IdleForceDefaultState");
                 }
             });
         }
