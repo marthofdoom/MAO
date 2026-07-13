@@ -68,13 +68,13 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.8.0 (P1d-3 refill)";
+constexpr auto kPluginVersion = "0.8.1 (P1d: discovered variants)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
 constexpr std::uint32_t kRecBlueprints = 'BLPT';
 constexpr std::uint32_t kRecFlasks     = 'FLSK';
-constexpr std::uint32_t kSerVersion    = 2;  // v2 (P1d): BLPT stores rep potion; FLSK adds repPotion
+constexpr std::uint32_t kSerVersion    = 3;  // v3: BLPT stores discovered potion FORMS (variants)
 constexpr RE::FormID    kPlayerID      = 0x14;
 
 // MAO.esp forms (P1a). FROZEN — must match MAO_GenerateESP.py. ESL-flagged
@@ -95,20 +95,14 @@ struct Pouch {
 };
 Pouch g_pouch;
 
-// ── Known blueprints (P1b/P1d): effect profiles discovered by analyzing found
-// potions. Keyed by the potion's primary MagicEffect FormID (all strength
-// variants collapse into one blueprint — the design's "family by effect").
-// P1d stores the strongest discovered potion of that effect as the
-// "representative": that real potion form IS the flask item (it already has
-// the right effects and is recognized by potion mods), and the flask casts it
-// on drink. Only BENEFICIAL effects become blueprints; hostile/detrimental
-// ones are the coating path (P2). Persisted in 'BLPT'. Mutex-guarded.
-struct Blueprint {
-    RE::FormID    repPotion = 0;  // strongest discovered potion carrying this effect
-    std::uint32_t repValue  = 0;  // its gold value (to keep the strongest)
-};
-std::unordered_map<RE::FormID, Blueprint> g_blueprints;  // MGEF -> blueprint
-std::mutex                                g_blueprintsLock;
+// ── Discovered potions (P1d): the SPECIFIC potion forms the player has
+// analyzed (found or bought). Each is a usable variant — a Superior potion is
+// only available once you've actually found/bought one, not derived. A flask
+// is configured with one discovered variant, which becomes its permanent item
+// and what it casts on drink. Beneficial variants are drinkable flasks;
+// detrimental ones are coatings (P2). Persisted in 'BLPT'. Mutex-guarded.
+std::unordered_set<RE::FormID> g_discovered;  // AlchemyItem FormIDs
+std::mutex                     g_discoveredLock;
 
 // ── Flasks (P1c). Permanent kit slots, each holding a blueprint payload +
 // charges. Native slots for now (physical drinkable item forms + drinking
@@ -117,7 +111,7 @@ std::mutex                                g_blueprintsLock;
 constexpr std::size_t kMaxFlaskSlots = 6;  // design ceiling (6 flasks / 9 charges)
 
 struct Flask {
-    RE::FormID    blueprint = 0;  // 0 = empty (MGEF key into g_blueprints)
+    RE::FormID    blueprint = 0;  // 0 = empty (MGEF key into g_discovered)
     RE::FormID    repPotion = 0;  // the physical flask item (rep potion form); 0 = none
     std::uint32_t charges   = 0;
 };
@@ -400,44 +394,45 @@ bool PlayerHasItem(RE::TESObjectREFR* a_ref, RE::TESBoundObject* a_obj) {
     return false;
 }
 
-void ConfigureFlask(std::size_t a_slot, RE::FormID a_blueprint) {
-    if (a_slot >= g_flaskCount || !a_blueprint) {
+// Configure a flask slot with a specific DISCOVERED potion variant (a_potion).
+void ConfigureFlask(std::size_t a_slot, RE::FormID a_potion) {
+    if (a_slot >= g_flaskCount || !a_potion) {
         return;
     }
     {
-        std::scoped_lock lk(g_blueprintsLock);
-        if (!g_blueprints.contains(a_blueprint)) {
-            return;  // must be a discovered blueprint
+        std::scoped_lock lk(g_discoveredLock);
+        if (!g_discovered.contains(a_potion)) {
+            return;  // must be a variant the player has actually found/bought
         }
     }
-    // Coatings (detrimental effects) can't be prepared into a drink-flask yet:
-    // their rep is a poison, which is USED via the weapon-application path (not
-    // DrinkPotion), so we can't intercept it — vanilla would just consume the
-    // flask. The coating mechanic (apply to weapon, keep the item) is P2.
-    if (auto* eff = RE::TESForm::LookupByID<RE::EffectSetting>(a_blueprint);
-        eff && (eff->IsHostile() || eff->IsDetrimental())) {
+    // Resolve the variant's primary effect (drives cost, coating, refill).
+    auto* alch = RE::TESForm::LookupByID<RE::AlchemyItem>(a_potion);
+    if (!alch || alch->effects.empty() || !alch->effects[0] || !alch->effects[0]->baseEffect) {
+        return;
+    }
+    const RE::FormID a_blueprint = alch->effects[0]->baseEffect->GetFormID();
+    const RE::FormID rep         = a_potion;  // the flask IS this exact variant
+
+    // Coatings (detrimental) can't be prepared into a drink-flask yet: a poison
+    // is USED via the weapon-application path (not DrinkPotion), so vanilla
+    // would just consume the flask. The coating mechanic is P2.
+    if (alch->effects[0]->baseEffect->IsHostile() || alch->effects[0]->baseEffect->IsDetrimental()) {
         spdlog::info("[flask] slot {} DENIED — coating (weapon application is P2)", a_slot);
         if (g_notify) {
             RE::DebugNotification("Coatings can't be prepared yet (coming with the Vanguard perk).");
         }
         return;
     }
-    const RE::FormID rep = RepPotionFor(a_blueprint);  // load-order potion for it
-    if (!rep) {
-        spdlog::info("[flask] slot {} DENIED — no potion in the load order embodies this effect",
-                     a_slot);
-        return;
-    }
-    // One blueprint per slot — keeps the rep form ↔ slot mapping 1:1 so the
-    // drink hook and the container guard are unambiguous, and reconfiguring one
-    // slot can't strip another slot's identical flask item.
+    // One exact variant per slot — keeps the rep form ↔ slot mapping 1:1 (the
+    // drink hook + container guard). Different variants of the same effect in
+    // different slots are fine.
     {
         std::scoped_lock lk(g_flasksLock);
         for (std::uint32_t i = 0; i < g_flaskCount; ++i) {
-            if (i != a_slot && g_flasks[i].blueprint == a_blueprint) {
-                spdlog::info("[flask] slot {} DENIED — blueprint already in flask {}", a_slot, i + 1);
+            if (i != a_slot && g_flasks[i].repPotion == rep) {
+                spdlog::info("[flask] slot {} DENIED — variant already in flask {}", a_slot, i + 1);
                 if (g_notify) {
-                    RE::DebugNotification("That blueprint is already set in another flask.");
+                    RE::DebugNotification("That variant is already in another flask.");
                 }
                 return;
             }
@@ -478,17 +473,13 @@ void ConfigureFlask(std::size_t a_slot, RE::FormID a_blueprint) {
         }
     }
 
-    const char* bpName = nullptr;
-    if (auto* mgef = RE::TESForm::LookupByID<RE::EffectSetting>(a_blueprint)) {
-        bpName = mgef->GetName();
-    }
-    spdlog::info("[flask] slot {} <- blueprint '{}' rep={:08X} ({} charges); spent {} Base (purged "
-                 "{} old); pouch B={}",
-                 a_slot, bpName ? bpName : "?", rep, g_chargesPerFlask, cost, hadCharges,
-                 g_pouch.base);
+    const char* vName = alch->GetName();
+    spdlog::info("[flask] slot {} <- '{}' ({:08X}, {} charges); spent {} Base (purged {} old); "
+                 "pouch B={}",
+                 a_slot, vName ? vName : "?", rep, g_chargesPerFlask, cost, hadCharges, g_pouch.base);
     if (g_notify) {
         RE::DebugNotification(
-            std::format("Flask {} set: {}", a_slot + 1, bpName ? bpName : "effect").c_str());
+            std::format("Flask {} set: {}", a_slot + 1, vName ? vName : "potion").c_str());
     }
 }
 
@@ -832,7 +823,7 @@ public:
             const char*         pcName  = alch->GetName();
             const std::string   potName(pcName ? pcName : "potion");
             const std::string   bpName(bpCName ? bpCName : "");
-            SKSE::GetTaskInterface()->AddTask([alch, count, bpKey, potForm, value, total, potName,
+            SKSE::GetTaskInterface()->AddTask([alch, count, bpKey, potForm, total, potName,
                                                bpName]() {
                 auto* player = RE::PlayerCharacter::GetSingleton();
                 if (!player) {
@@ -840,24 +831,19 @@ public:
                 }
                 player->RemoveItem(alch, count, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
                 bool learned = false;
-                if (bpKey) {
-                    std::scoped_lock lk(g_blueprintsLock);
-                    auto&            bp = g_blueprints[bpKey];  // default-inserts if new
-                    learned = (bp.repPotion == 0);
-                    if (learned || static_cast<std::uint32_t>(value) > bp.repValue) {
-                        bp.repPotion = potForm;  // keep the strongest variant as the flask
-                        bp.repValue  = static_cast<std::uint32_t>(std::max(0, value));
-                    }
+                if (bpKey) {  // has a usable primary effect
+                    std::scoped_lock lk(g_discoveredLock);
+                    learned = g_discovered.insert(potForm).second;  // this SPECIFIC variant
                 }
                 CreditPouch(Tier::Base, total);
-                spdlog::info("[discover] '{}' analyzed -> blueprint '{}' ({}); +{} Base essence; "
+                spdlog::info("[discover] '{}' analyzed ({}); effect '{}'; +{} Base essence; "
                              "pouch B={} C={} A={}",
-                             potName, bpName.empty() ? "?" : bpName,
-                             bpKey ? (learned ? "NEW" : "known") : "not-beneficial", total,
-                             g_pouch.base, g_pouch.catalyst, g_pouch.apex);
+                             potName, bpKey ? (learned ? "NEW variant" : "known") : "no-effect",
+                             bpName.empty() ? "?" : bpName, total, g_pouch.base, g_pouch.catalyst,
+                             g_pouch.apex);
                 if (g_notify) {
-                    if (learned && !bpName.empty()) {
-                        RE::DebugNotification(std::format("Blueprint learned: {}", bpName).c_str());
+                    if (learned) {
+                        RE::DebugNotification(std::format("Discovered: {}", potName).c_str());
                     }
                     RE::DebugNotification(std::format("+{} Base Essence ({})", total, potName).c_str());
                 }
@@ -1070,7 +1056,7 @@ namespace menuhook {
         ImGui::Spacing();
 
         // ── Flasks ──
-        ImGui::TextDisabled("FLASKS  —  select one, then a blueprint below");
+        ImGui::TextDisabled("FLASKS  —  select one, then a variant below");
         ImGui::Separator();
         {
             std::scoped_lock lk(g_flasksLock);
@@ -1078,18 +1064,18 @@ namespace menuhook {
                 g_selectedSlot = -1;
             }
             for (int i = 0; i < static_cast<int>(g_flaskCount); ++i) {
-                const auto& f      = g_flasks[i];
-                const char* bpName = "(empty)";
-                if (f.blueprint) {
-                    if (auto* m = RE::TESForm::LookupByID<RE::EffectSetting>(f.blueprint)) {
-                        if (m->GetName() && *m->GetName()) {
-                            bpName = m->GetName();
+                const auto& f    = g_flasks[i];
+                const char* name = "(empty)";
+                if (f.repPotion) {
+                    if (auto* p = RE::TESForm::LookupByID<RE::AlchemyItem>(f.repPotion)) {
+                        if (p->GetName() && *p->GetName()) {
+                            name = p->GetName();
                         }
                     }
                 }
                 char label[160];
                 std::snprintf(label, sizeof(label), "Flask %d:  %s    [%u/%u]##flask%d", i + 1,
-                              bpName, f.charges, g_chargesPerFlask, i);
+                              name, f.charges, g_chargesPerFlask, i);
                 if (ImGui::Selectable(label, g_selectedSlot == i)) {
                     g_selectedSlot = i;
                 }
@@ -1097,35 +1083,40 @@ namespace menuhook {
         }
         ImGui::Spacing();
 
-        // ── Blueprints (cost shown per effect, from the load-order economy) ──
-        ImGui::TextDisabled("BLUEPRINTS  —  cost fills all %u charges", g_chargesPerFlask);
+        // ── Discovered variants (the specific potions you've found/bought) ──
+        ImGui::TextDisabled("VARIANTS  —  cost fills all %u charges", g_chargesPerFlask);
         ImGui::Separator();
         {
-            std::scoped_lock lk(g_blueprintsLock);
-            if (g_blueprints.empty()) {
+            std::scoped_lock lk(g_discoveredLock);
+            if (g_discovered.empty()) {
                 ImGui::TextDisabled("None yet — pick up potions to analyze them.");
             } else {
                 if (g_selectedSlot < 0) {
                     ImGui::TextDisabled("Select a flask above first.");
                 }
-                ImGui::BeginChild("blueprints", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 2.2f));
-                for (const auto& [id, bp] : g_blueprints) {
-                    auto*               m    = RE::TESForm::LookupByID<RE::EffectSetting>(id);
-                    const char*         n    = m ? m->GetName() : nullptr;
-                    const bool          coat = m && (m->IsHostile() || m->IsDetrimental());
-                    const std::uint32_t cost = EffectCostPerCharge(id) * g_chargesPerFlask;
-                    char                label[208];
-                    std::snprintf(label, sizeof(label), "%-26s %s %u Base##bp%08X",
-                                  (n && *n) ? n : "(unknown)", coat ? "[coating]" : "         ", cost,
-                                  id);
-                    const bool enabled = g_selectedSlot >= 0 && g_pouch.base >= cost;
+                ImGui::BeginChild("variants", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 2.2f));
+                for (const RE::FormID pid : g_discovered) {
+                    auto* alch = RE::TESForm::LookupByID<RE::AlchemyItem>(pid);
+                    if (!alch || alch->effects.empty() || !alch->effects[0] ||
+                        !alch->effects[0]->baseEffect) {
+                        continue;
+                    }
+                    auto*               eff  = alch->effects[0]->baseEffect;
+                    const char*         pn   = alch->GetName();
+                    const bool          coat = eff->IsHostile() || eff->IsDetrimental();
+                    const std::uint32_t cost = EffectCostPerCharge(eff->GetFormID()) * g_chargesPerFlask;
+                    char                label[224];
+                    std::snprintf(label, sizeof(label), "%-30s %s %u Base##v%08X",
+                                  (pn && *pn) ? pn : "(unknown)", coat ? "[coating]" : "         ",
+                                  cost, pid);
+                    const bool enabled = g_selectedSlot >= 0 && !coat && g_pouch.base >= cost;
                     if (!enabled) {
                         ImGui::BeginDisabled();
                     }
                     if (ImGui::Selectable(label)) {
                         const std::size_t slot = static_cast<std::size_t>(g_selectedSlot);
-                        const RE::FormID  bp   = id;
-                        SKSE::GetTaskInterface()->AddTask([slot, bp]() { ConfigureFlask(slot, bp); });
+                        const RE::FormID  p    = pid;
+                        SKSE::GetTaskInterface()->AddTask([slot, p]() { ConfigureFlask(slot, p); });
                     }
                     if (!enabled) {
                         ImGui::EndDisabled();
@@ -1414,16 +1405,14 @@ void SaveCallback(SKSE::SerializationInterface* a_intfc) {
     a_intfc->WriteRecordData(g_pouch.apex);
     spdlog::info("[save] pouch B={} C={} A={}", g_pouch.base, g_pouch.catalyst, g_pouch.apex);
 
-    if (a_intfc->OpenRecord(kRecBlueprints, kSerVersion)) {  // v2: MGEF + repPotion + repValue
-        std::scoped_lock lk(g_blueprintsLock);
-        const std::uint32_t n = static_cast<std::uint32_t>(g_blueprints.size());
+    if (a_intfc->OpenRecord(kRecBlueprints, kSerVersion)) {  // v3: discovered potion forms
+        std::scoped_lock lk(g_discoveredLock);
+        const std::uint32_t n = static_cast<std::uint32_t>(g_discovered.size());
         a_intfc->WriteRecordData(n);
-        for (const auto& [mgef, bp] : g_blueprints) {
-            a_intfc->WriteRecordData(mgef);
-            a_intfc->WriteRecordData(bp.repPotion);
-            a_intfc->WriteRecordData(bp.repValue);
+        for (const RE::FormID pid : g_discovered) {
+            a_intfc->WriteRecordData(pid);
         }
-        spdlog::info("[save] {} blueprint(s)", n);
+        spdlog::info("[save] {} discovered variant(s)", n);
     } else {
         spdlog::error("[save] OpenRecord('BLPT') failed");
     }
@@ -1446,8 +1435,8 @@ void SaveCallback(SKSE::SerializationInterface* a_intfc) {
 void LoadCallback(SKSE::SerializationInterface* a_intfc) {
     g_pouch = Pouch{};
     {
-        std::scoped_lock lk(g_blueprintsLock);
-        g_blueprints.clear();
+        std::scoped_lock lk(g_discoveredLock);
+        g_discovered.clear();
     }
     std::uint32_t type = 0, version = 0, length = 0;
     while (a_intfc->GetNextRecordInfo(type, version, length)) {
@@ -1462,23 +1451,31 @@ void LoadCallback(SKSE::SerializationInterface* a_intfc) {
         } else if (type == kRecBlueprints) {
             std::uint32_t n = 0;
             a_intfc->ReadRecordData(n);
-            std::scoped_lock lk(g_blueprintsLock);
+            std::scoped_lock lk(g_discoveredLock);
             for (std::uint32_t i = 0; i < n; ++i) {
-                RE::FormID mgef = 0, rep = 0, mRes = 0, rRes = 0;
-                std::uint32_t repValue = 0;
-                a_intfc->ReadRecordData(mgef);
-                if (version >= 2) {  // v2: rep potion + value; v1 had MGEF only
-                    a_intfc->ReadRecordData(rep);
-                    a_intfc->ReadRecordData(repValue);
-                }
-                // Remap across load-order changes; drop forms whose plugin is gone.
-                if (a_intfc->ResolveFormID(mgef, mRes) && mRes) {
-                    Blueprint bp{};
-                    if (rep && a_intfc->ResolveFormID(rep, rRes)) {
-                        bp.repPotion = rRes;
-                        bp.repValue  = repValue;
+                if (version >= 3) {  // v3: a discovered potion form
+                    RE::FormID pid = 0, res = 0;
+                    a_intfc->ReadRecordData(pid);
+                    if (pid && a_intfc->ResolveFormID(pid, res) && res) {
+                        g_discovered.insert(res);
                     }
-                    g_blueprints[mRes] = bp;
+                } else {  // v1/v2 were effect-keyed — migrate to a variant
+                    RE::FormID    mgef = 0, rep = 0, mRes = 0, rRes = 0;
+                    std::uint32_t repValue = 0;
+                    a_intfc->ReadRecordData(mgef);
+                    if (version >= 2) {
+                        a_intfc->ReadRecordData(rep);
+                        a_intfc->ReadRecordData(repValue);
+                    }
+                    // v2 kept the found rep potion; v1 only the effect — fall
+                    // back to the load-order rep so the known effect stays usable.
+                    if (rep && a_intfc->ResolveFormID(rep, rRes) && rRes) {
+                        g_discovered.insert(rRes);
+                    } else if (a_intfc->ResolveFormID(mgef, mRes) && mRes) {
+                        if (RE::FormID r = RepPotionFor(mRes)) {
+                            g_discovered.insert(r);
+                        }
+                    }
                 }
             }
         } else if (type == kRecFlasks) {
@@ -1504,8 +1501,8 @@ void LoadCallback(SKSE::SerializationInterface* a_intfc) {
     }
     std::size_t bp = 0;
     {
-        std::scoped_lock lk(g_blueprintsLock);
-        bp = g_blueprints.size();
+        std::scoped_lock lk(g_discoveredLock);
+        bp = g_discovered.size();
     }
     spdlog::info("[load] pouch B={} C={} A={}; {} blueprint(s)", g_pouch.base, g_pouch.catalyst,
                  g_pouch.apex, bp);
@@ -1514,8 +1511,8 @@ void LoadCallback(SKSE::SerializationInterface* a_intfc) {
 void RevertCallback(SKSE::SerializationInterface*) {
     g_pouch = Pouch{};
     {
-        std::scoped_lock lk(g_blueprintsLock);
-        g_blueprints.clear();
+        std::scoped_lock lk(g_discoveredLock);
+        g_discovered.clear();
     }
     {
         std::scoped_lock lk(g_flasksLock);
