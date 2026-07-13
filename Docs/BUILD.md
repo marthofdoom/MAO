@@ -15,15 +15,19 @@ artifact — `gh run download` pulls it.
 
 | # | Build | Hook class | State | Gate |
 |---|-------|-----------|-------|------|
-| **M0** | Skeleton DLL — loads, logs version + runtime, zero hooks | none | ✅ code done | CI green + `MAO.log` shows the version line |
-| **M1** | Gathering loop — `TESContainerChanged` credit sink + `TESHarvested` tag sink, value-weighted essence, `'POCH'` co-save | event sinks | ✅ code done | Test matrix 1–14 (P0_PLAN) |
-| **M2** | Field Kit power → ImGui read-only essence viewer | render/present code hook | ⬜ todo | Test matrix 15–16 |
+| **M0** | Skeleton DLL — loads, logs version + runtime, zero hooks | none | ✅ **CI green** | CI green + `MAO.log` shows the version line |
+| **M1** | Gathering loop — `TESContainerChanged` credit sink + `TESHarvested` tag sink, value-weighted essence, `'POCH'` co-save | event sinks | ✅ **CI green** | Test matrix 1–14 (P0_PLAN) |
+| **M2** | Field Kit → ImGui read-only essence viewer | render/present + input code hooks | ✅ **CI green** | Test matrix 15–16 |
 
-M2 needs the first ESP: a minimal `MAO_GenerateESP.py` emitting the *Open Field
-Kit* power (`SPEL` + its `MGEF`), FormIDs frozen from the first commit. The DLL
-grants the power and a `TESSpellCastEvent` sink opens the menu. The render
-framework (D3D11 present thunk, ImGui init, input) is ported from MEO's
-`menuhook` namespace — plumbing copied, only the panel content is MAO's.
+**M2 opens via a hotkey, not the power (interim).** A castable lesser power
+needs a `SPEL` form from an ESP, and standing up `MAO_GenerateESP.py` is its
+own untested surface — so M2 is kept to the single render-hook risk and opens
+the viewer with `iOpenHotkey` (MAO.ini). DESIGN §3.3 still governs: the viewer
+becomes the flask UI opened by the lesser power in **P1**, when the ESP that
+grants the power exists for flasks/blueprints anyway. The render framework
+(D3D11 present thunk, ImGui init, input dispatch) is ported from MEO's
+`menuhook` namespace at its proven address-library IDs (77226 / 77246 / 68617);
+only the panel content is MAO's, and it's read-only (no mouse/font/skin code).
 
 ## Staged ahead — P1+
 
