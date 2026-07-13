@@ -29,18 +29,24 @@ grants the power exists for flasks/blueprints anyway. The render framework
 `menuhook` namespace at its proven address-library IDs (77226 / 77246 / 68617);
 only the panel content is MAO's, and it's read-only (no mouse/font/skin code).
 
-## Staged ahead — P1+
+## P1 — core (in progress). Full breakdown in `Docs/P1_PLAN.md`.
 
-These are scoped in DESIGN.md and will each decompose into their own M-series
-of one-hook builds when their phase begins. Listed so the runway is visible:
+| Build | What | State |
+|-------|------|-------|
+| **P1a** | ESP foundation (`MAO_GenerateESP.py`, Open Field Kit SPEL) | ✅ (power later retired) |
+| **P1b** | Potion → variant discovery (container sink `AlchemyItem` branch, `'BLPT'`) | ✅ |
+| **P1c** | Interactive flask config UI (mouse + gamepad nav) + MEO skins/fonts | ✅ |
+| **P1d** | Drinkable permanent flasks (`DrinkPotion` hook), discovered variants (must be found), drink sound, `'FLSK'` co-save, refill on `TESSleepStop` + timer, coatings deferred | ✅ Fable-reviewed, tag `v0.8.2-p1d` |
+| — | Alchemy-station takeover opener (`MenuOpenCloseEvent` sink) — replaces the power | ✅ v0.9.0 |
+| **P1e** | The 13 vanilla alchemy `PERK` records overridden in-place — flask slots 2→6, charges 2→9, essence efficiency (incl. refill-cost cut) | ⬜ next |
+| **P1f** | MCM (the INI surface grown into MCM Helper) | ⬜ |
 
-- **P1 — core.** Flask lifecycle (configure / drink / deplete / refill),
-  potion-pickup → blueprint interception (same container sink, `AlchemyItem`
-  branch), the blueprint catalog generated from the masters
-  (`MAO_GenerateESP.py` grows a catalog like MEO's), the 13-perk override
-  matrix, the automated refill pipeline (`TESSleepStop` + background timer),
-  and the full MCM option set (the INI surface seeded in M1 grows here). Flask
-  *configuration* is built onto the M2 viewer screen.
+Economy note: flask cost is computed natively from the load order (2×mean
+ingredient value × `fEssenceTax`); see the `essence-economy-tax` memory.
+
+## Staged ahead — P2+
+
+- **P1e/P1f** — see the P1 table above.
 - **P2 — coatings & polish.** Weapon-coating conversion (Vanguard Coating /
   Corrosive Retention), manual-drink handling, menu-skin styling.
 - **P3 — packaging & compat.** FOMOD with load-order-aware install (DESIGN

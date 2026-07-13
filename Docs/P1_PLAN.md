@@ -1,4 +1,13 @@
-# P1 Plan — Core (flasks, blueprints, the real power)
+# P1 Plan — Core (flasks, variants, the real system)
+
+> **Status (2026-07-13):** P1a–P1d complete and in-game tested (tag
+> `v0.8.2-p1d`), plus alchemy-station takeover as the opener (v0.9.0). The flask
+> loop is playable end-to-end. **Next: P1e** (perk override matrix), then
+> **P1f** (MCM). Two design shifts from the original plan below: the opener is
+> the **alchemy station**, not a power (DESIGN §3.3); and a flask embodies a
+> **specific discovered potion variant** (you must have found it), not one
+> derived representative.
+
 
 P0 proved the load-bearing native assumptions in-game (gathering on every path,
 double-credit guard, value-weighted essence, co-save, and the ImGui render

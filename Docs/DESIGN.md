@@ -109,21 +109,25 @@ Once a Flask hits 0 charges, it enters a dry state. Flasks automatically attempt
 
 ### 3.3 The Field Kit Interface (UI)
 
-The Field Kit is opened by a **lesser power** ("Open Field Kit"), granted to
-the player natively by the DLL — no crafting station, no menu takeover of a
-vanilla screen. This reuses the sibling MEO menu architecture wholesale; only
-the menu *content* differs:
+The Field Kit is opened by **taking over the alchemy station**: activating any
+alchemy station (bench type `kAlchemy` / `kAlchemyExperiment`) hides the vanilla
+crafting menu and opens the Field Kit instead. This reuses the sibling MEO menu
+architecture wholesale (MEO's proven enchanting-station takeover); only the menu
+*content* differs.
 
-* **Power → menu:** the DLL grants a `SpellItem` power and a `TESSpellCastEvent`
-  sink catches its cast, **toggling** the interface via the SKSE task interface
-  (identical to MEO's Gem Pouch power). Cast again, or press B / Esc, to close.
+* **Station → menu:** a `MenuOpenCloseEvent` sink catches the vanilla
+  `CraftingMenu` opening, checks the occupied furniture's bench type, dismisses
+  the vanilla menu (`UIMessageQueue` → `kHide`), and opens the Field Kit.
+  Closing (B / Esc) forces the player up out of the furniture. This also blocks
+  vanilla alchemy crafting — which the mod replaces anyway — closing the
+  craft→convert essence exploit.
 
-> **Opener note (2026-07-13, P1a in-game):** the power is the opener, as
-> designed. Optional keyboard/gamepad button fallbacks exist
-> (`iOpenHotkey` / `iOpenButtonGamepad`) but the **gamepad button is disabled by
-> default** — on the Steam Deck the View button is the same physical button as
-> Select, so binding an opener there collides. Don't bind the pad opener to
-> View (0x20).
+> **Opener history:** P1a shipped a lesser-power opener; it was **retired**
+> (2026-07-13) in favour of station takeover (Marth: "instead of the power, not
+> in addition"). The `SPEL` form stays frozen but dormant in the ESP and is
+> removed from saves that got it. Optional keyboard/gamepad button fallbacks
+> remain (`iOpenHotkey` / `iOpenButtonGamepad`); the **gamepad button is
+> disabled by default** (on the Steam Deck the View button doubles as Select).
 * **Rendering:** a self-contained **ImGui** menu drawn through a D3D11
   DXGI-present hook with its own input routing — the exact render/input
   framework MEO already ships. MAO re-skins the layout; the plumbing (device
