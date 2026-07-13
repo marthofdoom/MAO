@@ -68,7 +68,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.13.1 (perk ladder + review fixes)";
+constexpr auto kPluginVersion = "0.13.2 (debug perk toggles)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -136,13 +136,33 @@ std::mutex                        g_flasksLock;
 // chained rank owned is the effective rank; no rank-field reading needed. Under
 // a perk overhaul (Requiem) these FormIDs may not resolve; capacity then holds
 // at the unperked baseline until the FOMOD retargets them (P2).
-struct AlchemyPerks {
-    RE::BGSPerk* alchemist[5] = {};       // BE127, C07CA/CB/CC/CD  (ranks 1..5)
-    RE::BGSPerk* purity       = nullptr;  // 0005821D — Master: +2 flask / +4 charge
-    RE::BGSPerk* benefactor   = nullptr;  // 00058216 — Apex essence cost -35%
-    RE::BGSPerk* experimenter = nullptr;  // 00058218 — gather yield +10%
+// The alchemy perks MAO reads, table-driven so the debug menu can enumerate and
+// toggle each individually. Indices are fixed (capacity logic references them);
+// PK_ALCH1..5 are the vanilla Alchemist chain (separate records, ranks 1..5).
+enum PerkIdx : int {
+    PK_ALCH1, PK_ALCH2, PK_ALCH3, PK_ALCH4, PK_ALCH5,
+    PK_PURITY, PK_BENEFACTOR, PK_EXPERIMENTER,
+    PK_PHYSICIAN, PK_POISONER, PK_GREENTHUMB, PK_SNAKEBLOOD, PK_CONCPOISON,
+    PK_COUNT
 };
-AlchemyPerks      g_perks;
+struct PerkDef { const char* label; RE::FormID id; };
+constexpr PerkDef kPerkDefs[PK_COUNT] = {
+    { "Alchemist I  (+1 charge)",        0xBE127 },
+    { "Alchemist II  (+1 flask)",        0xC07CA },
+    { "Alchemist III  (refill eff, P2)", 0xC07CB },
+    { "Alchemist IV  (+1 flask +2 chg)", 0xC07CC },
+    { "Alchemist V  (rest refill, P2)",  0xC07CD },
+    { "Purity  (+2 flask +4 charge)",    0x5821D },
+    { "Benefactor  (Apex -35%)",         0x58216 },
+    { "Experimenter  (+10% gather)",     0x58218 },
+    { "Physician  (P2)",                 0x58215 },
+    { "Poisoner  (P2)",                  0x58217 },
+    { "Green Thumb  (P2)",               0x105F2E },
+    { "Snakeblood  (P2)",                0x105F2C },
+    { "Concentrated Poison  (P2)",       0x105F2F },
+};
+RE::BGSPerk*               g_perkForm[PK_COUNT] = {};
+std::atomic<std::uint32_t> g_perkMask{ 0 };  // bit i = player holds kPerkDefs[i] (debug menu)
 bool              g_capacityPerksResolved = false;  // any Alchemist rank or Purity found?
 std::atomic<int>  g_alchemistRank{ 0 };
 std::atomic<bool> g_hasPurity{ false };
@@ -151,9 +171,9 @@ std::atomic<bool> g_hasExperimenter{ false };  // read in the gather credit (tas
 
 int AlchemistRank(RE::PlayerCharacter* a_pc) {
     int r = 0;
-    for (int i = 0; i < 5; ++i) {
-        if (g_perks.alchemist[i] && a_pc->HasPerk(g_perks.alchemist[i])) {
-            r = i + 1;  // highest chained rank owned
+    for (int i = PK_ALCH1; i <= PK_ALCH5; ++i) {
+        if (g_perkForm[i] && a_pc->HasPerk(g_perkForm[i])) {
+            r = i - PK_ALCH1 + 1;  // highest chained rank owned
         }
     }
     return r;
@@ -165,9 +185,16 @@ void RecomputeCapacity(const char* a_why) {
     if (!pc) {
         return;
     }
-    // Efficiency flags are independent of the capacity perks — always refresh.
-    g_hasBenefactor.store(g_perks.benefactor && pc->HasPerk(g_perks.benefactor));
-    g_hasExperimenter.store(g_perks.experimenter && pc->HasPerk(g_perks.experimenter));
+    // Refresh the debug-menu mask + efficiency flags — independent of capacity.
+    std::uint32_t mask = 0;
+    for (int i = 0; i < PK_COUNT; ++i) {
+        if (g_perkForm[i] && pc->HasPerk(g_perkForm[i])) {
+            mask |= (1u << i);
+        }
+    }
+    g_perkMask.store(mask);
+    g_hasBenefactor.store((mask & (1u << PK_BENEFACTOR)) != 0);
+    g_hasExperimenter.store((mask & (1u << PK_EXPERIMENTER)) != 0);
     // If NONE of the vanilla capacity perks resolved (Requiem / missing masters),
     // we can't infer real capacity — hold the co-saved counts rather than force
     // the baseline and clamp away charges the player legitimately earned.
@@ -178,7 +205,7 @@ void RecomputeCapacity(const char* a_why) {
         return;
     }
     const int  rank   = AlchemistRank(pc);
-    const bool purity = g_perks.purity && pc->HasPerk(g_perks.purity);
+    const bool purity = (mask & (1u << PK_PURITY)) != 0;
     std::uint32_t flasks = 2, charges = 2;  // unperked baseline
     if (rank >= 1) charges += 1;                    // Kit Calibration I   -> 2/3
     if (rank >= 2) flasks += 1;                     // Kit Calibration II  -> 3/3
@@ -1409,6 +1436,41 @@ namespace menuhook {
                 ImGui::EndChild();
             }
         }
+        // ── Debug: grant/revoke each alchemy perk individually (testing the
+        // capacity ladder without grinding Alchemy). Toggling a box adds/removes
+        // the REAL vanilla perk on the player, then recomputes capacity. Disabled
+        // rows are perks that didn't resolve (non-vanilla load order).
+        if (ImGui::CollapsingHeader("DEBUG  —  grant perks")) {
+            const std::uint32_t mask = g_perkMask.load();
+            ImGui::TextDisabled("Kit: rank %d -> %d flasks / %d charges", g_alchemistRank.load(),
+                                static_cast<int>(g_flaskCount), static_cast<int>(g_chargesPerFlask));
+            for (int i = 0; i < PK_COUNT; ++i) {
+                const bool resolved = g_perkForm[i] != nullptr;
+                if (!resolved) {
+                    ImGui::BeginDisabled();
+                }
+                bool has = (mask & (1u << i)) != 0;
+                if (ImGui::Checkbox(kPerkDefs[i].label, &has)) {
+                    const int  idx  = i;
+                    const bool want = has;
+                    SKSE::GetTaskInterface()->AddTask([idx, want]() {
+                        auto* pc = RE::PlayerCharacter::GetSingleton();
+                        if (!pc || !g_perkForm[idx]) {
+                            return;
+                        }
+                        if (want && !pc->HasPerk(g_perkForm[idx])) {
+                            pc->AddPerk(g_perkForm[idx], 1);
+                        } else if (!want && pc->HasPerk(g_perkForm[idx])) {
+                            pc->RemovePerk(g_perkForm[idx]);
+                        }
+                        RecomputeCapacity("debug");
+                    });
+                }
+                if (!resolved) {
+                    ImGui::EndDisabled();
+                }
+            }
+        }
         ImGui::Separator();
         ImGui::TextDisabled("Pad: D-pad/stick move, A select, B close.  KB: arrows, Enter, Esc.");
         ImGui::End();
@@ -1860,22 +1922,21 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
                 nf += g_flaskForms[i] ? 1 : 0;
             }
             spdlog::info("[flask] {}/{} flask forms resolved", nf, g_flaskForms.size());
-            // P1e: resolve the vanilla alchemy perks that drive capacity + cost.
-            constexpr const char*  SK       = "Skyrim.esm";
-            const RE::FormID       alch[5]  = { 0xBE127, 0xC07CA, 0xC07CB, 0xC07CC, 0xC07CD };
-            int                    np       = 0;
-            for (int i = 0; i < 5; ++i) {
-                g_perks.alchemist[i] = dh->LookupForm<RE::BGSPerk>(alch[i], SK);
-                np += g_perks.alchemist[i] ? 1 : 0;
+            // P1e: resolve the vanilla alchemy perks that drive capacity + cost
+            // (and the rest, so the debug menu can toggle them individually).
+            int np = 0, na = 0;
+            for (int i = 0; i < PK_COUNT; ++i) {
+                g_perkForm[i] = dh->LookupForm<RE::BGSPerk>(kPerkDefs[i].id, "Skyrim.esm");
+                if (g_perkForm[i]) {
+                    ++np;
+                    if (i >= PK_ALCH1 && i <= PK_ALCH5) ++na;
+                }
             }
-            g_perks.purity       = dh->LookupForm<RE::BGSPerk>(0x5821D, SK);
-            g_perks.benefactor   = dh->LookupForm<RE::BGSPerk>(0x58216, SK);
-            g_perks.experimenter = dh->LookupForm<RE::BGSPerk>(0x58218, SK);
-            g_capacityPerksResolved = (np > 0) || (g_perks.purity != nullptr);
-            spdlog::info("[perks] resolved {}/5 Alchemist ranks; purity={} benefactor={} "
-                         "experimenter={} (0=missing -> capacity holds at baseline)",
-                         np, g_perks.purity != nullptr, g_perks.benefactor != nullptr,
-                         g_perks.experimenter != nullptr);
+            g_capacityPerksResolved = (na > 0) || (g_perkForm[PK_PURITY] != nullptr);
+            spdlog::info("[perks] resolved {}/{} alchemy perks ({}/5 Alchemist ranks); "
+                         "capacity {} (0=missing -> holds co-saved)",
+                         np, static_cast<int>(PK_COUNT), na,
+                         g_capacityPerksResolved ? "live" : "held");
         }
         spdlog::info("[power] Open Field Kit spell: {}", g_fieldKitSpell ? "found" : "MISSING (is MAO.esp enabled?)");
         BuildRecipeTable();
