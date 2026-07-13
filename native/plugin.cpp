@@ -60,12 +60,13 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 namespace {
 
-constexpr auto kPluginVersion = "0.5.1 (P1c flasks + skins)";
+constexpr auto kPluginVersion = "0.6.0 (ingredient-basis economy)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -115,10 +116,19 @@ std::uint32_t                     g_flaskCount     = 2;  // unlocked slots (P1e:
 std::uint32_t                     g_chargesPerFlask = 2;  // max charges (P1e: perk-scaled)
 std::mutex                        g_flasksLock;
 
-// P1c essence cost to configure/refill a flask: flat Base per charge. A
-// placeholder economy (MCM-tunable later); tier-aware cost comes with the
-// real blueprint tiers.
-constexpr std::uint32_t kConfigCostPerCharge = 5;
+// ── Essence economy: per-effect flask cost, computed from the load order's
+// own ingredients (native, DYNAMIC_OR_DROP-correct — no data file). For each
+// effect, cost-per-charge = round(2 * mean(source ingredient gold value) *
+// TAX): a potion is ~2 ingredients, so 2*mean is the vanilla recipe cost, and
+// TAX is the convenience tax over it. Denominating cost in ingredient value
+// (the same currency the player earns) keeps the tax an honest %, unlike
+// potion record values which run ~5-7x their ingredients (see
+// essence-economy-tax memory). Built at kDataLoaded; guarded for the render
+// read.
+std::unordered_map<RE::FormID, std::uint32_t> g_effectCost;          // MGEF -> per-charge Base
+std::uint32_t                                 g_effectCostFallback = 25;  // effects w/ no source
+std::mutex                                    g_effectCostLock;
+float                                         g_essenceTax = 1.3f;   // fEssenceTax
 
 // ── Field Kit viewer state (M2). open/close is driven by the input hook and
 // read by the present hook — both run off the game's render/input threads, so
@@ -220,6 +230,74 @@ bool SpendBase(std::uint32_t a_amount) {
     return true;
 }
 
+std::uint32_t EffectCostPerCharge(RE::FormID a_effect) {
+    std::scoped_lock lk(g_effectCostLock);
+    auto it = g_effectCost.find(a_effect);
+    return it != g_effectCost.end() ? it->second : g_effectCostFallback;
+}
+
+// Build the per-effect cost table from the actual load order's ingredients.
+// Called once at kDataLoaded. Logs the real distribution so the balance can be
+// eyeballed against MAO.log.
+void BuildEffectCostTable() {
+    auto* dh = RE::TESDataHandler::GetSingleton();
+    if (!dh) {
+        return;
+    }
+    struct Acc { std::uint64_t sum = 0; std::uint32_t n = 0; };
+    std::unordered_map<RE::FormID, Acc> acc;
+    std::uint32_t                       ingredients = 0;
+    for (auto* ingr : dh->GetFormArray<RE::IngredientItem>()) {
+        if (!ingr || ingr->value <= 0) {
+            continue;  // skip valueless junk
+        }
+        ++ingredients;
+        for (auto* eff : ingr->effects) {
+            if (eff && eff->baseEffect) {
+                auto& a = acc[eff->baseEffect->GetFormID()];
+                a.sum += static_cast<std::uint32_t>(ingr->value);
+                a.n += 1;
+            }
+        }
+    }
+
+    std::vector<std::pair<std::uint32_t, std::string>> rows;  // (cost, effect name) for the log
+    std::uint64_t                                      globalSum = 0;
+    {
+        std::scoped_lock lk(g_effectCostLock);
+        g_effectCost.clear();
+        for (const auto& [id, a] : acc) {
+            const double        mean = static_cast<double>(a.sum) / a.n;
+            const std::uint32_t cost =
+                std::max(1u, static_cast<std::uint32_t>(std::lround(2.0 * mean * g_essenceTax)));
+            g_effectCost[id] = cost;
+            globalSum += cost;
+            const char* n = nullptr;
+            if (auto* m = RE::TESForm::LookupByID<RE::EffectSetting>(id)) {
+                n = m->GetName();
+            }
+            rows.emplace_back(cost, (n && *n) ? n : std::format("{:08X}", id));
+        }
+        g_effectCostFallback =
+            rows.empty() ? 25u : std::max(1u, static_cast<std::uint32_t>(globalSum / rows.size()));
+    }
+
+    std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    spdlog::info("[econ] cost table: {} effects from {} ingredients; TAX={:.2f}; per-charge Base "
+                 "min={} median={} max={} fallback={}",
+                 rows.size(), ingredients, g_essenceTax, rows.empty() ? 0 : rows.front().first,
+                 rows.empty() ? 0 : rows[rows.size() / 2].first,
+                 rows.empty() ? 0 : rows.back().first, g_effectCostFallback);
+    const std::size_t show = std::min<std::size_t>(6, rows.size());
+    for (std::size_t i = 0; i < show; ++i) {
+        spdlog::info("[econ]   cheapest: {:>5} Base  {}", rows[i].first, rows[i].second);
+    }
+    for (std::size_t i = 0; i < show; ++i) {
+        const auto& r = rows[rows.size() - 1 - i];
+        spdlog::info("[econ]   priciest: {:>5} Base  {}", r.first, r.second);
+    }
+}
+
 // Configure a flask slot with a blueprint (P1c). Runs on the task thread so it
 // serializes with gathering/discovery. Deducts the essence cost up front and
 // fills the flask to max charges; reassigning a flask that still holds charges
@@ -234,7 +312,7 @@ void ConfigureFlask(std::size_t a_slot, RE::FormID a_blueprint) {
             return;  // must be a discovered blueprint
         }
     }
-    const std::uint32_t cost = kConfigCostPerCharge * g_chargesPerFlask;
+    const std::uint32_t cost = EffectCostPerCharge(a_blueprint) * g_chargesPerFlask;
     if (!SpendBase(cost)) {
         spdlog::info("[flask] slot {} configure DENIED — need {} Base (have {})",
                      a_slot, cost, g_pouch.base);
@@ -305,6 +383,8 @@ void ApplyIniLine(std::string a_line) {
         g_openButtonGamepad = static_cast<std::uint32_t>(std::strtoul(val.c_str(), nullptr, 0));
     } else if (key == "iMenuStyle") {
         g_menuStyle = std::clamp(static_cast<int>(std::strtol(val.c_str(), nullptr, 0)), 0, 3);
+    } else if (key == "fEssenceTax") {
+        g_essenceTax = std::clamp(static_cast<float>(std::strtod(val.c_str(), nullptr)), 1.0f, 5.0f);
     }
 }
 
@@ -624,8 +704,6 @@ namespace menuhook {
                     g_pouch.apex);
         ImGui::Spacing();
 
-        const std::uint32_t cost = kConfigCostPerCharge * g_chargesPerFlask;
-
         // ── Flasks ──
         ImGui::TextDisabled("FLASKS  —  select one, then a blueprint below");
         ImGui::Separator();
@@ -654,8 +732,8 @@ namespace menuhook {
         }
         ImGui::Spacing();
 
-        // ── Blueprints ──
-        ImGui::TextDisabled("BLUEPRINTS  —  %u Base to set a flask", cost);
+        // ── Blueprints (cost shown per effect, from the load-order economy) ──
+        ImGui::TextDisabled("BLUEPRINTS  —  cost fills all %u charges", g_chargesPerFlask);
         ImGui::Separator();
         {
             std::scoped_lock lk(g_blueprintsLock);
@@ -665,15 +743,15 @@ namespace menuhook {
                 if (g_selectedSlot < 0) {
                     ImGui::TextDisabled("Select a flask above first.");
                 }
-                const bool affordable = g_pouch.base >= cost;
                 ImGui::BeginChild("blueprints", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 2.2f));
                 for (const RE::FormID id : g_blueprints) {
-                    auto*       m = RE::TESForm::LookupByID<RE::EffectSetting>(id);
-                    const char* n = m ? m->GetName() : nullptr;
-                    char        label[160];
-                    std::snprintf(label, sizeof(label), "%s##bp%08X", (n && *n) ? n : "(unknown)",
-                                  id);
-                    const bool enabled = g_selectedSlot >= 0 && affordable;
+                    auto*               m    = RE::TESForm::LookupByID<RE::EffectSetting>(id);
+                    const char*         n    = m ? m->GetName() : nullptr;
+                    const std::uint32_t cost = EffectCostPerCharge(id) * g_chargesPerFlask;
+                    char                label[192];
+                    std::snprintf(label, sizeof(label), "%-28s  %u Base##bp%08X",
+                                  (n && *n) ? n : "(unknown)", cost, id);
+                    const bool enabled = g_selectedSlot >= 0 && g_pouch.base >= cost;
                     if (!enabled) {
                         ImGui::BeginDisabled();
                     }
@@ -1072,6 +1150,7 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
             g_fieldKitSpell = dh->LookupForm<RE::SpellItem>(kFieldKitSpellID, kPluginName);
         }
         spdlog::info("[power] Open Field Kit spell: {}", g_fieldKitSpell ? "found" : "MISSING (is MAO.esp enabled?)");
+        BuildEffectCostTable();
         const auto gameVersion = REL::Module::get().version();
         if (auto* console = RE::ConsoleLog::GetSingleton()) {
             console->Print("MAO native v%s loaded", kPluginVersion);
