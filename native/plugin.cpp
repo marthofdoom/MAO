@@ -68,7 +68,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.10.1 (flask items + Fable review)";
+constexpr auto kPluginVersion = "0.11.0 (concentration cost + tiers)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -142,6 +142,13 @@ std::unordered_map<RE::FormID, std::uint32_t> g_effectCost;          // MGEF -> 
 std::uint32_t                                 g_effectCostFallback = 25;  // effects w/ no source
 std::mutex                                    g_effectCostLock;
 float                                         g_essenceTax = 1.3f;   // fEssenceTax
+// Flask cost = round(effect baseCost * magnitude * g_costRate * tax) per charge
+// (linear in magnitude = "each concentration level costs 1x more"). The flask's
+// ESSENCE TIER steps up with concentration = magnitude / the effect's weakest
+// (standard) magnitude: >= g_catalystLevel -> Catalyst, >= g_apexLevel -> Apex.
+float g_costRate      = 1.0f;  // fCostRate
+float g_catalystLevel = 3.0f;  // fCatalystLevel — concentration x for Catalyst tier
+float g_apexLevel     = 6.0f;  // fApexLevel — concentration x for Apex tier
 
 // Effect -> the strongest load-order potion/poison carrying it as its primary
 // effect. This is what physically embodies a blueprint (the flask item + what
@@ -149,7 +156,7 @@ float                                         g_essenceTax = 1.3f;   // fEssence
 // exact potion you found — means every discovered blueprint is usable, incl.
 // blueprints from pre-P1d saves that never stored a representative.
 std::unordered_map<RE::FormID, std::pair<RE::FormID, std::uint32_t>> g_effectPotion;
-std::unordered_map<RE::FormID, float> g_effectMeanMag;  // MGEF -> mean primary-effect magnitude
+std::unordered_map<RE::FormID, float> g_effectMinMag;  // MGEF -> weakest (standard) primary-effect magnitude
 std::mutex                            g_effectPotionLock;
 
 // Flask helpers — defined below near the container sink; forward-declared for
@@ -348,29 +355,52 @@ void BuildEffectCostTable() {
     }
 }
 
-// Per-charge cost of a SPECIFIC variant: the effect's ingredient-basis cost
-// scaled by this variant's magnitude relative to its effect's mean magnitude —
-// so Minor Healing is cheap and Extreme Healing is dear, while the mean-strength
-// variant sits at the ingredient-basis. Clamped so nothing is free or absurd.
-std::uint32_t VariantCostPerCharge(RE::AlchemyItem* a_alch) {
+struct FlaskCost { std::uint32_t perCharge = 1; Tier tier = Tier::Base; };
+
+// Per-charge flask cost + essence tier for a specific variant. Cost is LINEAR
+// in magnitude (concentration): effect baseCost * magnitude * rate * tax — each
+// concentration level costs proportionally more. The essence TIER steps up with
+// concentration = magnitude / the effect's weakest (standard) magnitude.
+FlaskCost VariantCost(RE::AlchemyItem* a_alch) {
+    FlaskCost fc{};
     if (!a_alch || a_alch->effects.empty() || !a_alch->effects[0] ||
         !a_alch->effects[0]->baseEffect) {
-        return g_effectCostFallback;
+        return fc;
     }
-    const RE::FormID e   = a_alch->effects[0]->baseEffect->GetFormID();
-    const float      mag = a_alch->effects[0]->effectItem.magnitude;
-    float            meanMag = 0.0f;
+    auto*       eff      = a_alch->effects[0]->baseEffect;
+    const float baseCost = eff->data.baseCost > 0.0f ? eff->data.baseCost : 1.0f;
+    const float mag =
+        a_alch->effects[0]->effectItem.magnitude > 0.0f ? a_alch->effects[0]->effectItem.magnitude
+                                                        : 1.0f;
+    fc.perCharge = std::max(
+        1u, static_cast<std::uint32_t>(std::lround(baseCost * mag * g_costRate * g_essenceTax)));
+    float minMag = 0.0f;
     {
         std::scoped_lock lk(g_effectPotionLock);
-        auto             it = g_effectMeanMag.find(e);
-        if (it != g_effectMeanMag.end()) {
-            meanMag = it->second;
+        auto             it = g_effectMinMag.find(eff->GetFormID());
+        if (it != g_effectMinMag.end()) {
+            minMag = it->second;
         }
     }
-    float scale = (meanMag > 0.01f && mag > 0.01f) ? (mag / meanMag) : 1.0f;
-    scale       = std::clamp(scale, 0.25f, 4.0f);
-    return std::max(1u,
-                    static_cast<std::uint32_t>(std::lround(EffectCostPerCharge(e) * scale)));
+    const float conc = (minMag > 0.01f) ? (mag / minMag) : 1.0f;
+    fc.tier = (conc >= g_apexLevel) ? Tier::Apex
+              : (conc >= g_catalystLevel) ? Tier::Catalyst
+                                          : Tier::Base;
+    return fc;
+}
+
+std::uint32_t& PouchTier(Tier a_tier) {
+    return a_tier == Tier::Apex       ? g_pouch.apex
+           : a_tier == Tier::Catalyst ? g_pouch.catalyst
+                                      : g_pouch.base;
+}
+bool SpendTier(Tier a_tier, std::uint32_t a_amount) {
+    auto& pool = PouchTier(a_tier);
+    if (pool < a_amount) {
+        return false;
+    }
+    pool -= a_amount;
+    return true;
 }
 
 RE::FormID RepPotionFor(RE::FormID a_effect) {
@@ -390,32 +420,33 @@ void BuildEffectPotionTable() {
     // Weight flask is a plain carry-weight potion, not a multi-effect modded
     // elixir that happens to lead with that effect), then strongest by value.
     struct Best { RE::FormID form = 0; std::size_t effects = 0; std::uint32_t value = 0; };
-    std::unordered_map<RE::FormID, Best>                  best;
-    std::unordered_map<RE::FormID, std::pair<double, std::uint32_t>> mag;  // sum, count
+    std::unordered_map<RE::FormID, Best>  best;
+    std::unordered_map<RE::FormID, float> minMag;  // weakest primary-effect magnitude = "standard"
     for (auto* alch : dh->GetFormArray<RE::AlchemyItem>()) {
         if (!alch || alch->IsFood() || alch->effects.empty() || !alch->effects[0] ||
             !alch->effects[0]->baseEffect) {
             continue;
         }
-        const RE::FormID    e     = alch->effects[0]->baseEffect->GetFormID();
-        const std::size_t   nEff  = alch->effects.size();
-        const std::uint32_t v     = static_cast<std::uint32_t>(std::max(0, alch->GetGoldValue()));
-        auto&               b     = best[e];
-        if (b.form == 0 || nEff < b.effects || (nEff == b.effects && v > b.value)) {
-            b = { alch->GetFormID(), nEff, v };
+        const RE::FormID    e = alch->effects[0]->baseEffect->GetFormID();
+        const std::size_t   n = alch->effects.size();
+        const std::uint32_t v = static_cast<std::uint32_t>(std::max(0, alch->GetGoldValue()));
+        auto&               b = best[e];
+        if (b.form == 0 || n < b.effects || (n == b.effects && v > b.value)) {
+            b = { alch->GetFormID(), n, v };
         }
-        auto& m = mag[e];  // mean magnitude of the primary effect → variant cost scaling
-        m.first += alch->effects[0]->effectItem.magnitude;
-        m.second += 1;
+        const float mg = alch->effects[0]->effectItem.magnitude;
+        if (mg > 0.01f) {
+            auto it = minMag.find(e);
+            if (it == minMag.end() || mg < it->second) {
+                minMag[e] = mg;
+            }
+        }
     }
     std::scoped_lock lk(g_effectPotionLock);
     g_effectPotion.clear();
-    g_effectMeanMag.clear();
+    g_effectMinMag = std::move(minMag);
     for (const auto& [e, b] : best) {
         g_effectPotion[e] = { b.form, b.value };
-    }
-    for (const auto& [e, m] : mag) {
-        g_effectMeanMag[e] = m.second ? static_cast<float>(m.first / m.second) : 0.0f;
     }
     spdlog::info("[potions] rep table: {} effect(s)", g_effectPotion.size());
 }
@@ -497,12 +528,14 @@ void ConfigureFlask(std::size_t a_slot, RE::FormID a_potion) {
         }
         return;
     }
-    const std::uint32_t cost = VariantCostPerCharge(alch) * g_chargesPerFlask;
-    if (!SpendBase(cost)) {
-        spdlog::info("[flask] slot {} configure DENIED — need {} Base (have {})", a_slot, cost,
-                     g_pouch.base);
+    const FlaskCost     fc   = VariantCost(alch);
+    const std::uint32_t cost = fc.perCharge * g_chargesPerFlask;
+    if (!SpendTier(fc.tier, cost)) {
+        spdlog::info("[flask] slot {} configure DENIED — need {} {} (have {})", a_slot, cost,
+                     TierName(fc.tier), PouchTier(fc.tier));
         if (g_notify) {
-            RE::DebugNotification(std::format("Not enough Base Essence ({} needed).", cost).c_str());
+            RE::DebugNotification(
+                std::format("Not enough {} Essence ({} needed).", TierName(fc.tier), cost).c_str());
         }
         return;
     }
@@ -596,11 +629,10 @@ void RefillFlasks(const char* a_trigger) {
             if (!f.blueprint || f.repPotion == 0 || f.charges >= g_chargesPerFlask) {
                 continue;
             }
-            auto* valch = RE::TESForm::LookupByID<RE::AlchemyItem>(f.repPotion);
-            const std::uint32_t perCharge =
-                valch ? VariantCostPerCharge(valch) : EffectCostPerCharge(f.blueprint);
-            std::uint32_t       added     = 0;
-            while (f.charges < g_chargesPerFlask && SpendBase(perCharge)) {
+            auto*           valch = RE::TESForm::LookupByID<RE::AlchemyItem>(f.repPotion);
+            const FlaskCost fc    = valch ? VariantCost(valch) : FlaskCost{};
+            std::uint32_t   added = 0;
+            while (f.charges < g_chargesPerFlask && SpendTier(fc.tier, fc.perCharge)) {
                 ++f.charges;
                 ++added;
             }
@@ -791,6 +823,12 @@ void ApplyIniLine(std::string a_line) {
     } else if (key == "iRefillSeconds") {
         g_refillSeconds = static_cast<std::uint32_t>(
             std::clamp<long>(std::strtol(val.c_str(), nullptr, 0), 15, 86400));
+    } else if (key == "fCostRate") {
+        g_costRate = std::clamp(static_cast<float>(std::strtod(val.c_str(), nullptr)), 0.05f, 20.0f);
+    } else if (key == "fCatalystLevel") {
+        g_catalystLevel = std::clamp(static_cast<float>(std::strtod(val.c_str(), nullptr)), 1.1f, 50.0f);
+    } else if (key == "fApexLevel") {
+        g_apexLevel = std::clamp(static_cast<float>(std::strtod(val.c_str(), nullptr)), 1.2f, 100.0f);
     }
 }
 
@@ -1216,12 +1254,13 @@ namespace menuhook {
                     auto*               eff  = alch->effects[0]->baseEffect;
                     const char*         pn   = alch->GetName();
                     const bool          coat = eff->IsHostile() || eff->IsDetrimental();
-                    const std::uint32_t cost = VariantCostPerCharge(alch) * g_chargesPerFlask;
+                    const FlaskCost     fc   = VariantCost(alch);
+                    const std::uint32_t cost = fc.perCharge * g_chargesPerFlask;
                     char                label[224];
-                    std::snprintf(label, sizeof(label), "%-30.80s %s %u Base##v%08X",
-                                  (pn && *pn) ? pn : "(unknown)", coat ? "[coating]" : "         ",
-                                  cost, pid);
-                    const bool enabled = g_selectedSlot >= 0 && !coat && g_pouch.base >= cost;
+                    std::snprintf(label, sizeof(label), "%-28.80s %s %u %s##v%08X",
+                                  (pn && *pn) ? pn : "(unknown)", coat ? "[coating]" : "        ",
+                                  cost, TierName(fc.tier), pid);
+                    const bool enabled = g_selectedSlot >= 0 && !coat && PouchTier(fc.tier) >= cost;
                     if (!enabled) {
                         ImGui::BeginDisabled();
                     }
