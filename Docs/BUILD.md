@@ -38,7 +38,7 @@ only the panel content is MAO's, and it's read-only (no mouse/font/skin code).
 | **P1c** | Interactive flask config UI (mouse + gamepad nav) + MEO skins/fonts | ✅ |
 | **P1d** | Drinkable permanent flasks (`DrinkPotion` hook), discovered variants (must be found), drink sound, `'FLSK'` co-save, refill on `TESSleepStop` + timer, coatings deferred | ✅ Fable-reviewed, tag `v0.8.2-p1d` |
 | — | Alchemy-station takeover opener (`MenuOpenCloseEvent` sink) — replaces the power | ✅ v0.9.0 |
-| **P1e** | The 13 vanilla alchemy `PERK` records overridden in-place — flask slots 2→6, charges 2→9, essence efficiency (incl. refill-cost cut) | ⬜ next |
+| **P1e** | Perk-driven capacity read natively from the vanilla alchemy perks — flask slots 2→6, charges 2→9, Apex −35% (Benefactor), gather +10% (Experimenter); ESP perk-rename + coating/drink perks deferred to P2 | ✅ v0.13.1 |
 | **P1f** | MCM (the INI surface grown into MCM Helper) | ⬜ |
 
 Economy note: flask cost is computed natively from the load order (2×mean

@@ -70,8 +70,9 @@ sibling repos ([MRO](https://github.com/marthofdoom/MRO),
     **P1c** interactive flask configuration UI (skinned) · **P1d** drinkable
     permanent flasks (variants you must find, sound, native charges, sleep +
     timer refill; poisons parked as coatings) · alchemy-station takeover opener.
-  - ⬜ **P1e** the 13-perk override matrix (flask slots 2→6, charges 2→9,
-    essence efficiency). ⬜ **P1f** the MCM.
+  - ✅ **P1e** perk-driven capacity, read natively from the vanilla alchemy
+    perks (Alchemist chain + Purity → flask slots 2→6, charges 2→9; Benefactor
+    −35% Apex cost, Experimenter +10% gather). ⬜ **P1f** the MCM.
 - **P2 — coatings & polish.** Weapon coating conversion (Vanguard Coating /
   Corrosive Retention) — the poison-application hook — plus field-kit polish.
 - **P3 — packaging & compat.** FOMOD with load-order-aware installation
