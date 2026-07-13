@@ -68,7 +68,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.10.0 (dedicated flask items)";
+constexpr auto kPluginVersion = "0.10.1 (flask items + Fable review)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -84,8 +84,11 @@ constexpr RE::FormID  kFieldKitSpellID = 0x801;  // Open Field Kit lesser power 
 constexpr RE::FormID  kFlaskBaseID     = 0x810;  // MAO.esp flasks 0x810..0x815
 RE::SpellItem*        g_fieldKitSpell  = nullptr;
 // The 6 dedicated flask AlchemyItem forms (slot i ↔ g_flaskForms[i]). Their
-// effects + name are mutated at runtime to the configured variant, so the item
-// IDENTITY is stable across reconfigure and Favorites/Wheeler bindings survive.
+// NAME is renamed at runtime to the configured variant (the drink hook casts
+// the variant for the actual effect); the item IDENTITY is stable across
+// reconfigure so Favorites/Wheeler bindings survive. (The item card still shows
+// the ESP placeholder effect — correct-tooltip/auto-mod effect mutation is a
+// later, clone-based refinement.)
 std::array<RE::AlchemyItem*, 6> g_flaskForms{};
 
 // ── Essence pouch: the abstracted store. Three tier counters, nothing more.
@@ -486,6 +489,14 @@ void ConfigureFlask(std::size_t a_slot, RE::FormID a_potion) {
         }
         return;
     }
+    if (!g_flaskForms[a_slot]) {  // stale/missing MAO.esp — don't spend into nothing
+        spdlog::error("[flask] slot {} has no flask form (MAO.esp stale or missing?) — aborted",
+                      a_slot);
+        if (g_notify) {
+            RE::DebugNotification("Flask item missing — MAO.esp may be out of date.");
+        }
+        return;
+    }
     const std::uint32_t cost = VariantCostPerCharge(alch) * g_chargesPerFlask;
     if (!SpendBase(cost)) {
         spdlog::info("[flask] slot {} configure DENIED — need {} Base (have {})", a_slot, cost,
@@ -529,8 +540,9 @@ void SyncFlaskItems() {
     if (!player) {
         return;
     }
-    // Forms reset to ESP defaults on load, so re-apply each configured slot's
-    // name and make sure its dedicated flask item is in the player's bags.
+    // Form state is GLOBAL for the session (not reset per load), so re-apply
+    // each configured slot's name AND reset unconfigured ones, and make sure
+    // each configured slot's dedicated flask item is in the player's bags.
     // Snapshot (slot, variant) UNDER the lock, then act OUTSIDE it — grants fire
     // TESContainerChangedEvent whose sink re-locks g_flasksLock (non-recursive).
     struct Sync { std::size_t slot; RE::FormID variant; };
@@ -547,14 +559,23 @@ void SyncFlaskItems() {
             }
         }
     }
+    std::array<bool, 6> synced{};
     for (const auto& t : todo) {
-        auto* vAlch = RE::TESForm::LookupByID<RE::AlchemyItem>(t.variant);
+        synced[t.slot] = true;
+        auto* vAlch    = RE::TESForm::LookupByID<RE::AlchemyItem>(t.variant);
         if (vAlch) {
             RenameFlask(t.slot, vAlch);
         }
         auto* item = g_flaskForms[t.slot];
         if (item && !PlayerHasItem(player, item)) {
             player->AddObjectToContainer(item, nullptr, 1, nullptr);
+        }
+    }
+    // Reset the name of any flask form NOT configured this save (global form
+    // state could carry a stale "Flask: X" from another save this session).
+    for (std::size_t i = 0; i < g_flaskForms.size(); ++i) {
+        if (!synced[i] && g_flaskForms[i]) {
+            g_flaskForms[i]->fullName = RE::BSFixedString("Field Flask");
         }
     }
 }
@@ -663,6 +684,15 @@ struct DrinkPotionHook {
                     }
                     return true;
                 }
+                // Resolve the VARIANT (the flask form carries only a placeholder
+                // effect) BEFORE spending a charge — if it can't resolve, the
+                // flask is inert; don't burn a charge and don't consume it.
+                auto* vAlch = RE::TESForm::LookupByID<RE::AlchemyItem>(variant);
+                if (!vAlch) {
+                    spdlog::warn("[drink] flask slot {} variant {:08X} unresolved — inert", slot,
+                                 variant);
+                    return true;
+                }
                 int remaining = -1;
                 {
                     std::scoped_lock lk(g_flasksLock);
@@ -672,17 +702,11 @@ struct DrinkPotionHook {
                     }
                 }
                 if (remaining >= 0) {
-                    // Cast the VARIANT (the flask form itself carries only a
-                    // placeholder effect); it supplies the real magnitudes.
-                    auto* vAlch = RE::TESForm::LookupByID<RE::AlchemyItem>(variant);
-                    if (vAlch) {
-                        if (auto* caster =
-                                a_this->GetMagicCaster(RE::MagicSystem::CastingSource::kInstant)) {
-                            caster->CastSpellImmediate(vAlch, false, a_this, 1.0f, false, 0.0f,
-                                                       a_this);
-                        }
-                        PlayDrinkSound(a_this, vAlch);
+                    if (auto* caster =
+                            a_this->GetMagicCaster(RE::MagicSystem::CastingSource::kInstant)) {
+                        caster->CastSpellImmediate(vAlch, false, a_this, 1.0f, false, 0.0f, a_this);
                     }
+                    PlayDrinkSound(a_this, vAlch);
                     spdlog::info("[drink] flask slot {} drunk; {} charge(s) left", slot, remaining);
                 } else {
                     spdlog::info("[drink] flask slot {} is dry", slot);
@@ -691,6 +715,16 @@ struct DrinkPotionHook {
                     }
                 }
                 return true;  // handled — item is never consumed (permanent flask)
+            }
+            // A flask item whose slot isn't live (unconfigured, or its variant's
+            // plugin was removed) must STILL never be vanilla-consumed, or the
+            // permanent item (+ its Favorites/Wheeler binding) is destroyed.
+            if (IsFlaskForm(form)) {
+                spdlog::info("[drink] inert flask ({:08X}) — not prepared; not consumed", form);
+                if (g_notify) {
+                    RE::DebugNotification("This flask isn't prepared.");
+                }
+                return true;
             }
         }
         return func(a_this, a_potion, a_extra);

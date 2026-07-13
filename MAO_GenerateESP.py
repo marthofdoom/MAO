@@ -106,11 +106,11 @@ def make_spel():
 
 
 # ── Dedicated flask potions. Each is a real, permanent AlchemyItem the player
-# favorites / puts on Wheeler; the DLL mutates its effects + name to the
-# configured variant at runtime, so reconfiguring changes CONTENTS not IDENTITY
-# and the binding survives. ENIT flags 0x10000 = kMedicine (a beneficial
-# potion). The Restore Health effect + FULL name here are placeholders the DLL
-# overwrites. Byte order per the ALCH recipe dumped from vanilla. ──
+# favorites / puts on Wheeler; the DLL RENAMES it to the configured variant at
+# runtime (and casts that variant on drink), so reconfiguring changes CONTENTS
+# not IDENTITY and the binding survives. ENIT flags 0x10000 = kMedicine. The
+# Restore Health effect here is a placeholder (the flask's item card shows it;
+# the drink cast comes from the variant). Byte order per the vanilla ALCH recipe. ──
 def make_flask(fid, edid):
     body  = subrec('EDID', zstr(edid))
     body += subrec('OBND', b'\x00' * 12)
