@@ -66,7 +66,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.7.1 (P1d-1 fixes: rep from load order, sound, coatings)";
+constexpr auto kPluginVersion = "0.7.2 (P1d-1: clean rep, coatings deferred)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -331,19 +331,28 @@ void BuildEffectPotionTable() {
     if (!dh) {
         return;
     }
-    std::scoped_lock lk(g_effectPotionLock);
-    g_effectPotion.clear();
+    // Prefer the CLEANEST embodiment: fewest total effects (so a Fortify Carry
+    // Weight flask is a plain carry-weight potion, not a multi-effect modded
+    // elixir that happens to lead with that effect), then strongest by value.
+    struct Best { RE::FormID form = 0; std::size_t effects = 0; std::uint32_t value = 0; };
+    std::unordered_map<RE::FormID, Best> best;
     for (auto* alch : dh->GetFormArray<RE::AlchemyItem>()) {
         if (!alch || alch->IsFood() || alch->effects.empty() || !alch->effects[0] ||
             !alch->effects[0]->baseEffect) {
             continue;
         }
-        const RE::FormID    e = alch->effects[0]->baseEffect->GetFormID();
-        const std::uint32_t v = static_cast<std::uint32_t>(std::max(0, alch->GetGoldValue()));
-        auto&               best = g_effectPotion[e];
-        if (best.first == 0 || v > best.second) {
-            best = { alch->GetFormID(), v };
+        const RE::FormID    e     = alch->effects[0]->baseEffect->GetFormID();
+        const std::size_t   nEff  = alch->effects.size();
+        const std::uint32_t v     = static_cast<std::uint32_t>(std::max(0, alch->GetGoldValue()));
+        auto&               b     = best[e];
+        if (b.form == 0 || nEff < b.effects || (nEff == b.effects && v > b.value)) {
+            b = { alch->GetFormID(), nEff, v };
         }
+    }
+    std::scoped_lock lk(g_effectPotionLock);
+    g_effectPotion.clear();
+    for (const auto& [e, b] : best) {
+        g_effectPotion[e] = { b.form, b.value };
     }
     spdlog::info("[potions] rep table: {} effect(s)", g_effectPotion.size());
 }
@@ -398,7 +407,19 @@ void ConfigureFlask(std::size_t a_slot, RE::FormID a_blueprint) {
             return;  // must be a discovered blueprint
         }
     }
-    const RE::FormID rep = RepPotionFor(a_blueprint);  // strongest load-order potion for it
+    // Coatings (detrimental effects) can't be prepared into a drink-flask yet:
+    // their rep is a poison, which is USED via the weapon-application path (not
+    // DrinkPotion), so we can't intercept it — vanilla would just consume the
+    // flask. The coating mechanic (apply to weapon, keep the item) is P2.
+    if (auto* eff = RE::TESForm::LookupByID<RE::EffectSetting>(a_blueprint);
+        eff && (eff->IsHostile() || eff->IsDetrimental())) {
+        spdlog::info("[flask] slot {} DENIED — coating (weapon application is P2)", a_slot);
+        if (g_notify) {
+            RE::DebugNotification("Coatings can't be prepared yet (coming with the Vanguard perk).");
+        }
+        return;
+    }
+    const RE::FormID rep = RepPotionFor(a_blueprint);  // load-order potion for it
     if (!rep) {
         spdlog::info("[flask] slot {} DENIED — no potion in the load order embodies this effect",
                      a_slot);
