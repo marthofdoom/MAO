@@ -66,7 +66,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.7.0 (P1d-1 drinkable flasks)";
+constexpr auto kPluginVersion = "0.7.1 (P1d-1 fixes: rep from load order, sound, coatings)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -137,6 +137,14 @@ std::unordered_map<RE::FormID, std::uint32_t> g_effectCost;          // MGEF -> 
 std::uint32_t                                 g_effectCostFallback = 25;  // effects w/ no source
 std::mutex                                    g_effectCostLock;
 float                                         g_essenceTax = 1.3f;   // fEssenceTax
+
+// Effect -> the strongest load-order potion/poison carrying it as its primary
+// effect. This is what physically embodies a blueprint (the flask item + what
+// the drink hook casts). Deriving it from the load order — instead of only the
+// exact potion you found — means every discovered blueprint is usable, incl.
+// blueprints from pre-P1d saves that never stored a representative.
+std::unordered_map<RE::FormID, std::pair<RE::FormID, std::uint32_t>> g_effectPotion;
+std::mutex                                                           g_effectPotionLock;
 
 // Which flask slot uses this form as its physical item (-1 = none). Defined
 // below near the container sink; forward-declared for the drink hook above it.
@@ -310,6 +318,57 @@ void BuildEffectCostTable() {
     }
 }
 
+RE::FormID RepPotionFor(RE::FormID a_effect) {
+    std::scoped_lock lk(g_effectPotionLock);
+    auto it = g_effectPotion.find(a_effect);
+    return it != g_effectPotion.end() ? it->second.first : 0;
+}
+
+// Build the effect -> strongest-potion table from the load order (potions AND
+// poisons; poisons back the coating blueprints). Called at kDataLoaded.
+void BuildEffectPotionTable() {
+    auto* dh = RE::TESDataHandler::GetSingleton();
+    if (!dh) {
+        return;
+    }
+    std::scoped_lock lk(g_effectPotionLock);
+    g_effectPotion.clear();
+    for (auto* alch : dh->GetFormArray<RE::AlchemyItem>()) {
+        if (!alch || alch->IsFood() || alch->effects.empty() || !alch->effects[0] ||
+            !alch->effects[0]->baseEffect) {
+            continue;
+        }
+        const RE::FormID    e = alch->effects[0]->baseEffect->GetFormID();
+        const std::uint32_t v = static_cast<std::uint32_t>(std::max(0, alch->GetGoldValue()));
+        auto&               best = g_effectPotion[e];
+        if (best.first == 0 || v > best.second) {
+            best = { alch->GetFormID(), v };
+        }
+    }
+    spdlog::info("[potions] rep table: {} effect(s)", g_effectPotion.size());
+}
+
+// Play a potion's drink sound at the player (the vanilla DrinkPotion we bypass
+// would have done this).
+void PlayDrinkSound(RE::Actor* a_player, RE::AlchemyItem* a_potion) {
+    auto* audio = RE::BSAudioManager::GetSingleton();
+    if (!a_player || !a_potion || !audio) {
+        return;
+    }
+    RE::BSSoundHandle handle;
+    bool              built = false;
+    if (a_potion->data.consumptionSound) {
+        built = audio->BuildSoundDataFromDescriptor(handle, a_potion->data.consumptionSound);
+    }
+    if (!built) {  // many vanilla potions leave it null — use the default drink sound
+        audio->BuildSoundDataFromEditorID(handle, "ITMPotionUse", 0x1A);
+    }
+    if (auto* root = a_player->Get3D()) {
+        handle.SetObjectToFollow(root);
+    }
+    handle.Play();
+}
+
 // Configure a flask slot with a blueprint (P1c). Runs on the task thread so it
 // serializes with gathering/discovery. Deducts the essence cost up front and
 // fills the flask to max charges; reassigning a flask that still holds charges
@@ -333,14 +392,17 @@ void ConfigureFlask(std::size_t a_slot, RE::FormID a_blueprint) {
     if (a_slot >= g_flaskCount || !a_blueprint) {
         return;
     }
-    RE::FormID rep = 0;
     {
         std::scoped_lock lk(g_blueprintsLock);
-        auto             it = g_blueprints.find(a_blueprint);
-        if (it == g_blueprints.end() || it->second.repPotion == 0) {
-            return;  // must be a discovered blueprint with a real potion to embody it
+        if (!g_blueprints.contains(a_blueprint)) {
+            return;  // must be a discovered blueprint
         }
-        rep = it->second.repPotion;
+    }
+    const RE::FormID rep = RepPotionFor(a_blueprint);  // strongest load-order potion for it
+    if (!rep) {
+        spdlog::info("[flask] slot {} DENIED — no potion in the load order embodies this effect",
+                     a_slot);
+        return;
     }
     // One blueprint per slot — keeps the rep form ↔ slot mapping 1:1 so the
     // drink hook and the container guard are unambiguous, and reconfiguring one
@@ -422,6 +484,11 @@ void SyncFlaskItems() {
     {
         std::scoped_lock lk(g_flasksLock);
         for (std::uint32_t i = 0; i < g_flaskCount; ++i) {
+            // Heal slots configured before P1d (blueprint set but no rep stored)
+            // by deriving the rep from the load-order table.
+            if (g_flasks[i].blueprint && g_flasks[i].repPotion == 0) {
+                g_flasks[i].repPotion = RepPotionFor(g_flasks[i].blueprint);
+            }
             if (g_flasks[i].repPotion) {
                 reps.push_back(g_flasks[i].repPotion);
             }
@@ -447,22 +514,41 @@ struct DrinkPotionHook {
             const RE::FormID form = a_potion->GetFormID();
             const int        slot = FindFlaskSlot(form);
             if (slot >= 0) {
-                int  remaining   = -1;
-                bool stillFlask  = false;
+                RE::FormID bpMgef    = 0;
+                bool       stillFlask = false;
                 {
                     std::scoped_lock lk(g_flasksLock);
                     // Re-verify under lock: the slot could have been
                     // reconfigured between the lookup and here.
                     if (g_flasks[slot].repPotion == form) {
                         stillFlask = true;
-                        if (g_flasks[slot].charges > 0) {
-                            g_flasks[slot].charges--;
-                            remaining = static_cast<int>(g_flasks[slot].charges);
-                        }
+                        bpMgef     = g_flasks[slot].blueprint;
                     }
                 }
                 if (!stillFlask) {
                     return true;  // reconfigured mid-call; leave the item intact
+                }
+                // A coating (detrimental effect) isn't drunk — it applies to a
+                // weapon. The application mechanic is P2; for now, don't harm
+                // the player and don't spend a charge.
+                bool coating = false;
+                if (auto* eff = RE::TESForm::LookupByID<RE::EffectSetting>(bpMgef)) {
+                    coating = eff->IsHostile() || eff->IsDetrimental();
+                }
+                if (coating) {
+                    spdlog::info("[drink] flask slot {} is a coating — not drinkable (P2)", slot);
+                    if (g_notify) {
+                        RE::DebugNotification("That's a coating — weapon application coming soon.");
+                    }
+                    return true;
+                }
+                int remaining = -1;
+                {
+                    std::scoped_lock lk(g_flasksLock);
+                    if (g_flasks[slot].repPotion == form && g_flasks[slot].charges > 0) {
+                        g_flasks[slot].charges--;
+                        remaining = static_cast<int>(g_flasks[slot].charges);
+                    }
                 }
                 if (remaining >= 0) {
                     if (auto* caster =
@@ -470,6 +556,7 @@ struct DrinkPotionHook {
                         caster->CastSpellImmediate(a_potion, false, a_this, 1.0f, false, 0.0f,
                                                    a_this);
                     }
+                    PlayDrinkSound(a_this, a_potion);
                     spdlog::info("[drink] flask slot {} drunk; {} charge(s) left", slot, remaining);
                 } else {
                     spdlog::info("[drink] flask slot {} is dry", slot);
@@ -638,17 +725,15 @@ public:
             if (FindFlaskSlot(a_event->baseObj) >= 0) {
                 return RE::BSEventNotifyControl::kContinue;
             }
-            // Primary effect → blueprint key, but only if BENEFICIAL: hostile/
-            // detrimental effects (Fear, Ravage, Weakness…) are the coating
-            // path (P2), never drinkable-flask blueprints.
+            // Primary effect → blueprint key. Beneficial effects become
+            // drinkable flasks; hostile/detrimental ones become COATINGS (the
+            // Poisoner→Vanguard Coating path, DESIGN §5.2) — both are learned
+            // as blueprints here; the drink hook and P2 tell them apart.
             RE::FormID  bpKey   = 0;
             const char* bpCName = nullptr;
             if (!alch->effects.empty() && alch->effects[0] && alch->effects[0]->baseEffect) {
-                auto* mgef = alch->effects[0]->baseEffect;
-                if (!mgef->IsHostile() && !mgef->IsDetrimental()) {
-                    bpKey   = mgef->GetFormID();
-                    bpCName = mgef->GetName();
-                }
+                bpKey   = alch->effects[0]->baseEffect->GetFormID();
+                bpCName = alch->effects[0]->baseEffect->GetName();
             }
             const int           value   = alch->GetGoldValue();
             const RE::FormID    potForm = alch->GetFormID();
@@ -936,10 +1021,12 @@ namespace menuhook {
                 for (const auto& [id, bp] : g_blueprints) {
                     auto*               m    = RE::TESForm::LookupByID<RE::EffectSetting>(id);
                     const char*         n    = m ? m->GetName() : nullptr;
+                    const bool          coat = m && (m->IsHostile() || m->IsDetrimental());
                     const std::uint32_t cost = EffectCostPerCharge(id) * g_chargesPerFlask;
-                    char                label[192];
-                    std::snprintf(label, sizeof(label), "%-28s  %u Base##bp%08X",
-                                  (n && *n) ? n : "(unknown)", cost, id);
+                    char                label[208];
+                    std::snprintf(label, sizeof(label), "%-26s %s %u Base##bp%08X",
+                                  (n && *n) ? n : "(unknown)", coat ? "[coating]" : "         ", cost,
+                                  id);
                     const bool enabled = g_selectedSlot >= 0 && g_pouch.base >= cost;
                     if (!enabled) {
                         ImGui::BeginDisabled();
@@ -1295,14 +1382,6 @@ void LoadCallback(SKSE::SerializationInterface* a_intfc) {
                 }
                 // Remap across load-order changes; drop forms whose plugin is gone.
                 if (a_intfc->ResolveFormID(mgef, mRes) && mRes) {
-                    // v1 saves predate the beneficial-only filter — drop hostile/
-                    // detrimental effects so they don't linger as dead menu rows.
-                    if (version < 2) {
-                        auto* eff = RE::TESForm::LookupByID<RE::EffectSetting>(mRes);
-                        if (eff && (eff->IsHostile() || eff->IsDetrimental())) {
-                            continue;
-                        }
-                    }
                     Blueprint bp{};
                     if (rep && a_intfc->ResolveFormID(rep, rRes)) {
                         bp.repPotion = rRes;
@@ -1370,6 +1449,7 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
         }
         spdlog::info("[power] Open Field Kit spell: {}", g_fieldKitSpell ? "found" : "MISSING (is MAO.esp enabled?)");
         BuildEffectCostTable();
+        BuildEffectPotionTable();
         InstallDrinkHook();
         const auto gameVersion = REL::Module::get().version();
         if (auto* console = RE::ConsoleLog::GetSingleton()) {
