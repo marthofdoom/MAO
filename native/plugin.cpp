@@ -138,6 +138,10 @@ std::uint32_t                                 g_effectCostFallback = 25;  // eff
 std::mutex                                    g_effectCostLock;
 float                                         g_essenceTax = 1.3f;   // fEssenceTax
 
+// Which flask slot uses this form as its physical item (-1 = none). Defined
+// below near the container sink; forward-declared for the drink hook above it.
+int FindFlaskSlot(RE::FormID a_form);
+
 // ── Field Kit viewer state (M2). open/close is driven by the input hook and
 // read by the present hook — both run off the game's render/input threads, so
 // these are atomics.
@@ -314,7 +318,15 @@ bool PlayerHasItem(RE::TESObjectREFR* a_ref, RE::TESBoundObject* a_obj) {
     if (!a_ref || !a_obj) {
         return false;
     }
-    return !a_ref->GetInventoryCounts([&](RE::TESBoundObject& o) { return &o == a_obj; }).empty();
+    // Require a real positive count — GetInventoryCounts can retain a stale
+    // 0-count entry for extra-data-bearing forms.
+    for (const auto& [obj, cnt] : a_ref->GetInventoryCounts(
+             [&](RE::TESBoundObject& o) { return &o == a_obj; })) {
+        if (cnt > 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void ConfigureFlask(std::size_t a_slot, RE::FormID a_blueprint) {
@@ -329,6 +341,21 @@ void ConfigureFlask(std::size_t a_slot, RE::FormID a_blueprint) {
             return;  // must be a discovered blueprint with a real potion to embody it
         }
         rep = it->second.repPotion;
+    }
+    // One blueprint per slot — keeps the rep form ↔ slot mapping 1:1 so the
+    // drink hook and the container guard are unambiguous, and reconfiguring one
+    // slot can't strip another slot's identical flask item.
+    {
+        std::scoped_lock lk(g_flasksLock);
+        for (std::uint32_t i = 0; i < g_flaskCount; ++i) {
+            if (i != a_slot && g_flasks[i].blueprint == a_blueprint) {
+                spdlog::info("[flask] slot {} DENIED — blueprint already in flask {}", a_slot, i + 1);
+                if (g_notify) {
+                    RE::DebugNotification("That blueprint is already set in another flask.");
+                }
+                return;
+            }
+        }
     }
     const std::uint32_t cost = EffectCostPerCharge(a_blueprint) * g_chargesPerFlask;
     if (!SpendBase(cost)) {
@@ -354,7 +381,9 @@ void ConfigureFlask(std::size_t a_slot, RE::FormID a_blueprint) {
     if (player && rep != oldRep) {
         if (oldRep) {
             if (auto* oldForm = RE::TESForm::LookupByID<RE::TESBoundObject>(oldRep)) {
-                player->RemoveItem(oldForm, 999, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+                // Remove just the one flask instance (uniqueness above means no
+                // other slot shares it; found copies of the form are left be).
+                player->RemoveItem(oldForm, 1, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
             }
         }
         auto* newForm = RE::TESForm::LookupByID<RE::TESBoundObject>(rep);
@@ -385,12 +414,21 @@ void SyncFlaskItems() {
     if (!player) {
         return;
     }
-    std::scoped_lock lk(g_flasksLock);
-    for (std::uint32_t i = 0; i < g_flaskCount; ++i) {
-        if (!g_flasks[i].repPotion) {
-            continue;
+    // Snapshot the rep forms UNDER the lock, then grant OUTSIDE it:
+    // AddObjectToContainer fires TESContainerChangedEvent, whose sink calls
+    // FindFlaskSlot -> locks g_flasksLock; holding it here would self-deadlock
+    // (the mutex is not recursive).
+    std::vector<RE::FormID> reps;
+    {
+        std::scoped_lock lk(g_flasksLock);
+        for (std::uint32_t i = 0; i < g_flaskCount; ++i) {
+            if (g_flasks[i].repPotion) {
+                reps.push_back(g_flasks[i].repPotion);
+            }
         }
-        if (auto* form = RE::TESForm::LookupByID<RE::TESBoundObject>(g_flasks[i].repPotion)) {
+    }
+    for (const RE::FormID id : reps) {
+        if (auto* form = RE::TESForm::LookupByID<RE::TESBoundObject>(id)) {
             if (!PlayerHasItem(player, form)) {
                 player->AddObjectToContainer(form, nullptr, 1, nullptr);
             }
@@ -406,15 +444,25 @@ void SyncFlaskItems() {
 struct DrinkPotionHook {
     static bool thunk(RE::Actor* a_this, RE::AlchemyItem* a_potion, RE::ExtraDataList* a_extra) {
         if (a_this && a_this->IsPlayerRef() && a_potion) {
-            const int slot = FindFlaskSlot(a_potion->GetFormID());
+            const RE::FormID form = a_potion->GetFormID();
+            const int        slot = FindFlaskSlot(form);
             if (slot >= 0) {
-                int remaining = -1;
+                int  remaining   = -1;
+                bool stillFlask  = false;
                 {
                     std::scoped_lock lk(g_flasksLock);
-                    if (g_flasks[slot].charges > 0) {
-                        g_flasks[slot].charges--;
-                        remaining = static_cast<int>(g_flasks[slot].charges);
+                    // Re-verify under lock: the slot could have been
+                    // reconfigured between the lookup and here.
+                    if (g_flasks[slot].repPotion == form) {
+                        stillFlask = true;
+                        if (g_flasks[slot].charges > 0) {
+                            g_flasks[slot].charges--;
+                            remaining = static_cast<int>(g_flasks[slot].charges);
+                        }
                     }
+                }
+                if (!stillFlask) {
+                    return true;  // reconfigured mid-call; leave the item intact
                 }
                 if (remaining >= 0) {
                     if (auto* caster =
@@ -438,6 +486,12 @@ struct DrinkPotionHook {
 };
 
 void InstallDrinkHook() {
+    // 0x10F is the SSE/AE Actor::DrinkPotion vtable index; VR shifts the Actor
+    // vtable, so bail there rather than patch the wrong vfunc.
+    if (REL::Module::IsVR()) {
+        spdlog::warn("[drink] VR runtime — DrinkPotion vtable index differs; hook skipped");
+        return;
+    }
     REL::Relocation<std::uintptr_t> vtbl{ RE::PlayerCharacter::VTABLE[0] };
     DrinkPotionHook::func = vtbl.write_vfunc(0x10F, DrinkPotionHook::thunk);
     spdlog::info("[drink] DrinkPotion vfunc hook installed (PlayerCharacter idx 0x10F)");
@@ -1241,6 +1295,14 @@ void LoadCallback(SKSE::SerializationInterface* a_intfc) {
                 }
                 // Remap across load-order changes; drop forms whose plugin is gone.
                 if (a_intfc->ResolveFormID(mgef, mRes) && mRes) {
+                    // v1 saves predate the beneficial-only filter — drop hostile/
+                    // detrimental effects so they don't linger as dead menu rows.
+                    if (version < 2) {
+                        auto* eff = RE::TESForm::LookupByID<RE::EffectSetting>(mRes);
+                        if (eff && (eff->IsHostile() || eff->IsDetrimental())) {
+                            continue;
+                        }
+                    }
                     Blueprint bp{};
                     if (rep && a_intfc->ResolveFormID(rep, rRes)) {
                         bp.repPotion = rRes;
@@ -1253,6 +1315,11 @@ void LoadCallback(SKSE::SerializationInterface* a_intfc) {
             std::scoped_lock lk(g_flasksLock);
             a_intfc->ReadRecordData(g_flaskCount);
             a_intfc->ReadRecordData(g_chargesPerFlask);
+            // Clamp against a corrupt/edited record — g_flaskCount bounds hot
+            // loops (FindFlaskSlot on every container event + drink); an OOB
+            // value would read/write past g_flasks[kMaxFlaskSlots].
+            g_flaskCount      = std::min(g_flaskCount, static_cast<std::uint32_t>(kMaxFlaskSlots));
+            g_chargesPerFlask = std::clamp(g_chargesPerFlask, 1u, 99u);
             for (auto& f : g_flasks) {
                 RE::FormID bpId = 0, repId = 0, bpRes = 0, repRes = 0;
                 a_intfc->ReadRecordData(bpId);
