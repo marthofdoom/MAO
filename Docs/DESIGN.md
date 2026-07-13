@@ -109,14 +109,22 @@ Once a Flask hits 0 charges, it enters a dry state. Flasks automatically attempt
 
 ### 3.3 The Field Kit Interface (UI)
 
-The Field Kit is opened by a **lesser power** ("Open Field Kit"), granted to
-the player natively by the DLL — no crafting station, no menu takeover of a
-vanilla screen. This reuses the sibling MEO menu architecture wholesale; only
-the menu *content* differs:
+The Field Kit is opened by a **configurable button** (gamepad or keyboard),
+handled natively in the DLL's input hook — no crafting station, no menu
+takeover of a vanilla screen. This reuses the sibling MEO menu architecture
+wholesale; only the menu *content* differs.
 
-* **Power → menu:** the DLL grants a `SpellItem` power and a `TESSpellCastEvent`
-  sink catches its cast, opening the interface via the SKSE task interface
-  (identical to MEO's Gem Pouch power).
+> **Opener decision (2026-07-13, from P1a in-game test):** the Field Kit is a
+> utility menu, so it opens from a **button**, not a granted lesser power. A
+> power sits in the Powers select list and competes with real shouts for the
+> equip slot — unwanted for a menu you open constantly, especially on the Steam
+> Deck. The "Open Field Kit" `SPEL` form stays in the ESP (frozen, **dormant**
+> — never granted) and the `TESSpellCastEvent` sink stays wired, so it still
+> opens the kit if ever equipped; but the shipping opener is the button
+> (`iOpenButtonGamepad` / `iOpenHotkey`).
+
+* **Button → menu:** the input-dispatch hook toggles the viewer on the
+  configured button and swallows input while it is open (read-only in P0).
 * **Rendering:** a self-contained **ImGui** menu drawn through a D3D11
   DXGI-present hook with its own input routing — the exact render/input
   framework MEO already ships. MAO re-skins the layout; the plumbing (device
