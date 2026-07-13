@@ -53,6 +53,12 @@ echo "DLL: $(stat -c '%s bytes' "$STAGE/SKSE/Plugins/MAO.dll")"
 # lets them keep their edited copy on reinstall).
 cp data/SKSE/Plugins/MAO.ini "$STAGE/SKSE/Plugins/MAO.ini"
 
+# Regenerate MAO.esp fresh (deterministic, never hand-edited) at the zip root
+# (= virtual Data/). Every release is a complete standalone mod.
+python3 MAO_GenerateESP.py "$STAGE/espgen" >/dev/null
+[[ -f "$STAGE/espgen/MAO.esp" ]] || { echo "ERROR: MAO_GenerateESP.py produced no MAO.esp" >&2; exit 1; }
+mv "$STAGE/espgen/MAO.esp" "$STAGE/MAO.esp"; rmdir "$STAGE/espgen"
+
 mkdir -p "$STAGE/fomod"
 cat > "$STAGE/fomod/info.xml" <<EOF
 <fomod>
@@ -64,7 +70,7 @@ cat > "$STAGE/fomod/info.xml" <<EOF
 </fomod>
 EOF
 
-for req in "SKSE/Plugins/MAO.dll" "SKSE/Plugins/MAO.ini" "fomod/info.xml"; do
+for req in "SKSE/Plugins/MAO.dll" "SKSE/Plugins/MAO.ini" "MAO.esp" "fomod/info.xml"; do
     [[ -f "$STAGE/$req" ]] || { echo "ERROR: release incomplete — missing $req" >&2; exit 1; }
 done
 
