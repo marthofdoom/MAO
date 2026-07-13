@@ -68,7 +68,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.12.1 (per-ingredient tier split)";
+constexpr auto kPluginVersion = "0.13.0 (perk capacity ladder)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -129,6 +129,68 @@ std::uint32_t                     g_flaskCount     = 2;  // unlocked slots (P1e:
 std::uint32_t                     g_chargesPerFlask = 2;  // max charges (P1e: perk-scaled)
 std::mutex                        g_flasksLock;
 
+// ── P1e: perk-driven capacity + efficiency (DESIGN §5). The vanilla Skyrim.esm
+// alchemy perks are resolved at kDataLoaded; capacity is RECOMPUTED from them
+// (perks are authoritative over the co-saved counts). Vanilla "Alchemist" is 5
+// chained perk records, so the ladder reads purely off HasPerk — the highest
+// chained rank owned is the effective rank; no rank-field reading needed. Under
+// a perk overhaul (Requiem) these FormIDs may not resolve; capacity then holds
+// at the unperked baseline until the FOMOD retargets them (P2).
+struct AlchemyPerks {
+    RE::BGSPerk* alchemist[5] = {};       // BE127, C07CA/CB/CC/CD  (ranks 1..5)
+    RE::BGSPerk* purity       = nullptr;  // 0005821D — Master: +2 flask / +4 charge
+    RE::BGSPerk* benefactor   = nullptr;  // 00058216 — Apex essence cost -35%
+    RE::BGSPerk* experimenter = nullptr;  // 00058218 — gather yield +10%
+};
+AlchemyPerks      g_perks;
+std::atomic<int>  g_alchemistRank{ 0 };
+std::atomic<bool> g_hasPurity{ false };
+std::atomic<bool> g_hasBenefactor{ false };   // read in VariantCost (render + task)
+std::atomic<bool> g_hasExperimenter{ false };  // read in the gather credit (task)
+
+int AlchemistRank(RE::PlayerCharacter* a_pc) {
+    int r = 0;
+    for (int i = 0; i < 5; ++i) {
+        if (g_perks.alchemist[i] && a_pc->HasPerk(g_perks.alchemist[i])) {
+            r = i + 1;  // highest chained rank owned
+        }
+    }
+    return r;
+}
+// Recompute flask/charge capacity + efficiency flags from the player's perks.
+// Safe to call whenever the perk set may have changed (load, menu open).
+void RecomputeCapacity(const char* a_why) {
+    auto* pc = RE::PlayerCharacter::GetSingleton();
+    if (!pc) {
+        return;
+    }
+    const int  rank   = AlchemistRank(pc);
+    const bool purity = g_perks.purity && pc->HasPerk(g_perks.purity);
+    std::uint32_t flasks = 2, charges = 2;  // unperked baseline
+    if (rank >= 1) charges += 1;                    // Kit Calibration I   -> 2/3
+    if (rank >= 2) flasks += 1;                     // Kit Calibration II  -> 3/3
+    if (rank >= 4) { flasks += 1; charges += 2; }   // Field Deployment    -> 4/5
+    if (purity)    { flasks += 2; charges += 4; }   // Master's Crucible   -> 6/9
+    flasks  = std::min<std::uint32_t>(flasks, kMaxFlaskSlots);
+    charges = std::min<std::uint32_t>(charges, 9u);
+    g_alchemistRank.store(rank);
+    g_hasPurity.store(purity);
+    g_hasBenefactor.store(g_perks.benefactor && pc->HasPerk(g_perks.benefactor));
+    g_hasExperimenter.store(g_perks.experimenter && pc->HasPerk(g_perks.experimenter));
+    {
+        std::scoped_lock lk(g_flasksLock);
+        g_flaskCount      = flasks;
+        g_chargesPerFlask = charges;
+        for (auto& f : g_flasks) {  // never leave a flask above its new cap
+            f.charges = std::min(f.charges, charges);
+        }
+    }
+    spdlog::info("[perks] {}: Alchemist rank {}, Purity {}, Benefactor {}, Experimenter {} "
+                 "-> {} flasks / {} charges",
+                 a_why, rank, purity, g_hasBenefactor.load(), g_hasExperimenter.load(), flasks,
+                 charges);
+}
+
 // ── Essence economy: per-effect flask cost, computed from the load order's
 // own ingredients (native, DYNAMIC_OR_DROP-correct — no data file). For each
 // effect, cost-per-charge = round(2 * mean(source ingredient gold value) *
@@ -188,6 +250,8 @@ void OpenFieldKit(bool a_station) {
     g_menu.station.store(a_station);
     g_menu.cursorInit.store(true);
     g_menu.open.store(true);
+    // Refresh perk-scaled capacity in case a perk was taken since the last load.
+    SKSE::GetTaskInterface()->AddTask([]() { RecomputeCapacity("open"); });
 }
 void CloseFieldKit() {
     const bool wasStation = g_menu.station.exchange(false);
@@ -426,6 +490,9 @@ FlaskCost VariantCost(RE::AlchemyItem* a_alch) {
     }
     if (a_alch->effects.size() > 1) {
         fc.apex += apexUnit;
+    }
+    if (g_hasBenefactor.load() && fc.apex > 0) {  // Apex Stabilization: Tier III cost -35%
+        fc.apex = std::max(1u, static_cast<std::uint32_t>(std::lround(fc.apex * 0.65)));
     }
     return fc;
 }
@@ -965,10 +1032,13 @@ public:
                              name, a_event->baseObj);
                 return RE::BSEventNotifyControl::kContinue;
             }
-            const Tier          tier    = TierOf(name);
-            const int           value   = ingr->value;
-            const std::uint32_t total   = YieldFor(value, tier) * static_cast<std::uint32_t>(count);
-            const std::string   nameStr(name);
+            const Tier tier  = TierOf(name);
+            const int  value = ingr->value;
+            std::uint32_t total = YieldFor(value, tier) * static_cast<std::uint32_t>(count);
+            if (g_hasExperimenter.load()) {  // Field Extraction: +10% gather yield
+                total = std::max(1u, static_cast<std::uint32_t>(std::lround(total * 1.10)));
+            }
+            const std::string nameStr(name);
             SKSE::GetTaskInterface()->AddTask([ingr, count, tier, total, value, nameStr]() {
                 auto* player = RE::PlayerCharacter::GetSingleton();
                 if (!player) {
@@ -1578,10 +1648,6 @@ public:
     }
     RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* a_event,
                                           RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override {
-        if (a_event && g_menu.open.load()) {  // DIAG: what menus churn while the kit is open
-            spdlog::info("[diag] menu '{}' {} (kit open)", a_event->menuName.c_str(),
-                         a_event->opening ? "OPEN" : "close");
-        }
         if (a_event && a_event->opening && a_event->menuName == RE::CraftingMenu::MENU_NAME) {
             SKSE::GetTaskInterface()->AddTask([]() {
                 auto* player = RE::PlayerCharacter::GetSingleton();
@@ -1779,6 +1845,21 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
                 nf += g_flaskForms[i] ? 1 : 0;
             }
             spdlog::info("[flask] {}/{} flask forms resolved", nf, g_flaskForms.size());
+            // P1e: resolve the vanilla alchemy perks that drive capacity + cost.
+            constexpr const char*  SK       = "Skyrim.esm";
+            const RE::FormID       alch[5]  = { 0xBE127, 0xC07CA, 0xC07CB, 0xC07CC, 0xC07CD };
+            int                    np       = 0;
+            for (int i = 0; i < 5; ++i) {
+                g_perks.alchemist[i] = dh->LookupForm<RE::BGSPerk>(alch[i], SK);
+                np += g_perks.alchemist[i] ? 1 : 0;
+            }
+            g_perks.purity       = dh->LookupForm<RE::BGSPerk>(0x5821D, SK);
+            g_perks.benefactor   = dh->LookupForm<RE::BGSPerk>(0x58216, SK);
+            g_perks.experimenter = dh->LookupForm<RE::BGSPerk>(0x58218, SK);
+            spdlog::info("[perks] resolved {}/5 Alchemist ranks; purity={} benefactor={} "
+                         "experimenter={} (0=missing -> capacity holds at baseline)",
+                         np, g_perks.purity != nullptr, g_perks.benefactor != nullptr,
+                         g_perks.experimenter != nullptr);
         }
         spdlog::info("[power] Open Field Kit spell: {}", g_fieldKitSpell ? "found" : "MISSING (is MAO.esp enabled?)");
         BuildRecipeTable();
@@ -1800,6 +1881,7 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
         SKSE::GetTaskInterface()->AddTask([]() {
             RemoveFieldKitPower();
             SyncFlaskItems();
+            RecomputeCapacity("load");  // perks are authoritative over co-saved counts
         });
         break;
     default:
