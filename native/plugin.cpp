@@ -312,7 +312,7 @@ public:
                 bpKey   = alch->effects[0]->baseEffect->GetFormID();
                 bpCName = alch->effects[0]->baseEffect->GetName();
             }
-            const int           value   = alch->value;
+            const int           value   = alch->GetGoldValue();
             const std::uint32_t total   = YieldFor(value, Tier::Base) * static_cast<std::uint32_t>(count);
             const char*         pcName  = alch->GetName();
             const std::string   potName(pcName ? pcName : "potion");
