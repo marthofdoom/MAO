@@ -57,6 +57,17 @@ ssh -o BatchMode=yes "$HOST" "mkdir -p '$GAME/Data/MCM/Config/MAO'"
 scp -q data/MCM/Config/MAO/config.json "$HOST:$GAME/Data/MCM/Config/MAO/config.json"
 echo "MCM config deployed"
 
+# MCM registration script: SkyUI/MCM Helper only surface a page for a mod whose
+# start-game quest carries an MCM_ConfigBase-derived script. MAO.esp ships that
+# quest (MAO_MCMQuest -> MAO_MCM); the compiled script must be on disk.
+if [[ -f data/Scripts/MAO_MCM.pex ]]; then
+    ssh -o BatchMode=yes "$HOST" "mkdir -p '$GAME/Data/Scripts'"
+    scp -q data/Scripts/MAO_MCM.pex "$HOST:$GAME/Data/Scripts/MAO_MCM.pex"
+    echo "MCM script (MAO_MCM.pex) deployed"
+else
+    echo "WARNING: data/Scripts/MAO_MCM.pex missing — run tools/compile.sh MAO_MCM then re-copy (MCM won't register)"
+fi
+
 # Seed the INI only if the Deck doesn't already have one (preserve edits).
 if ssh -o BatchMode=yes "$HOST" "test ! -f '$PLUGINS/MAO.ini'"; then
     scp -q data/SKSE/Plugins/MAO.ini "$HOST:$PLUGINS/MAO.ini"

@@ -32,7 +32,11 @@ FID_FIELDKIT_SPELL = OWN | 0x801  # FROZEN — the Open Field Kit lesser power (
 FID_FLASK_BASE     = OWN | 0x810  # FROZEN — 6 dedicated flask AlchemyItems (0x810..0x815)
 NUM_FLASKS         = 6            # = kMaxFlaskSlots in the DLL
 FID_PERK_CAPSTONE  = OWN | 0x816  # FROZEN — MAO capstone perk (the 6/9 kit ceiling)
-NEXT_OBJECT_ID     = 0x817        # first unused local; grows as forms are added
+FID_MCM_QUEST      = OWN | 0x817  # FROZEN — MCM Helper config quest (attaches MAO_MCM)
+NEXT_OBJECT_ID     = 0x818        # first unused local; grows as forms are added
+
+# Papyrus VMAD (script attachment) format — versions per MEO's proven generator.
+VMAD_VERSION, OBJECT_FORMAT = 5, 2
 
 # Vanilla Skyrim.esm forms referenced by the flask records.
 KWD_VENDOR_POTION   = 0x0008CDEC  # KYWD VendorItemPotion (classifies it as a potion)
@@ -56,6 +60,48 @@ def group(label, data):
 
 def zstr(s):
     return s.encode('ascii') + b'\x00'
+
+
+# ── Papyrus script attachment (VMAD) + MCM quest, ported verbatim from MEO's
+# proven generator. The MCM page is invisible to MCM Helper unless a quest
+# carrying an MCM_ConfigBase-derived script is registered with SkyUI; MCM Helper
+# derives the modName from the quest's plugin stem ("MAO") and then reads
+# Data/MCM/Config/MAO/config.json. ──
+class VMADBuilder:
+    def __init__(self):
+        self.scripts = []
+
+    def add_script(self, name, props):
+        self.scripts.append((name, props))
+
+    def build(self):
+        b = BytesIO()
+        b.write(struct.pack('<HHH', VMAD_VERSION, OBJECT_FORMAT, len(self.scripts)))
+        for name, props in self.scripts:
+            e = name.encode('ascii')
+            b.write(struct.pack('<H', len(e)) + e + struct.pack('<B', 0) + struct.pack('<H', len(props)))
+            for pn, pv in props:
+                pe = pn.encode('ascii')
+                b.write(struct.pack('<H', len(pe)) + pe + bytes([pv[0]]) + struct.pack('<B', 1) + pv[1:])
+        return b.getvalue()
+
+# QUST DNAM: flags at offset 4. 0x0001 = Start Game Enabled.
+def qust_dnam(flags=0x0001):
+    return struct.pack('<B', 20) + b'\x01\x00\xff' + struct.pack('<HHI', flags, 0, 0)
+
+def make_mcm_quest():
+    # Start-game-enabled quest whose only job is to carry the MAO_MCM script
+    # (extends MCM Helper's MCM_ConfigBase). Zero VMAD properties: MCM Helper
+    # renders from Data/MCM/Config/MAO/config.json and persists to
+    # Data/MCM/Settings/MAO.ini; the DLL reads that INI. modName is derived by
+    # MCM Helper from this quest's plugin stem ("MAO"), so no property needed.
+    vmad = VMADBuilder()
+    vmad.add_script("MAO_MCM", [])
+    body = subrec('EDID', zstr("MAO_MCMQuest")) + subrec('FULL', zstr("MAO MCM")) \
+        + subrec('VMAD', vmad.build())
+    body += subrec('DNAM', qust_dnam(0x0001)) + subrec('NEXT', b'') \
+        + subrec('ANAM', struct.pack('<I', 0))
+    return group('QUST', record('QUST', FID_MCM_QUEST, 0, body))
 
 
 def make_tes4(next_id):
@@ -154,6 +200,7 @@ def main():
     esp.write(make_flasks())
     esp.write(make_spel())
     esp.write(make_perk())
+    esp.write(make_mcm_quest())
     data = esp.getvalue()
     path = os.path.join(out_dir, "MAO.esp")
     with open(path, 'wb') as f:
@@ -161,7 +208,8 @@ def main():
     print(f"Written: {path} ({len(data):,} bytes)")
     print(f"  MGEF x1 (inert)   ALCH x{NUM_FLASKS} (flasks 0x{FID_FLASK_BASE & 0xFFFFFF:03X}.."
           f"0x{(FID_FLASK_BASE + NUM_FLASKS - 1) & 0xFFFFFF:03X})   SPEL x1 (dormant)"
-          f"   PERK x1 (capstone 0x{FID_PERK_CAPSTONE & 0xFFFFFF:03X})")
+          f"   PERK x1 (capstone 0x{FID_PERK_CAPSTONE & 0xFFFFFF:03X})"
+          f"   QUST x1 (MCM 0x{FID_MCM_QUEST & 0xFFFFFF:03X})")
     print("  ESL-flagged, master Skyrim.esm")
 
 
