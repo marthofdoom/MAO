@@ -68,7 +68,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.8.1 (P1d: discovered variants)";
+constexpr auto kPluginVersion = "0.8.2 (P1d variants + Fable review)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -111,7 +111,7 @@ std::mutex                     g_discoveredLock;
 constexpr std::size_t kMaxFlaskSlots = 6;  // design ceiling (6 flasks / 9 charges)
 
 struct Flask {
-    RE::FormID    blueprint = 0;  // 0 = empty (MGEF key into g_discovered)
+    RE::FormID    blueprint = 0;  // primary-effect MGEF (for cost/coating/refill); 0 = empty
     RE::FormID    repPotion = 0;  // the physical flask item (rep potion form); 0 = none
     std::uint32_t charges   = 0;
 };
@@ -831,7 +831,12 @@ public:
                 }
                 player->RemoveItem(alch, count, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
                 bool learned = false;
-                if (bpKey) {  // has a usable primary effect
+                // Skip runtime-created (0xFF) forms — a potion crafted at a
+                // bench is ephemeral; persisting its FormID would dangle or be
+                // reused by a different created form next session. Still convert
+                // it to essence, just don't record it as a discoverable variant.
+                const bool ephemeral = (potForm & 0xFF000000) == 0xFF000000;
+                if (bpKey && !ephemeral) {
                     std::scoped_lock lk(g_discoveredLock);
                     learned = g_discovered.insert(potForm).second;  // this SPECIFIC variant
                 }
@@ -1106,7 +1111,7 @@ namespace menuhook {
                     const bool          coat = eff->IsHostile() || eff->IsDetrimental();
                     const std::uint32_t cost = EffectCostPerCharge(eff->GetFormID()) * g_chargesPerFlask;
                     char                label[224];
-                    std::snprintf(label, sizeof(label), "%-30s %s %u Base##v%08X",
+                    std::snprintf(label, sizeof(label), "%-30.80s %s %u Base##v%08X",
                                   (pn && *pn) ? pn : "(unknown)", coat ? "[coating]" : "         ",
                                   cost, pid);
                     const bool enabled = g_selectedSlot >= 0 && !coat && g_pouch.base >= cost;
@@ -1474,6 +1479,10 @@ void LoadCallback(SKSE::SerializationInterface* a_intfc) {
                     } else if (a_intfc->ResolveFormID(mgef, mRes) && mRes) {
                         if (RE::FormID r = RepPotionFor(mRes)) {
                             g_discovered.insert(r);
+                        } else {
+                            spdlog::warn("[load] migration: effect {:08X} has no load-order potion "
+                                         "— dropped (re-discover to restore)",
+                                         mRes);
                         }
                     }
                 }
@@ -1499,13 +1508,28 @@ void LoadCallback(SKSE::SerializationInterface* a_intfc) {
             }
         }
     }
-    std::size_t bp = 0;
+    // A slot's currently-equipped variant must be discoverable (so reconfiguring
+    // that slot can re-select it). Migrated saves can have a flask rep that the
+    // BLPT migration didn't seed — backfill it here.
+    std::vector<RE::FormID> flaskReps;
+    {
+        std::scoped_lock lk(g_flasksLock);
+        for (const auto& f : g_flasks) {
+            if (f.repPotion) {
+                flaskReps.push_back(f.repPotion);
+            }
+        }
+    }
+    std::size_t variants = 0;
     {
         std::scoped_lock lk(g_discoveredLock);
-        bp = g_discovered.size();
+        for (const RE::FormID id : flaskReps) {
+            g_discovered.insert(id);
+        }
+        variants = g_discovered.size();
     }
-    spdlog::info("[load] pouch B={} C={} A={}; {} blueprint(s)", g_pouch.base, g_pouch.catalyst,
-                 g_pouch.apex, bp);
+    spdlog::info("[load] pouch B={} C={} A={}; {} discovered variant(s)", g_pouch.base,
+                 g_pouch.catalyst, g_pouch.apex, variants);
 }
 
 void RevertCallback(SKSE::SerializationInterface*) {
