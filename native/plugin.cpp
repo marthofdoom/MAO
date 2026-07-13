@@ -68,7 +68,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.12.0 (compound recipe-based cost)";
+constexpr auto kPluginVersion = "0.12.1 (per-ingredient tier split)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -138,10 +138,12 @@ std::mutex                        g_flasksLock;
 // potion record values which run ~5-7x their ingredients (see
 // essence-economy-tax memory). Built at kDataLoaded; guarded for the render
 // read.
-// Per-effect cheapest 2-ingredient recipe: summed gold value + the tier of that
-// recipe (its rarest required ingredient). The flask BASE cost = recipe value ×
-// concentration × tax, charged in the recipe tier.
-struct Recipe { std::uint32_t value = 10; Tier tier = Tier::Base; };
+// Per-effect cheapest 2-ingredient recipe, kept as its TWO ingredients so the
+// base cost splits per ingredient IN ITS OWN TIER (a Base flower + a Catalyst
+// plant → part Base + part Catalyst). Base cost = each ingredient's value ×
+// concentration × tax, added to that ingredient's tier pool.
+struct RecipeIng { std::uint32_t value = 5; Tier tier = Tier::Base; };
+struct Recipe { RecipeIng a, b; };
 std::unordered_map<RE::FormID, Recipe> g_effectRecipe;
 std::uint32_t g_catalystUnit = 40;   // representative Catalyst ingredient value (surcharge unit)
 std::uint32_t g_apexUnit     = 120;  // representative Apex ingredient value
@@ -348,13 +350,12 @@ void BuildRecipeTable() {
     for (auto& [id, vec] : byEffect) {
         std::sort(vec.begin(), vec.end(),
                   [](const auto& a, const auto& b) { return a.first < b.first; });
-        // Cheapest 2 ingredients sharing the effect = the vanilla recipe.
-        const std::uint32_t sum  = vec[0].first + (vec.size() > 1 ? vec[1].first : vec[0].first);
-        Tier                tier = vec[0].second;
-        if (vec.size() > 1) {  // recipe is as rare as its rarest required ingredient
-            tier = std::max(tier, vec[1].second);
-        }
-        g_effectRecipe[id] = { std::max(1u, sum), tier };
+        // Cheapest 2 ingredients sharing the effect = the vanilla recipe. Keep
+        // both so the base cost can split across their (possibly different) tiers.
+        const auto& i0 = vec[0];
+        const auto& i1 = vec.size() > 1 ? vec[1] : vec[0];
+        g_effectRecipe[id] = { { std::max(1u, i0.first), i0.second },
+                               { std::max(1u, i1.first), i1.second } };
     }
     g_catalystUnit = median(catVals, 40);
     g_apexUnit     = median(apexVals, 120);
@@ -375,7 +376,9 @@ void AddTier(FlaskCost& c, Tier t, std::uint32_t amt) {
 Tier TierAbove(Tier t) { return t == Tier::Base ? Tier::Catalyst : Tier::Apex; }
 
 // Compound per-charge cost for a specific variant (Marth's model):
-//   BASE = recipe value x concentration x tax, in the recipe's tier.
+//   BASE = each recipe ingredient's value x concentration x tax, added to THAT
+//          ingredient's own tier pool (so a Base+Catalyst recipe splits into
+//          part Base + part Catalyst by design).
 //   +CAT = high concentration (>= fCatalystLevel) needs a tier-up ingredient's
 //          worth; doubles at >= fApexLevel (Vigorous -> 1, Extreme+ -> 2).
 //   +APEX = any multi-effect potion needs an Apex ingredient's worth.
@@ -409,12 +412,15 @@ FlaskCost VariantCost(RE::AlchemyItem* a_alch) {
             minMag = it->second;
         }
     }
-    const float conc = (minMag > 0.01f) ? std::max(1.0f, mag / minMag) : 1.0f;
-    AddTier(fc, rec.tier,
-            std::max(1u, static_cast<std::uint32_t>(
-                             std::lround(rec.value * conc * g_costRate * g_essenceTax))));
-    if (conc >= g_catalystLevel) {
-        const Tier          su   = TierAbove(rec.tier);
+    const float conc  = (minMag > 0.01f) ? std::max(1.0f, mag / minMag) : 1.0f;
+    const float basis = conc * g_costRate * g_essenceTax;
+    // BASE splits per ingredient, each in its own tier.
+    for (const RecipeIng& ing : { rec.a, rec.b }) {
+        AddTier(fc, ing.tier,
+                std::max(1u, static_cast<std::uint32_t>(std::lround(ing.value * basis))));
+    }
+    if (conc >= g_catalystLevel) {  // surcharge sits one tier above the recipe's rarest
+        const Tier          su   = TierAbove(std::max(rec.a.tier, rec.b.tier));
         const std::uint32_t unit = (su == Tier::Apex) ? apexUnit : catUnit;
         AddTier(fc, su, unit * (conc >= g_apexLevel ? 2u : 1u));
     }
