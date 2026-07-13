@@ -28,8 +28,15 @@ OWN = 0x01000000
 FREF_EQUP_VOICE = 0x00025BEE  # Skyrim.esm EQUP "Voice" (lesser-power slot)
 
 FID_FIELDKIT_MGEF  = OWN | 0x800  # FROZEN — inert effect the power carries
-FID_FIELDKIT_SPELL = OWN | 0x801  # FROZEN — the Open Field Kit lesser power
-NEXT_OBJECT_ID     = 0x802        # first unused local; grows as forms are added
+FID_FIELDKIT_SPELL = OWN | 0x801  # FROZEN — the Open Field Kit lesser power (dormant)
+FID_FLASK_BASE     = OWN | 0x810  # FROZEN — 6 dedicated flask AlchemyItems (0x810..0x815)
+NUM_FLASKS         = 6            # = kMaxFlaskSlots in the DLL
+NEXT_OBJECT_ID     = 0x816        # first unused local; grows as forms are added
+
+# Vanilla Skyrim.esm forms referenced by the flask records.
+KWD_VENDOR_POTION   = 0x0008CDEC  # KYWD VendorItemPotion (classifies it as a potion)
+MGEF_RESTORE_HEALTH = 0x0003EB15  # placeholder effect (the DLL mutates it at runtime)
+FLASK_MODEL         = "Clutter\\Potions\\PotionFortifySkill01.nif"  # a generic potion mesh
 
 FORM_VERSION = 44
 
@@ -98,21 +105,46 @@ def make_spel():
     return group('SPEL', record('SPEL', FID_FIELDKIT_SPELL, 0, body))
 
 
+# ── Dedicated flask potions. Each is a real, permanent AlchemyItem the player
+# favorites / puts on Wheeler; the DLL mutates its effects + name to the
+# configured variant at runtime, so reconfiguring changes CONTENTS not IDENTITY
+# and the binding survives. ENIT flags 0x10000 = kMedicine (a beneficial
+# potion). The Restore Health effect + FULL name here are placeholders the DLL
+# overwrites. Byte order per the ALCH recipe dumped from vanilla. ──
+def make_flask(fid, edid):
+    body  = subrec('EDID', zstr(edid))
+    body += subrec('OBND', b'\x00' * 12)
+    body += subrec('FULL', zstr("Field Flask"))
+    body += subrec('KSIZ', struct.pack('<I', 1))
+    body += subrec('KWDA', struct.pack('<I', KWD_VENDOR_POTION))
+    body += subrec('MODL', zstr(FLASK_MODEL))
+    body += subrec('DATA', struct.pack('<f', 0.5))                       # weight
+    body += subrec('ENIT', struct.pack('<iIIfI', 10, 0x00010000, 0, 0.0, 0))
+    body += subrec('EFID', struct.pack('<I', MGEF_RESTORE_HEALTH))
+    body += subrec('EFIT', struct.pack('<fII', 5.0, 0, 0))               # mag, area, dur
+    return record('ALCH', fid, 0, body)
+
+def make_flasks():
+    out = b''.join(make_flask(FID_FLASK_BASE + i, "MAO_Flask%d" % i) for i in range(NUM_FLASKS))
+    return group('ALCH', out)
+
+
 def main():
     out_dir = sys.argv[1] if len(sys.argv) > 1 else "out"
     os.makedirs(out_dir, exist_ok=True)
     esp = BytesIO()
     esp.write(make_tes4(NEXT_OBJECT_ID))
     esp.write(make_mgef())
+    esp.write(make_flasks())
     esp.write(make_spel())
     data = esp.getvalue()
     path = os.path.join(out_dir, "MAO.esp")
     with open(path, 'wb') as f:
         f.write(data)
     print(f"Written: {path} ({len(data):,} bytes)")
-    print("  MGEF x1 (inert self)   SPEL x1 (Open Field Kit lesser power)")
-    print(f"  FROZEN FormIDs: MGEF 0x{FID_FIELDKIT_MGEF & 0xFFFFFF:03X}  "
-          f"SPEL 0x{FID_FIELDKIT_SPELL & 0xFFFFFF:03X}  (ESL-flagged, master Skyrim.esm)")
+    print(f"  MGEF x1 (inert)   ALCH x{NUM_FLASKS} (flasks 0x{FID_FLASK_BASE & 0xFFFFFF:03X}.."
+          f"0x{(FID_FLASK_BASE + NUM_FLASKS - 1) & 0xFFFFFF:03X})   SPEL x1 (dormant)")
+    print("  ESL-flagged, master Skyrim.esm")
 
 
 if __name__ == "__main__":

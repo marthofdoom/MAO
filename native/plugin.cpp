@@ -68,7 +68,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.9.1 (variant cost scaling)";
+constexpr auto kPluginVersion = "0.10.0 (dedicated flask items)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -80,8 +80,13 @@ constexpr RE::FormID    kPlayerID      = 0x14;
 // MAO.esp forms (P1a). FROZEN — must match MAO_GenerateESP.py. ESL-flagged
 // plugin, so LookupForm takes the low local ID + the plugin name.
 constexpr const char* kPluginName      = "MAO.esp";
-constexpr RE::FormID  kFieldKitSpellID = 0x801;  // Open Field Kit lesser power
+constexpr RE::FormID  kFieldKitSpellID = 0x801;  // Open Field Kit lesser power (dormant)
+constexpr RE::FormID  kFlaskBaseID     = 0x810;  // MAO.esp flasks 0x810..0x815
 RE::SpellItem*        g_fieldKitSpell  = nullptr;
+// The 6 dedicated flask AlchemyItem forms (slot i ↔ g_flaskForms[i]). Their
+// effects + name are mutated at runtime to the configured variant, so the item
+// IDENTITY is stable across reconfigure and Favorites/Wheeler bindings survive.
+std::array<RE::AlchemyItem*, 6> g_flaskForms{};
 
 // ── Essence pouch: the abstracted store. Three tier counters, nothing more.
 // This is the entire P0 persisted state; it lives here and serializes to the
@@ -109,6 +114,7 @@ std::mutex                     g_discoveredLock;
 // arrive in P1d). Slot/charge counts are the unperked baseline here; P1e
 // scales them via the perk ladder. Guarded — render reads, task writes.
 constexpr std::size_t kMaxFlaskSlots = 6;  // design ceiling (6 flasks / 9 charges)
+static_assert(kMaxFlaskSlots == 6, "g_flaskForms[6] and MAO_GenerateESP NUM_FLASKS assume 6");
 
 struct Flask {
     RE::FormID    blueprint = 0;  // primary-effect MGEF (for cost/coating/refill); 0 = empty
@@ -143,9 +149,11 @@ std::unordered_map<RE::FormID, std::pair<RE::FormID, std::uint32_t>> g_effectPot
 std::unordered_map<RE::FormID, float> g_effectMeanMag;  // MGEF -> mean primary-effect magnitude
 std::mutex                            g_effectPotionLock;
 
-// Which flask slot uses this form as its physical item (-1 = none). Defined
-// below near the container sink; forward-declared for the drink hook above it.
-int FindFlaskSlot(RE::FormID a_form);
+// Flask helpers — defined below near the container sink; forward-declared for
+// ConfigureFlask / the drink hook above them.
+int  FindFlaskSlot(RE::FormID a_form);
+bool IsFlaskForm(RE::FormID a_form);
+void RenameFlask(std::size_t a_slot, RE::AlchemyItem* a_variant);
 
 // ── Field Kit viewer state (M2). open/close is driven by the input hook and
 // read by the present hook — both run off the game's render/input threads, so
@@ -478,59 +486,34 @@ void ConfigureFlask(std::size_t a_slot, RE::FormID a_potion) {
         }
         return;
     }
-    // One exact variant per slot — keeps the rep form ↔ slot mapping 1:1 (the
-    // drink hook + container guard). Different variants of the same effect in
-    // different slots are fine.
-    {
-        std::scoped_lock lk(g_flasksLock);
-        for (std::uint32_t i = 0; i < g_flaskCount; ++i) {
-            if (i != a_slot && g_flasks[i].repPotion == rep) {
-                spdlog::info("[flask] slot {} DENIED — variant already in flask {}", a_slot, i + 1);
-                if (g_notify) {
-                    RE::DebugNotification("That variant is already in another flask.");
-                }
-                return;
-            }
-        }
-    }
     const std::uint32_t cost = VariantCostPerCharge(alch) * g_chargesPerFlask;
     if (!SpendBase(cost)) {
-        spdlog::info("[flask] slot {} configure DENIED — need {} Base (have {})",
-                     a_slot, cost, g_pouch.base);
+        spdlog::info("[flask] slot {} configure DENIED — need {} Base (have {})", a_slot, cost,
+                     g_pouch.base);
         if (g_notify) {
             RE::DebugNotification(std::format("Not enough Base Essence ({} needed).", cost).c_str());
         }
         return;
     }
-    RE::FormID    oldRep     = 0;
     std::uint32_t hadCharges = 0;
     {
         std::scoped_lock lk(g_flasksLock);
-        oldRep               = g_flasks[a_slot].repPotion;
-        hadCharges           = g_flasks[a_slot].charges;
-        g_flasks[a_slot]     = { a_blueprint, rep, g_chargesPerFlask };
+        hadCharges       = g_flasks[a_slot].charges;
+        g_flasks[a_slot] = { a_blueprint, rep, g_chargesPerFlask };  // rep = variant source
     }
 
-    // Swap the physical flask item: a permanent count-1 potion the player can
-    // favorite / put on Wheeler. Only touch inventory when the form changes.
+    // The physical item is the SLOT'S dedicated flask form — stable across
+    // reconfigure, so its Favorites/Wheeler binding never breaks. We only
+    // rename it to the new variant and make sure the player has it.
+    RenameFlask(a_slot, alch);
     auto* player = RE::PlayerCharacter::GetSingleton();
-    if (player && rep != oldRep) {
-        if (oldRep) {
-            if (auto* oldForm = RE::TESForm::LookupByID<RE::TESBoundObject>(oldRep)) {
-                // Remove just the one flask instance (uniqueness above means no
-                // other slot shares it; found copies of the form are left be).
-                player->RemoveItem(oldForm, 1, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
-            }
-        }
-        auto* newForm = RE::TESForm::LookupByID<RE::TESBoundObject>(rep);
-        if (newForm && !PlayerHasItem(player, newForm)) {
-            player->AddObjectToContainer(newForm, nullptr, 1, nullptr);
-        }
+    if (player && g_flaskForms[a_slot] && !PlayerHasItem(player, g_flaskForms[a_slot])) {
+        player->AddObjectToContainer(g_flaskForms[a_slot], nullptr, 1, nullptr);
     }
 
     const char* vName = alch->GetName();
-    spdlog::info("[flask] slot {} <- '{}' ({:08X}, {} charges); spent {} Base (purged {} old); "
-                 "pouch B={}",
+    spdlog::info("[flask] slot {} <- '{}' (variant {:08X}, {} charges); spent {} Base (was {} "
+                 "charges); pouch B={}",
                  a_slot, vName ? vName : "?", rep, g_chargesPerFlask, cost, hadCharges, g_pouch.base);
     if (g_notify) {
         RE::DebugNotification(
@@ -546,29 +529,32 @@ void SyncFlaskItems() {
     if (!player) {
         return;
     }
-    // Snapshot the rep forms UNDER the lock, then grant OUTSIDE it:
-    // AddObjectToContainer fires TESContainerChangedEvent, whose sink calls
-    // FindFlaskSlot -> locks g_flasksLock; holding it here would self-deadlock
-    // (the mutex is not recursive).
-    std::vector<RE::FormID> reps;
+    // Forms reset to ESP defaults on load, so re-apply each configured slot's
+    // name and make sure its dedicated flask item is in the player's bags.
+    // Snapshot (slot, variant) UNDER the lock, then act OUTSIDE it — grants fire
+    // TESContainerChangedEvent whose sink re-locks g_flasksLock (non-recursive).
+    struct Sync { std::size_t slot; RE::FormID variant; };
+    std::vector<Sync> todo;
     {
         std::scoped_lock lk(g_flasksLock);
         for (std::uint32_t i = 0; i < g_flaskCount; ++i) {
-            // Heal slots configured before P1d (blueprint set but no rep stored)
-            // by deriving the rep from the load-order table.
+            // Heal pre-P1d slots (blueprint set, no variant) from the load order.
             if (g_flasks[i].blueprint && g_flasks[i].repPotion == 0) {
                 g_flasks[i].repPotion = RepPotionFor(g_flasks[i].blueprint);
             }
             if (g_flasks[i].repPotion) {
-                reps.push_back(g_flasks[i].repPotion);
+                todo.push_back({ i, g_flasks[i].repPotion });
             }
         }
     }
-    for (const RE::FormID id : reps) {
-        if (auto* form = RE::TESForm::LookupByID<RE::TESBoundObject>(id)) {
-            if (!PlayerHasItem(player, form)) {
-                player->AddObjectToContainer(form, nullptr, 1, nullptr);
-            }
+    for (const auto& t : todo) {
+        auto* vAlch = RE::TESForm::LookupByID<RE::AlchemyItem>(t.variant);
+        if (vAlch) {
+            RenameFlask(t.slot, vAlch);
+        }
+        auto* item = g_flaskForms[t.slot];
+        if (item && !PlayerHasItem(player, item)) {
+            player->AddObjectToContainer(item, nullptr, 1, nullptr);
         }
     }
 }
@@ -650,18 +636,17 @@ struct DrinkPotionHook {
             const RE::FormID form = a_potion->GetFormID();
             const int        slot = FindFlaskSlot(form);
             if (slot >= 0) {
-                RE::FormID bpMgef    = 0;
-                bool       stillFlask = false;
+                RE::FormID bpMgef  = 0;
+                RE::FormID variant = 0;
                 {
                     std::scoped_lock lk(g_flasksLock);
-                    // Re-verify under lock: the slot could have been
-                    // reconfigured between the lookup and here.
-                    if (g_flasks[slot].repPotion == form) {
-                        stillFlask = true;
-                        bpMgef     = g_flasks[slot].blueprint;
+                    // Re-verify configured under lock (could have been cleared).
+                    if (g_flasks[slot].repPotion != 0) {
+                        variant = g_flasks[slot].repPotion;
+                        bpMgef  = g_flasks[slot].blueprint;
                     }
                 }
-                if (!stillFlask) {
+                if (!variant) {
                     return true;  // reconfigured mid-call; leave the item intact
                 }
                 // A coating (detrimental effect) isn't drunk — it applies to a
@@ -681,18 +666,23 @@ struct DrinkPotionHook {
                 int remaining = -1;
                 {
                     std::scoped_lock lk(g_flasksLock);
-                    if (g_flasks[slot].repPotion == form && g_flasks[slot].charges > 0) {
+                    if (g_flasks[slot].repPotion == variant && g_flasks[slot].charges > 0) {
                         g_flasks[slot].charges--;
                         remaining = static_cast<int>(g_flasks[slot].charges);
                     }
                 }
                 if (remaining >= 0) {
-                    if (auto* caster =
-                            a_this->GetMagicCaster(RE::MagicSystem::CastingSource::kInstant)) {
-                        caster->CastSpellImmediate(a_potion, false, a_this, 1.0f, false, 0.0f,
-                                                   a_this);
+                    // Cast the VARIANT (the flask form itself carries only a
+                    // placeholder effect); it supplies the real magnitudes.
+                    auto* vAlch = RE::TESForm::LookupByID<RE::AlchemyItem>(variant);
+                    if (vAlch) {
+                        if (auto* caster =
+                                a_this->GetMagicCaster(RE::MagicSystem::CastingSource::kInstant)) {
+                            caster->CastSpellImmediate(vAlch, false, a_this, 1.0f, false, 0.0f,
+                                                       a_this);
+                        }
+                        PlayDrinkSound(a_this, vAlch);
                     }
-                    PlayDrinkSound(a_this, a_potion);
                     spdlog::info("[drink] flask slot {} drunk; {} charge(s) left", slot, remaining);
                 } else {
                     spdlog::info("[drink] flask slot {} is dry", slot);
@@ -782,17 +772,44 @@ void ReadConfig() {
 }
 
 // Which flask slot (if any) uses this form as its physical item. -1 = none.
+// Is this form one of our dedicated flask items (configured or not)? Used to
+// keep the discovery sink from analysing a flask that's being (re)granted.
+bool IsFlaskForm(RE::FormID a_form) {
+    if (!a_form) {
+        return false;
+    }
+    for (auto* f : g_flaskForms) {
+        if (f && f->GetFormID() == a_form) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Which CONFIGURED slot's flask item is this form? (drink hook.)
 int FindFlaskSlot(RE::FormID a_form) {
     if (!a_form) {
         return -1;
     }
     std::scoped_lock lk(g_flasksLock);
     for (std::uint32_t i = 0; i < g_flaskCount; ++i) {
-        if (g_flasks[i].repPotion == a_form) {
+        if (g_flasks[i].repPotion != 0 && g_flaskForms[i] &&
+            g_flaskForms[i]->GetFormID() == a_form) {
             return static_cast<int>(i);
         }
     }
     return -1;
+}
+
+// Rename a slot's flask item to its configured variant so the player can tell
+// flasks apart in the inventory / on Wheeler. Runs on the main (task) thread.
+void RenameFlask(std::size_t a_slot, RE::AlchemyItem* a_variant) {
+    if (a_slot >= g_flaskForms.size() || !g_flaskForms[a_slot] || !a_variant) {
+        return;
+    }
+    const char* vn = a_variant->GetName();
+    g_flaskForms[a_slot]->fullName =
+        RE::BSFixedString(std::format("Flask: {}", (vn && *vn) ? vn : "Alchemy").c_str());
 }
 
 // ── The gathering sink: the SOLE essence-credit point. Anything an ingredient
@@ -858,10 +875,9 @@ public:
             if (alch->IsFood()) {
                 return RE::BSEventNotifyControl::kContinue;
             }
-            // A flask being (re)granted is a real potion form landing in the
-            // player's bags — do NOT analyze/destroy it. (Found copies of that
-            // same form also skip conversion; a rare, harmless edge.)
-            if (FindFlaskSlot(a_event->baseObj) >= 0) {
+            // A flask item landing in the player's bags (grant) must NOT be
+            // analysed/destroyed.
+            if (IsFlaskForm(a_event->baseObj)) {
                 return RE::BSEventNotifyControl::kContinue;
             }
             // Primary effect → blueprint key. Beneficial effects become
@@ -1625,6 +1641,13 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
         RE::TESHarvestedEvent::GetEventSource()->AddEventSink(HarvestSink::GetSingleton());
         if (auto* dh = RE::TESDataHandler::GetSingleton()) {
             g_fieldKitSpell = dh->LookupForm<RE::SpellItem>(kFieldKitSpellID, kPluginName);
+            int nf          = 0;
+            for (std::uint32_t i = 0; i < g_flaskForms.size(); ++i) {
+                g_flaskForms[i] =
+                    dh->LookupForm<RE::AlchemyItem>(kFlaskBaseID + i, kPluginName);
+                nf += g_flaskForms[i] ? 1 : 0;
+            }
+            spdlog::info("[flask] {}/{} flask forms resolved", nf, g_flaskForms.size());
         }
         spdlog::info("[power] Open Field Kit spell: {}", g_fieldKitSpell ? "found" : "MISSING (is MAO.esp enabled?)");
         BuildEffectCostTable();
