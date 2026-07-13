@@ -62,12 +62,18 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.2.0 (M2 essence viewer)";
+constexpr auto kPluginVersion = "0.3.0 (P1a field kit power)";
 
 constexpr std::uint32_t kSerID       = 'MAO1';
 constexpr std::uint32_t kRecPouch    = 'POCH';
 constexpr std::uint32_t kSerVersion  = 1;
 constexpr RE::FormID    kPlayerID    = 0x14;
+
+// MAO.esp forms (P1a). FROZEN — must match MAO_GenerateESP.py. ESL-flagged
+// plugin, so LookupForm takes the low local ID + the plugin name.
+constexpr const char* kPluginName      = "MAO.esp";
+constexpr RE::FormID  kFieldKitSpellID = 0x801;  // Open Field Kit lesser power
+RE::SpellItem*        g_fieldKitSpell  = nullptr;
 
 // ── Essence pouch: the abstracted store. Three tier counters, nothing more.
 // This is the entire P0 persisted state; it lives here and serializes to the
@@ -477,6 +483,37 @@ namespace menuhook {
 
 }  // namespace menuhook
 
+// ── The Open Field Kit power (P1a). MAO is native-first: the DLL grants the
+// lesser power and a cast-event sink opens the viewer — no Papyrus, no quest.
+// The gamepad/keyboard opener stays as a fallback.
+void GrantFieldKitPower() {
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player || !g_fieldKitSpell) {
+        return;
+    }
+    if (!player->HasSpell(g_fieldKitSpell)) {
+        player->AddSpell(g_fieldKitSpell);
+        spdlog::info("[power] granted Open Field Kit power");
+        RE::DebugNotification("Learned the Open Field Kit power.");
+    }
+}
+
+class SpellCastSink : public RE::BSTEventSink<RE::TESSpellCastEvent> {
+public:
+    static SpellCastSink* GetSingleton() {
+        static SpellCastSink singleton;
+        return &singleton;
+    }
+    RE::BSEventNotifyControl ProcessEvent(const RE::TESSpellCastEvent* a_event,
+                                          RE::BSTEventSource<RE::TESSpellCastEvent>*) override {
+        if (a_event && g_fieldKitSpell && a_event->spell == g_fieldKitSpell->GetFormID() &&
+            a_event->object && a_event->object->IsPlayerRef()) {
+            SKSE::GetTaskInterface()->AddTask([]() { g_menu.open.store(true); });
+        }
+        return RE::BSEventNotifyControl::kContinue;
+    }
+};
+
 // ── SKSE co-save: the 'POCH' record (schema v1). Three tier counters.
 void SaveCallback(SKSE::SerializationInterface* a_intfc) {
     if (!a_intfc->OpenRecord(kRecPouch, kSerVersion)) {
@@ -515,17 +552,33 @@ void RevertCallback(SKSE::SerializationInterface*) {
 }
 
 void OnMessage(SKSE::MessagingInterface::Message* a_message) {
-    if (a_message->type == SKSE::MessagingInterface::kDataLoaded) {
+    switch (a_message->type) {
+    case SKSE::MessagingInterface::kDataLoaded: {
         ReadConfig();
-        RE::ScriptEventSourceHolder::GetSingleton()
-            ->AddEventSink<RE::TESContainerChangedEvent>(ContainerSink::GetSingleton());
+        auto* holder = RE::ScriptEventSourceHolder::GetSingleton();
+        holder->AddEventSink<RE::TESContainerChangedEvent>(ContainerSink::GetSingleton());
+        holder->AddEventSink<RE::TESSpellCastEvent>(SpellCastSink::GetSingleton());
         RE::TESHarvestedEvent::GetEventSource()->AddEventSink(HarvestSink::GetSingleton());
+        if (auto* dh = RE::TESDataHandler::GetSingleton()) {
+            g_fieldKitSpell = dh->LookupForm<RE::SpellItem>(kFieldKitSpellID, kPluginName);
+        }
+        spdlog::info("[power] Open Field Kit spell: {}", g_fieldKitSpell ? "found" : "MISSING (is MAO.esp enabled?)");
         const auto gameVersion = REL::Module::get().version();
         if (auto* console = RE::ConsoleLog::GetSingleton()) {
             console->Print("MAO native v%s loaded", kPluginVersion);
         }
-        spdlog::info("kDataLoaded: MAO v{} live on runtime {}; gathering sinks + viewer registered",
+        spdlog::info("kDataLoaded: MAO v{} live on runtime {}; sinks + viewer + power registered",
                      kPluginVersion, gameVersion.string());
+        break;
+    }
+    case SKSE::MessagingInterface::kPostLoadGame:
+    case SKSE::MessagingInterface::kNewGame:
+        // Player exists here (after LoadCallback/Revert). Grant the power if
+        // absent; retries every load, so a mid-save ESP enable still lands.
+        SKSE::GetTaskInterface()->AddTask([]() { GrantFieldKitPower(); });
+        break;
+    default:
+        break;
     }
 }
 
