@@ -65,11 +65,12 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.4.0 (P1b blueprints)";
+constexpr auto kPluginVersion = "0.5.0 (P1c flasks)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
 constexpr std::uint32_t kRecBlueprints = 'BLPT';
+constexpr std::uint32_t kRecFlasks     = 'FLSK';
 constexpr std::uint32_t kSerVersion    = 1;
 constexpr RE::FormID    kPlayerID      = 0x14;
 
@@ -99,11 +100,32 @@ Pouch g_pouch;
 std::unordered_set<RE::FormID> g_blueprints;
 std::mutex                     g_blueprintsLock;
 
+// ── Flasks (P1c). Permanent kit slots, each holding a blueprint payload +
+// charges. Native slots for now (physical drinkable item forms + drinking
+// arrive in P1d). Slot/charge counts are the unperked baseline here; P1e
+// scales them via the perk ladder. Guarded — render reads, task writes.
+constexpr std::size_t kMaxFlaskSlots = 6;  // design ceiling (6 flasks / 9 charges)
+
+struct Flask {
+    RE::FormID    blueprint = 0;  // 0 = empty
+    std::uint32_t charges   = 0;
+};
+std::array<Flask, kMaxFlaskSlots> g_flasks{};
+std::uint32_t                     g_flaskCount     = 2;  // unlocked slots (P1e: perk-scaled)
+std::uint32_t                     g_chargesPerFlask = 2;  // max charges (P1e: perk-scaled)
+std::mutex                        g_flasksLock;
+
+// P1c essence cost to configure/refill a flask: flat Base per charge. A
+// placeholder economy (MCM-tunable later); tier-aware cost comes with the
+// real blueprint tiers.
+constexpr std::uint32_t kConfigCostPerCharge = 5;
+
 // ── Field Kit viewer state (M2). open/close is driven by the input hook and
 // read by the present hook — both run off the game's render/input threads, so
 // these are atomics.
 struct MenuState {
     std::atomic<bool> open{ false };
+    std::atomic<bool> cursorInit{ false };  // push cursor to center on next open
 };
 MenuState g_menu;
 
@@ -186,6 +208,57 @@ void CreditPouch(Tier a_tier, std::uint32_t a_amount) {
     case Tier::Catalyst: g_pouch.catalyst += a_amount; break;
     case Tier::Apex:     g_pouch.apex += a_amount;     break;
     default:             g_pouch.base += a_amount;     break;
+    }
+}
+
+bool SpendBase(std::uint32_t a_amount) {
+    if (g_pouch.base < a_amount) {
+        return false;
+    }
+    g_pouch.base -= a_amount;
+    return true;
+}
+
+// Configure a flask slot with a blueprint (P1c). Runs on the task thread so it
+// serializes with gathering/discovery. Deducts the essence cost up front and
+// fills the flask to max charges; reassigning a flask that still holds charges
+// purges them with no refund (the §3.1 overwrite penalty).
+void ConfigureFlask(std::size_t a_slot, RE::FormID a_blueprint) {
+    if (a_slot >= g_flaskCount || !a_blueprint) {
+        return;
+    }
+    {
+        std::scoped_lock lk(g_blueprintsLock);
+        if (!g_blueprints.contains(a_blueprint)) {
+            return;  // must be a discovered blueprint
+        }
+    }
+    const std::uint32_t cost = kConfigCostPerCharge * g_chargesPerFlask;
+    if (!SpendBase(cost)) {
+        spdlog::info("[flask] slot {} configure DENIED — need {} Base (have {})",
+                     a_slot, cost, g_pouch.base);
+        if (g_notify) {
+            RE::DebugNotification(std::format("Not enough Base Essence ({} needed).", cost).c_str());
+        }
+        return;
+    }
+    std::uint32_t hadCharges = 0;
+    {
+        std::scoped_lock lk(g_flasksLock);
+        hadCharges           = g_flasks[a_slot].charges;
+        g_flasks[a_slot].blueprint = a_blueprint;
+        g_flasks[a_slot].charges   = g_chargesPerFlask;
+    }
+    const char* bpName = nullptr;
+    if (auto* mgef = RE::TESForm::LookupByID<RE::EffectSetting>(a_blueprint)) {
+        bpName = mgef->GetName();
+    }
+    spdlog::info("[flask] slot {} <- blueprint '{}' ({} charges); spent {} Base (purged {} old); "
+                 "pouch B={}",
+                 a_slot, bpName ? bpName : "?", g_chargesPerFlask, cost, hadCharges, g_pouch.base);
+    if (g_notify) {
+        RE::DebugNotification(
+            std::format("Flask {} set: {}", a_slot + 1, bpName ? bpName : "effect").c_str());
     }
 }
 
@@ -383,44 +456,124 @@ namespace menuhook {
     float                g_bbW = 0.0f;
     float                g_bbH = 0.0f;
 
-    void DrawEssenceViewer() {
-        auto& io = ImGui::GetIO();
+    // Render-thread-only UI state.
+    int   g_selectedSlot = -1;
+    float g_cursorX = -1.0f;
+    float g_cursorY = -1.0f;
+
+    // Keyboard/gamepad -> ImGui nav keys, so the menu drives from the pad (the
+    // Steam Deck has no mouse). Ported from MEO's proven maps.
+    ImGuiKey DIKToImGuiKey(std::uint32_t a_dik) {
+        switch (a_dik) {
+        case 0xC8: return ImGuiKey_UpArrow;
+        case 0xD0: return ImGuiKey_DownArrow;
+        case 0xCB: return ImGuiKey_LeftArrow;
+        case 0xCD: return ImGuiKey_RightArrow;
+        case 0x1C: return ImGuiKey_Enter;   // Return
+        case 0x39: return ImGuiKey_Space;
+        default:   return ImGuiKey_None;
+        }
+    }
+    ImGuiKey GamepadToImGuiKey(std::uint32_t a_key) {
+        using K = RE::BSWin32GamepadDevice::Key;
+        switch (static_cast<K>(a_key)) {
+        case K::kUp:    return ImGuiKey_GamepadDpadUp;
+        case K::kDown:  return ImGuiKey_GamepadDpadDown;
+        case K::kLeft:  return ImGuiKey_GamepadDpadLeft;
+        case K::kRight: return ImGuiKey_GamepadDpadRight;
+        case K::kA:     return ImGuiKey_GamepadFaceDown;   // activate
+        default:        return ImGuiKey_None;
+        }
+    }
+
+    // The interactive Field Kit: essence stores, flask slots, and known
+    // blueprints. Click a flask, then a blueprint, to configure it (P1c).
+    void DrawFieldKit() {
+        auto& io           = ImGui::GetIO();
+        io.MouseDrawCursor = true;
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
                                 ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-        ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x * 0.36f, io.DisplaySize.y * 0.52f),
+        ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x * 0.40f, io.DisplaySize.y * 0.62f),
                                  ImGuiCond_Appearing);
-        if (ImGui::Begin("MAO Field Kit", nullptr,
-                         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
-                             ImGuiWindowFlags_NoTitleBar)) {
-            ImGui::TextUnformatted("FIELD KIT  —  ESSENCE STORES");
-            ImGui::Separator();
-            ImGui::Spacing();
-            ImGui::Text("Base Essence      %u", g_pouch.base);
-            ImGui::Text("Catalyst Essence  %u", g_pouch.catalyst);
-            ImGui::Text("Apex Essence      %u", g_pouch.apex);
-            ImGui::Spacing();
-            ImGui::Separator();
-            {
-                std::scoped_lock lk(g_blueprintsLock);
-                ImGui::Text("KNOWN BLUEPRINTS  (%u)", static_cast<unsigned>(g_blueprints.size()));
-                ImGui::Separator();
-                if (g_blueprints.empty()) {
-                    ImGui::TextDisabled("None yet — pick up potions to analyze them.");
-                } else {
-                    ImGui::BeginChild("blueprints", ImVec2(0, io.DisplaySize.y * 0.20f));
-                    for (const RE::FormID id : g_blueprints) {
-                        auto* mgef = RE::TESForm::LookupByID<RE::EffectSetting>(id);
-                        const char* n = mgef ? mgef->GetName() : nullptr;
-                        ImGui::BulletText("%s", (n && *n) ? n : "(unknown effect)");
+        if (!ImGui::Begin("MAO Field Kit", nullptr,
+                          ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+                              ImGuiWindowFlags_NoTitleBar)) {
+            ImGui::End();
+            return;
+        }
+        ImGui::TextUnformatted("FIELD KIT");
+        ImGui::Separator();
+        ImGui::Text("Essence   Base %u    Catalyst %u    Apex %u", g_pouch.base, g_pouch.catalyst,
+                    g_pouch.apex);
+        ImGui::Spacing();
+
+        const std::uint32_t cost = kConfigCostPerCharge * g_chargesPerFlask;
+
+        // ── Flasks ──
+        ImGui::TextDisabled("FLASKS  —  select one, then a blueprint below");
+        ImGui::Separator();
+        {
+            std::scoped_lock lk(g_flasksLock);
+            if (g_selectedSlot >= static_cast<int>(g_flaskCount)) {
+                g_selectedSlot = -1;
+            }
+            for (int i = 0; i < static_cast<int>(g_flaskCount); ++i) {
+                const auto& f      = g_flasks[i];
+                const char* bpName = "(empty)";
+                if (f.blueprint) {
+                    if (auto* m = RE::TESForm::LookupByID<RE::EffectSetting>(f.blueprint)) {
+                        if (m->GetName() && *m->GetName()) {
+                            bpName = m->GetName();
+                        }
                     }
-                    ImGui::EndChild();
+                }
+                char label[160];
+                std::snprintf(label, sizeof(label), "Flask %d:  %s    [%u/%u]##flask%d", i + 1,
+                              bpName, f.charges, g_chargesPerFlask, i);
+                if (ImGui::Selectable(label, g_selectedSlot == i)) {
+                    g_selectedSlot = i;
                 }
             }
-            ImGui::Spacing();
-            ImGui::Separator();
-            ImGui::TextDisabled("Read-only preview (P1b). Flask setup arrives in P1c.");
-            ImGui::TextDisabled("Cast Open Field Kit again, or press B / Esc, to close.");
         }
+        ImGui::Spacing();
+
+        // ── Blueprints ──
+        ImGui::TextDisabled("BLUEPRINTS  —  %u Base to set a flask", cost);
+        ImGui::Separator();
+        {
+            std::scoped_lock lk(g_blueprintsLock);
+            if (g_blueprints.empty()) {
+                ImGui::TextDisabled("None yet — pick up potions to analyze them.");
+            } else {
+                if (g_selectedSlot < 0) {
+                    ImGui::TextDisabled("Select a flask above first.");
+                }
+                const bool affordable = g_pouch.base >= cost;
+                ImGui::BeginChild("blueprints", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 2.2f));
+                for (const RE::FormID id : g_blueprints) {
+                    auto*       m = RE::TESForm::LookupByID<RE::EffectSetting>(id);
+                    const char* n = m ? m->GetName() : nullptr;
+                    char        label[160];
+                    std::snprintf(label, sizeof(label), "%s##bp%08X", (n && *n) ? n : "(unknown)",
+                                  id);
+                    const bool enabled = g_selectedSlot >= 0 && affordable;
+                    if (!enabled) {
+                        ImGui::BeginDisabled();
+                    }
+                    if (ImGui::Selectable(label)) {
+                        const std::size_t slot = static_cast<std::size_t>(g_selectedSlot);
+                        const RE::FormID  bp   = id;
+                        SKSE::GetTaskInterface()->AddTask([slot, bp]() { ConfigureFlask(slot, bp); });
+                    }
+                    if (!enabled) {
+                        ImGui::EndDisabled();
+                    }
+                }
+                ImGui::EndChild();
+            }
+        }
+        ImGui::Separator();
+        ImGui::TextDisabled("Pad: D-pad/stick move, A select, B close.  KB: arrows, Enter, Esc.");
         ImGui::End();
     }
 
@@ -448,6 +601,8 @@ namespace menuhook {
             ImGui::CreateContext();
             auto& io       = ImGui::GetIO();
             io.IniFilename = nullptr;  // never write imgui.ini into the game dir
+            io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
+            io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
             if (!ImGui_ImplWin32_Init(sd.OutputWindow) || !ImGui_ImplDX11_Init(g_device, g_context)) {
                 spdlog::error("[menu] ImGui backend init failed — viewer disabled");
                 return;
@@ -477,8 +632,16 @@ namespace menuhook {
                 io.DisplaySize = ImVec2(g_bbW, g_bbH);
             }
             io.FontGlobalScale = std::max(1.0f, io.DisplaySize.y / 1080.0f);
+            // On open, push the cursor to center once — ImGui only ever learns
+            // it from move events, so the first click before any mouse move
+            // would otherwise land at an invalid position.
+            if (g_menu.cursorInit.exchange(false)) {
+                g_cursorX = (g_bbW > 0.0f ? g_bbW : io.DisplaySize.x) * 0.5f;
+                g_cursorY = (g_bbH > 0.0f ? g_bbH : io.DisplaySize.y) * 0.5f;
+                io.AddMousePosEvent(g_cursorX, g_cursorY);
+            }
             ImGui::NewFrame();
-            DrawEssenceViewer();
+            DrawFieldKit();
             ImGui::EndFrame();
             ImGui::Render();
             ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
@@ -488,55 +651,104 @@ namespace menuhook {
         static constexpr auto                          offset = REL::Offset(0x9);
     };
 
-    // Input dispatch hook: toggle the viewer on the hotkey and, while it is
-    // open, swallow all input so the game world stays deaf. Read-only, so no
-    // input is forwarded to ImGui.
+    // Input dispatch hook. While the menu is open it feeds ImGui (mouse +
+    // keyboard/gamepad nav) and swallows everything so the world stays deaf;
+    // while closed it only watches for the optional button opener (the power
+    // is the primary opener). Ported from MEO's proven routing.
     struct InputDispatchHook {
         static void thunk(RE::BSTEventSource<RE::InputEvent*>* a_source, RE::InputEvent** a_events) {
             if (!a_events || !g_d3dReady.load()) {
                 func(a_source, a_events);
                 return;
             }
-            // The viewer opener works from keyboard (iOpenHotkey) OR gamepad
-            // (iOpenButtonGamepad) — the Steam Deck has no keyboard, so the
-            // pad path is what opens it there. The same control closes it, as
-            // do Esc (keyboard) and B (gamepad).
             constexpr std::uint32_t kGamepadB = 0x2000;  // BSWin32GamepadDevice::Key::kB
-            auto isOpener = [&](RE::INPUT_DEVICE a_dev, std::uint32_t a_code) {
-                // A configured code of 0 means that opener is disabled.
+            auto  isOpener = [&](RE::INPUT_DEVICE a_dev, std::uint32_t a_code) {
                 return (a_dev == RE::INPUT_DEVICE::kKeyboard && g_openHotkey != 0 &&
                         a_code == g_openHotkey) ||
                        (a_dev == RE::INPUT_DEVICE::kGamepad && g_openButtonGamepad != 0 &&
                         a_code == g_openButtonGamepad);
             };
-            auto isCloser = [&](RE::INPUT_DEVICE a_dev, std::uint32_t a_code) {
-                return isOpener(a_dev, a_code) ||
-                       (a_dev == RE::INPUT_DEVICE::kKeyboard && a_code == 0x01 /* Esc */) ||
-                       (a_dev == RE::INPUT_DEVICE::kGamepad && a_code == kGamepadB);
-            };
             const bool wasOpen  = g_menu.open.load();
             bool       justOpen = false;
+            auto&      io        = ImGui::GetIO();
+
             for (auto* e = *a_events; e; e = e->next) {
+                if (e->eventType == RE::INPUT_EVENT_TYPE::kMouseMove && wasOpen) {
+                    auto* m  = static_cast<RE::MouseMoveEvent*>(e);
+                    g_cursorX = std::clamp(g_cursorX + static_cast<float>(m->mouseInputX), 0.0f,
+                                           io.DisplaySize.x);
+                    g_cursorY = std::clamp(g_cursorY + static_cast<float>(m->mouseInputY), 0.0f,
+                                           io.DisplaySize.y);
+                    io.AddMousePosEvent(g_cursorX, g_cursorY);
+                    continue;
+                }
+                if (e->eventType == RE::INPUT_EVENT_TYPE::kThumbstick && wasOpen) {
+                    auto* th = static_cast<RE::ThumbstickEvent*>(e);
+                    if (th->IsLeft()) {
+                        static bool held[4] = { false, false, false, false };
+                        auto        edge    = [&](int a_i, bool a_on, ImGuiKey a_k) {
+                            if (held[a_i] != a_on) {
+                                held[a_i] = a_on;
+                                io.AddKeyEvent(a_k, a_on);
+                            }
+                        };
+                        edge(0, th->yValue > 0.5f, ImGuiKey_GamepadDpadUp);
+                        edge(1, th->yValue < -0.5f, ImGuiKey_GamepadDpadDown);
+                        edge(2, th->xValue < -0.5f, ImGuiKey_GamepadDpadLeft);
+                        edge(3, th->xValue > 0.5f, ImGuiKey_GamepadDpadRight);
+                    }
+                    continue;
+                }
                 if (e->eventType != RE::INPUT_EVENT_TYPE::kButton) {
                     continue;
                 }
                 auto* b = static_cast<RE::ButtonEvent*>(e);
-                if (!b->IsDown()) {
-                    continue;  // act on press
+                if (!b->IsDown() && !b->IsUp()) {
+                    continue;  // ignore held-repeat
                 }
+                const bool          down = b->IsDown();
                 const auto          dev  = b->device.get();
                 const std::uint32_t code = b->GetIDCode();
+
                 if (!wasOpen) {
-                    if (isOpener(dev, code)) {
+                    if (down && isOpener(dev, code)) {
                         g_menu.open.store(true);
+                        g_menu.cursorInit.store(true);
                         justOpen = true;
                     }
-                } else if (isCloser(dev, code)) {
-                    g_menu.open.store(false);
+                    continue;
+                }
+                // Open: feed ImGui / handle close.
+                switch (dev) {
+                case RE::INPUT_DEVICE::kMouse:
+                    if (code <= 4) {
+                        io.AddMouseButtonEvent(static_cast<int>(code), down);
+                    } else if (code == 8 && down) {
+                        io.AddMouseWheelEvent(0.0f, 1.0f);
+                    } else if (code == 9 && down) {
+                        io.AddMouseWheelEvent(0.0f, -1.0f);
+                    }
+                    break;
+                case RE::INPUT_DEVICE::kKeyboard:
+                    if (code == 0x01 && down) {  // Esc closes
+                        g_menu.open.store(false);
+                    } else if (auto k = DIKToImGuiKey(code); k != ImGuiKey_None) {
+                        io.AddKeyEvent(k, down);
+                    }
+                    break;
+                case RE::INPUT_DEVICE::kGamepad:
+                    if (code == kGamepadB && down) {  // B closes
+                        g_menu.open.store(false);
+                    } else if (auto k = GamepadToImGuiKey(code); k != ImGuiKey_None) {
+                        io.AddKeyEvent(k, down);
+                    }
+                    break;
+                default:
+                    break;
                 }
             }
             if (wasOpen || justOpen) {
-                *a_events = nullptr;  // the game sees no input while the viewer is up
+                *a_events = nullptr;  // the game sees no input while the menu is open
             }
             func(a_source, a_events);
         }
@@ -591,7 +803,13 @@ public:
                                           RE::BSTEventSource<RE::TESSpellCastEvent>*) override {
         if (a_event && g_fieldKitSpell && a_event->spell == g_fieldKitSpell->GetFormID() &&
             a_event->object && a_event->object->IsPlayerRef()) {
-            SKSE::GetTaskInterface()->AddTask([]() { g_menu.open.store(!g_menu.open.load()); });
+            SKSE::GetTaskInterface()->AddTask([]() {
+                const bool now = !g_menu.open.load();
+                g_menu.open.store(now);
+                if (now) {
+                    g_menu.cursorInit.store(true);
+                }
+            });
         }
         return RE::BSEventNotifyControl::kContinue;
     }
@@ -618,6 +836,19 @@ void SaveCallback(SKSE::SerializationInterface* a_intfc) {
         spdlog::info("[save] {} blueprint(s)", n);
     } else {
         spdlog::error("[save] OpenRecord('BLPT') failed");
+    }
+
+    if (a_intfc->OpenRecord(kRecFlasks, kSerVersion)) {
+        std::scoped_lock lk(g_flasksLock);
+        a_intfc->WriteRecordData(g_flaskCount);
+        a_intfc->WriteRecordData(g_chargesPerFlask);
+        for (const auto& f : g_flasks) {  // always all kMaxFlaskSlots slots
+            a_intfc->WriteRecordData(f.blueprint);
+            a_intfc->WriteRecordData(f.charges);
+        }
+        spdlog::info("[save] flasks: {} slot(s), {} charge cap", g_flaskCount, g_chargesPerFlask);
+    } else {
+        spdlog::error("[save] OpenRecord('FLSK') failed");
     }
 }
 
@@ -649,6 +880,16 @@ void LoadCallback(SKSE::SerializationInterface* a_intfc) {
                     g_blueprints.insert(resolved);
                 }
             }
+        } else if (type == kRecFlasks) {
+            std::scoped_lock lk(g_flasksLock);
+            a_intfc->ReadRecordData(g_flaskCount);
+            a_intfc->ReadRecordData(g_chargesPerFlask);
+            for (auto& f : g_flasks) {
+                RE::FormID id = 0, resolved = 0;
+                a_intfc->ReadRecordData(id);
+                a_intfc->ReadRecordData(f.charges);
+                f.blueprint = (id && a_intfc->ResolveFormID(id, resolved)) ? resolved : 0;
+            }
         }
     }
     std::size_t bp = 0;
@@ -666,8 +907,14 @@ void RevertCallback(SKSE::SerializationInterface*) {
         std::scoped_lock lk(g_blueprintsLock);
         g_blueprints.clear();
     }
+    {
+        std::scoped_lock lk(g_flasksLock);
+        g_flasks = {};
+        g_flaskCount      = 2;
+        g_chargesPerFlask = 2;
+    }
     g_menu.open.store(false);
-    spdlog::info("[revert] pouch + blueprints cleared");
+    spdlog::info("[revert] pouch + blueprints + flasks cleared");
 }
 
 void OnMessage(SKSE::MessagingInterface::Message* a_message) {
