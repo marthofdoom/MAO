@@ -68,7 +68,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.8.2 (P1d variants + Fable review)";
+constexpr auto kPluginVersion = "0.9.0 (alchemy station takeover)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -152,8 +152,29 @@ int FindFlaskSlot(RE::FormID a_form);
 struct MenuState {
     std::atomic<bool> open{ false };
     std::atomic<bool> cursorInit{ false };  // push cursor to center on next open
+    std::atomic<bool> station{ false };     // opened from an alchemy station (takeover)
 };
 MenuState g_menu;
+
+// Open/close the Field Kit. When opened from a station, closing forces the
+// player up out of the furniture (the vanilla crafting menu was hidden).
+void OpenFieldKit(bool a_station) {
+    g_menu.station.store(a_station);
+    g_menu.cursorInit.store(true);
+    g_menu.open.store(true);
+}
+void CloseFieldKit() {
+    const bool wasStation = g_menu.station.exchange(false);
+    g_menu.open.store(false);
+    if (wasStation) {
+        SKSE::GetTaskInterface()->AddTask([]() {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (player && player->GetOccupiedFurniture()) {
+                player->NotifyAnimationGraph("IdleForceDefaultState");
+            }
+        });
+    }
+}
 
 // ── Config (Data/SKSE/Plugins/MAO.ini). The full MCM option set arrives with
 // P1; P0 seeds the surface with the keys it needs.
@@ -1296,8 +1317,7 @@ namespace menuhook {
 
                 if (!wasOpen) {
                     if (down && isOpener(dev, code)) {
-                        g_menu.open.store(true);
-                        g_menu.cursorInit.store(true);
+                        OpenFieldKit(false);
                         justOpen = true;
                     }
                     continue;
@@ -1315,14 +1335,14 @@ namespace menuhook {
                     break;
                 case RE::INPUT_DEVICE::kKeyboard:
                     if (code == 0x01 && down) {  // Esc closes
-                        g_menu.open.store(false);
+                        CloseFieldKit();
                     } else if (auto k = DIKToImGuiKey(code); k != ImGuiKey_None) {
                         io.AddKeyEvent(k, down);
                     }
                     break;
                 case RE::INPUT_DEVICE::kGamepad:
                     if (code == kGamepadB && down) {  // B closes
-                        g_menu.open.store(false);
+                        CloseFieldKit();
                     } else if (auto k = GamepadToImGuiKey(code); k != ImGuiKey_None) {
                         io.AddKeyEvent(k, down);
                     }
@@ -1365,33 +1385,43 @@ namespace menuhook {
 // disabled by default (iOpenButtonGamepad=0) because on the Steam Deck the
 // View button doubles as Select — binding the opener there collides. B still
 // closes; a keyboard fallback stays available for non-Deck testing.
-void GrantFieldKitPower() {
+// The Field Kit opens via ALCHEMY STATION TAKEOVER (copied from MEO's proven
+// enchanting-station takeover), replacing the old lesser-power opener. The
+// dormant "Open Field Kit" SPEL stays frozen in the ESP; remove it from any
+// save that got it during the power era so it doesn't clutter Powers.
+void RemoveFieldKitPower() {
     auto* player = RE::PlayerCharacter::GetSingleton();
-    if (!player || !g_fieldKitSpell) {
-        return;
-    }
-    if (!player->HasSpell(g_fieldKitSpell)) {
-        player->AddSpell(g_fieldKitSpell);
-        spdlog::info("[power] granted Open Field Kit power");
-        RE::DebugNotification("Learned the Open Field Kit power.");
+    if (player && g_fieldKitSpell && player->HasSpell(g_fieldKitSpell)) {
+        player->RemoveSpell(g_fieldKitSpell);
+        spdlog::info("[power] removed the legacy Open Field Kit power (opener is now the station)");
     }
 }
 
-class SpellCastSink : public RE::BSTEventSink<RE::TESSpellCastEvent> {
+class MenuSink : public RE::BSTEventSink<RE::MenuOpenCloseEvent> {
 public:
-    static SpellCastSink* GetSingleton() {
-        static SpellCastSink singleton;
+    static MenuSink* GetSingleton() {
+        static MenuSink singleton;
         return &singleton;
     }
-    RE::BSEventNotifyControl ProcessEvent(const RE::TESSpellCastEvent* a_event,
-                                          RE::BSTEventSource<RE::TESSpellCastEvent>*) override {
-        if (a_event && g_fieldKitSpell && a_event->spell == g_fieldKitSpell->GetFormID() &&
-            a_event->object && a_event->object->IsPlayerRef()) {
+    RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* a_event,
+                                          RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override {
+        if (a_event && a_event->opening && a_event->menuName == RE::CraftingMenu::MENU_NAME) {
             SKSE::GetTaskInterface()->AddTask([]() {
-                const bool now = !g_menu.open.load();
-                g_menu.open.store(now);
-                if (now) {
-                    g_menu.cursorInit.store(true);
+                auto* player = RE::PlayerCharacter::GetSingleton();
+                auto  furn   = player ? player->GetOccupiedFurniture() : RE::ObjectRefHandle{};
+                auto  ref    = furn.get();
+                auto* base   = ref ? ref->GetBaseObject() : nullptr;
+                auto* f      = base ? base->As<RE::TESFurniture>() : nullptr;
+                using BT     = RE::TESFurniture::WorkBenchData::BenchType;
+                if (f && (f->workBenchData.benchType == BT::kAlchemy ||
+                          f->workBenchData.benchType == BT::kAlchemyExperiment)) {
+                    // Alchemy is replaced by the Field Kit: dismiss the vanilla
+                    // crafting menu and let our menu own the station.
+                    if (auto* q = RE::UIMessageQueue::GetSingleton()) {
+                        q->AddMessage(RE::CraftingMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide,
+                                      nullptr);
+                    }
+                    OpenFieldKit(true);
                 }
             });
         }
@@ -1554,8 +1584,8 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
         ReadConfig();
         auto* holder = RE::ScriptEventSourceHolder::GetSingleton();
         holder->AddEventSink<RE::TESContainerChangedEvent>(ContainerSink::GetSingleton());
-        holder->AddEventSink<RE::TESSpellCastEvent>(SpellCastSink::GetSingleton());
         holder->AddEventSink<RE::TESSleepStopEvent>(SleepSink::GetSingleton());
+        RE::UI::GetSingleton()->AddEventSink<RE::MenuOpenCloseEvent>(MenuSink::GetSingleton());
         RE::TESHarvestedEvent::GetEventSource()->AddEventSink(HarvestSink::GetSingleton());
         if (auto* dh = RE::TESDataHandler::GetSingleton()) {
             g_fieldKitSpell = dh->LookupForm<RE::SpellItem>(kFieldKitSpellID, kPluginName);
@@ -1578,7 +1608,7 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
         // Player exists here (after LoadCallback/Revert). Grant the power if
         // absent; retries every load, so a mid-save ESP enable still lands.
         SKSE::GetTaskInterface()->AddTask([]() {
-            GrantFieldKitPower();
+            RemoveFieldKitPower();
             SyncFlaskItems();
         });
         break;
