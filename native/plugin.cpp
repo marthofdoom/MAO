@@ -68,7 +68,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.11.0 (concentration cost + tiers)";
+constexpr auto kPluginVersion = "0.11.1 (expanded earning tiers)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -220,10 +220,32 @@ const char* TierName(Tier a_t) {
 // (DYNAMIC_OR_DROP applies). Name-based is a deliberate prototype shortcut —
 // transparent and easy to extend — not the shipping mechanism.
 struct TierOverride { std::string_view needle; Tier tier; };
-constexpr std::array<TierOverride, 3> kTierOverrides{ {
-    { "Daedra Heart", Tier::Apex },
-    { "Nightshade",   Tier::Catalyst },
-    { "Deathbell",    Tier::Catalyst },
+// Ingredient TIER by rarity/role (DESIGN §1), NOT gold value — value only sets
+// the amount of essence. Catalyst = rare plants + specialized creature drops;
+// Apex = boss/Daedra/vampire drops. Name-substring match (interim; a generated
+// FormID map is the eventual replacement). Everything unlisted is Base.
+constexpr std::array<TierOverride, 18> kTierOverrides{ {
+    // Apex
+    { "Daedra Heart",     Tier::Apex },
+    { "Vampire Dust",     Tier::Apex },
+    { "Void Salts",       Tier::Apex },
+    { "Briar Heart",      Tier::Apex },
+    // Catalyst — rare plants
+    { "Nightshade",       Tier::Catalyst },
+    { "Deathbell",        Tier::Catalyst },
+    { "Nirnroot",         Tier::Catalyst },
+    { "Gleamblossom",     Tier::Catalyst },
+    { "Spriggan Sap",     Tier::Catalyst },
+    // Catalyst — specialized creature drops
+    { "Falmer Ear",       Tier::Catalyst },
+    { "Sabre Cat Tooth",  Tier::Catalyst },
+    { "Hagraven Claw",    Tier::Catalyst },
+    { "Hagraven Feathers", Tier::Catalyst },
+    { "Chaurus Eggs",     Tier::Catalyst },
+    { "Ectoplasm",        Tier::Catalyst },
+    { "Human Heart",      Tier::Catalyst },
+    { "Human Flesh",      Tier::Catalyst },
+    { "Netch Jelly",      Tier::Catalyst },
 } };
 
 // P0 quest-ingredient exclusion: these must NEVER dissolve into essence.
