@@ -62,7 +62,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.3.1 (P1a; button opener)";
+constexpr auto kPluginVersion = "0.3.2 (P1a; power opener)";
 
 constexpr std::uint32_t kSerID       = 'MAO1';
 constexpr std::uint32_t kRecPouch    = 'POCH';
@@ -99,10 +99,10 @@ MenuState g_menu;
 // P1; P0 seeds the surface with the keys it needs.
 bool          g_notify     = true;    // bNotify — per-pickup essence notifications
 std::uint32_t g_openHotkey = 0x25;    // iOpenHotkey — keyboard DirectInput scancode; 0x25 = K
-// iOpenButtonGamepad — RE::BSWin32GamepadDevice::Key bitflag. 0x20 = Back/View
-// (the Deck's ⊟ button). Steam Deck has no keyboard, so the viewer must be
-// reachable from the pad; this is its opener there.
-std::uint32_t g_openButtonGamepad = 0x20;
+// iOpenButtonGamepad — RE::BSWin32GamepadDevice::Key bitflag, or 0 = disabled.
+// DEFAULT 0: the power is the opener. On the Steam Deck the View button (0x20)
+// doubles as Select, so binding an opener there collides — leave it off.
+std::uint32_t g_openButtonGamepad = 0x0;
 
 const char* TierName(Tier a_t) {
     switch (a_t) {
@@ -342,7 +342,7 @@ namespace menuhook {
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::TextDisabled("Read-only preview (P0). Flask setup arrives in P1.");
-            ImGui::TextDisabled("Field Kit button again, or B / Esc, to close.");
+            ImGui::TextDisabled("Cast Open Field Kit again, or press B / Esc, to close.");
         }
         ImGui::End();
     }
@@ -426,8 +426,11 @@ namespace menuhook {
             // do Esc (keyboard) and B (gamepad).
             constexpr std::uint32_t kGamepadB = 0x2000;  // BSWin32GamepadDevice::Key::kB
             auto isOpener = [&](RE::INPUT_DEVICE a_dev, std::uint32_t a_code) {
-                return (a_dev == RE::INPUT_DEVICE::kKeyboard && a_code == g_openHotkey) ||
-                       (a_dev == RE::INPUT_DEVICE::kGamepad && a_code == g_openButtonGamepad);
+                // A configured code of 0 means that opener is disabled.
+                return (a_dev == RE::INPUT_DEVICE::kKeyboard && g_openHotkey != 0 &&
+                        a_code == g_openHotkey) ||
+                       (a_dev == RE::INPUT_DEVICE::kGamepad && g_openButtonGamepad != 0 &&
+                        a_code == g_openButtonGamepad);
             };
             auto isCloser = [&](RE::INPUT_DEVICE a_dev, std::uint32_t a_code) {
                 return isOpener(a_dev, a_code) ||
@@ -483,21 +486,21 @@ namespace menuhook {
 
 }  // namespace menuhook
 
-// ── Field Kit opener. P1a proved the ESP + castable power work, but a utility
-// menu doesn't belong in the Powers select list (it competes with real shouts
-// for the equip slot), so per Marth the opener is the gamepad/keyboard button
-// (input hook), NOT a granted power. This keeps the ESP/spell form (frozen,
-// dormant) and actively removes the power from saves where the P1a test
-// granted it. The cast sink stays wired so the power still opens the kit if
-// ever equipped, but it is never granted.
-void SyncFieldKitPower() {
+// ── The Open Field Kit power (P1a). MAO is native-first: the DLL grants the
+// lesser power and a cast-event sink TOGGLES the viewer — no Papyrus, no quest.
+// The power is the opener (Marth's design). The gamepad-button opener is
+// disabled by default (iOpenButtonGamepad=0) because on the Steam Deck the
+// View button doubles as Select — binding the opener there collides. B still
+// closes; a keyboard fallback stays available for non-Deck testing.
+void GrantFieldKitPower() {
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (!player || !g_fieldKitSpell) {
         return;
     }
-    if (player->HasSpell(g_fieldKitSpell)) {
-        player->RemoveSpell(g_fieldKitSpell);
-        spdlog::info("[power] removed Open Field Kit power (opener is the button, not a power)");
+    if (!player->HasSpell(g_fieldKitSpell)) {
+        player->AddSpell(g_fieldKitSpell);
+        spdlog::info("[power] granted Open Field Kit power");
+        RE::DebugNotification("Learned the Open Field Kit power.");
     }
 }
 
@@ -511,7 +514,7 @@ public:
                                           RE::BSTEventSource<RE::TESSpellCastEvent>*) override {
         if (a_event && g_fieldKitSpell && a_event->spell == g_fieldKitSpell->GetFormID() &&
             a_event->object && a_event->object->IsPlayerRef()) {
-            SKSE::GetTaskInterface()->AddTask([]() { g_menu.open.store(true); });
+            SKSE::GetTaskInterface()->AddTask([]() { g_menu.open.store(!g_menu.open.load()); });
         }
         return RE::BSEventNotifyControl::kContinue;
     }
@@ -578,7 +581,7 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
     case SKSE::MessagingInterface::kNewGame:
         // Player exists here (after LoadCallback/Revert). Grant the power if
         // absent; retries every load, so a mid-save ESP enable still lands.
-        SKSE::GetTaskInterface()->AddTask([]() { SyncFieldKitPower(); });
+        SKSE::GetTaskInterface()->AddTask([]() { GrantFieldKitPower(); });
         break;
     default:
         break;
