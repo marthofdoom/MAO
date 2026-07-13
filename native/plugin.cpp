@@ -52,6 +52,7 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -60,13 +61,14 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 namespace {
 
-constexpr auto kPluginVersion = "0.7.2 (P1d-1: clean rep, coatings deferred)";
+constexpr auto kPluginVersion = "0.8.0 (P1d-3 refill)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -167,7 +169,8 @@ std::uint32_t g_openHotkey = 0x25;    // iOpenHotkey — keyboard DirectInput sc
 // DEFAULT 0: the power is the opener. On the Steam Deck the View button (0x20)
 // doubles as Select, so binding an opener there collides — leave it off.
 std::uint32_t g_openButtonGamepad = 0x0;
-int           g_menuStyle         = 0;  // iMenuStyle — Field Kit skin 0..3
+int           g_menuStyle         = 0;    // iMenuStyle — Field Kit skin 0..3
+std::uint32_t g_refillSeconds     = 300;  // iRefillSeconds — real-time refill cadence
 
 const char* TierName(Tier a_t) {
     switch (a_t) {
@@ -524,6 +527,70 @@ void SyncFlaskItems() {
     }
 }
 
+// ── Refill (P1d-3): dry/partial flasks top back up from essence, on sleep and
+// on a real-time timer. Refilling costs essence per charge (a maintenance cost;
+// perks cut it in P1e). Charges are native, so refill never touches the
+// inventory item. Runs on the task thread.
+void RefillFlasks(const char* a_trigger) {
+    if (!RE::PlayerCharacter::GetSingleton()) {
+        return;  // no game loaded (timer fires at the main menu too)
+    }
+    std::uint32_t refilled = 0, slots = 0;
+    {
+        std::scoped_lock lk(g_flasksLock);
+        for (std::uint32_t i = 0; i < g_flaskCount; ++i) {
+            auto& f = g_flasks[i];
+            if (!f.blueprint || f.repPotion == 0 || f.charges >= g_chargesPerFlask) {
+                continue;
+            }
+            const std::uint32_t perCharge = EffectCostPerCharge(f.blueprint);
+            std::uint32_t       added     = 0;
+            while (f.charges < g_chargesPerFlask && SpendBase(perCharge)) {
+                ++f.charges;
+                ++added;
+            }
+            if (added) {
+                refilled += added;
+                ++slots;
+            }
+        }
+    }
+    if (refilled) {
+        spdlog::info("[refill] {}: +{} charge(s) across {} flask(s); pouch B={}", a_trigger,
+                     refilled, slots, g_pouch.base);
+        if (g_notify) {
+            RE::DebugNotification(std::format("Field Kit replenished (+{} charges).", refilled).c_str());
+        }
+    }
+}
+
+class SleepSink : public RE::BSTEventSink<RE::TESSleepStopEvent> {
+public:
+    static SleepSink* GetSingleton() {
+        static SleepSink singleton;
+        return &singleton;
+    }
+    RE::BSEventNotifyControl ProcessEvent(const RE::TESSleepStopEvent*,
+                                          RE::BSTEventSource<RE::TESSleepStopEvent>*) override {
+        SKSE::GetTaskInterface()->AddTask([]() { RefillFlasks("sleep"); });
+        return RE::BSEventNotifyControl::kContinue;
+    }
+};
+
+void StartRefillTimer() {
+    static std::atomic<bool> started{ false };
+    if (started.exchange(true)) {
+        return;  // once
+    }
+    std::thread([]() {
+        for (;;) {
+            const std::uint32_t secs = g_refillSeconds ? g_refillSeconds : 300;
+            std::this_thread::sleep_for(std::chrono::seconds(secs));
+            SKSE::GetTaskInterface()->AddTask([]() { RefillFlasks("timer"); });
+        }
+    }).detach();
+}
+
 // ── Consume intercept (P1d): the flask is a PERMANENT item — it must never be
 // removed (so it stays favorited / on Wheeler). Hooking Actor::DrinkPotion
 // (the funnel all drink paths reach, incl. potion mods) lets us apply the
@@ -649,6 +716,9 @@ void ApplyIniLine(std::string a_line) {
         g_menuStyle = std::clamp(static_cast<int>(std::strtol(val.c_str(), nullptr, 0)), 0, 3);
     } else if (key == "fEssenceTax") {
         g_essenceTax = std::clamp(static_cast<float>(std::strtod(val.c_str(), nullptr)), 1.0f, 5.0f);
+    } else if (key == "iRefillSeconds") {
+        g_refillSeconds = static_cast<std::uint32_t>(
+            std::clamp<long>(std::strtol(val.c_str(), nullptr, 0), 15, 86400));
     }
 }
 
@@ -1464,6 +1534,7 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
         auto* holder = RE::ScriptEventSourceHolder::GetSingleton();
         holder->AddEventSink<RE::TESContainerChangedEvent>(ContainerSink::GetSingleton());
         holder->AddEventSink<RE::TESSpellCastEvent>(SpellCastSink::GetSingleton());
+        holder->AddEventSink<RE::TESSleepStopEvent>(SleepSink::GetSingleton());
         RE::TESHarvestedEvent::GetEventSource()->AddEventSink(HarvestSink::GetSingleton());
         if (auto* dh = RE::TESDataHandler::GetSingleton()) {
             g_fieldKitSpell = dh->LookupForm<RE::SpellItem>(kFieldKitSpellID, kPluginName);
@@ -1472,6 +1543,7 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
         BuildEffectCostTable();
         BuildEffectPotionTable();
         InstallDrinkHook();
+        StartRefillTimer();
         const auto gameVersion = REL::Module::get().version();
         if (auto* console = RE::ConsoleLog::GetSingleton()) {
             console->Print("MAO native v%s loaded", kPluginVersion);
