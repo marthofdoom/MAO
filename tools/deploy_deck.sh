@@ -68,6 +68,16 @@ else
     echo "WARNING: data/Scripts/MAO_MCM.pex missing — run tools/compile.sh MAO_MCM then re-copy (MCM won't register)"
 fi
 
+# MCM settings store (defaults). MCM Helper reads initial ModSetting values from
+# here and writes user changes back, so seed it ONLY if absent (preserve edits).
+if ssh -o BatchMode=yes "$HOST" "test ! -f '$GAME/Data/MCM/Settings/MAO.ini'"; then
+    ssh -o BatchMode=yes "$HOST" "mkdir -p '$GAME/Data/MCM/Settings'"
+    scp -q data/MCM/Settings/MAO.ini "$HOST:$GAME/Data/MCM/Settings/MAO.ini"
+    echo "seeded MCM Settings/MAO.ini (defaults)"
+else
+    echo "MCM Settings/MAO.ini already on Deck — left as-is (delete it there to reset)"
+fi
+
 # Seed the INI only if the Deck doesn't already have one (preserve edits).
 if ssh -o BatchMode=yes "$HOST" "test ! -f '$PLUGINS/MAO.ini'"; then
     scp -q data/SKSE/Plugins/MAO.ini "$HOST:$PLUGINS/MAO.ini"
