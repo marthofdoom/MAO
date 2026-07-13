@@ -68,7 +68,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.15.0 (MCM: tuning + perk debug page)";
+constexpr auto kPluginVersion = "0.15.1 (perks renamed in-place)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -148,21 +148,25 @@ enum PerkIdx : int {
 // own = the form lives in MAO.esp (our capstone); otherwise it's a vanilla
 // Skyrim.esm alchemy perk. The capstone replaces vanilla Purity as the 6/9
 // ceiling — MAO's own perk so the load-order-aware installer can place it later.
-struct PerkDef { const char* label; RE::FormID id; bool own; const char* iniKey; };
+// maoName = the DESIGN §5.2 re-enlistment name; the DLL renames the vanilla
+// perk record's fullName to this at load (native-first, like the flask rename)
+// so the skills menu shows MAO's perks by default — no MCM, no installer. The
+// capstone (own) already ships with its name in MAO.esp, so it needs no rename.
+struct PerkDef { const char* label; RE::FormID id; bool own; const char* iniKey; const char* maoName; };
 constexpr PerkDef kPerkDefs[PK_COUNT] = {
-    { "Alchemist I  (+1 charge)",             0xBE127, false, "bPerkAlch1" },
-    { "Alchemist II  (+1 flask)",             0xC07CA, false, "bPerkAlch2" },
-    { "Alchemist III  (refill eff, P2)",      0xC07CB, false, "bPerkAlch3" },
-    { "Alchemist IV  (+1 flask +2 chg)",      0xC07CC, false, "bPerkAlch4" },
-    { "Alchemist V  (rest refill, P2)",       0xC07CD, false, "bPerkAlch5" },
-    { "Master's Crucible  (+2 flask +4 chg)", 0x816,   true,  "bPerkCapstone" },  // MAO capstone
-    { "Benefactor  (Apex -35%)",              0x58216, false, "bPerkBenefactor" },
-    { "Experimenter  (+10% gather)",          0x58218, false, "bPerkExperimenter" },
-    { "Physician  (P2)",                      0x58215, false, "bPerkPhysician" },
-    { "Poisoner  (P2)",                       0x58217, false, "bPerkPoisoner" },
-    { "Green Thumb  (P2)",                    0x105F2E, false, "bPerkGreenThumb" },
-    { "Snakeblood  (P2)",                     0x105F2C, false, "bPerkSnakeblood" },
-    { "Concentrated Poison  (P2)",            0x105F2F, false, "bPerkConcPoison" },
+    { "Alchemist I  (+1 charge)",             0xBE127, false, "bPerkAlch1",        "Kit Calibration I" },
+    { "Alchemist II  (+1 flask)",             0xC07CA, false, "bPerkAlch2",        "Kit Calibration II" },
+    { "Alchemist III  (refill eff, P2)",      0xC07CB, false, "bPerkAlch3",        "Kit Calibration III" },
+    { "Alchemist IV  (+1 flask +2 chg)",      0xC07CC, false, "bPerkAlch4",        "Field Deployment" },
+    { "Alchemist V  (rest refill, P2)",       0xC07CD, false, "bPerkAlch5",        "Kit Calibration V" },
+    { "Master's Crucible  (+2 flask +4 chg)", 0x816,   true,  "bPerkCapstone",     "" },  // MAO capstone (named in ESP)
+    { "Benefactor  (Apex -35%)",              0x58216, false, "bPerkBenefactor",   "Apex Stabilization" },
+    { "Experimenter  (+10% gather)",          0x58218, false, "bPerkExperimenter", "Field Extraction" },
+    { "Physician  (P2)",                      0x58215, false, "bPerkPhysician",    "Fluid Motion" },
+    { "Poisoner  (P2)",                       0x58217, false, "bPerkPoisoner",     "Vanguard Coating" },
+    { "Green Thumb  (P2)",                    0x105F2E, false, "bPerkGreenThumb",   "Pouch Expansion" },
+    { "Snakeblood  (P2)",                     0x105F2C, false, "bPerkSnakeblood",   "Extended Synthesis" },
+    { "Concentrated Poison  (P2)",            0x105F2F, false, "bPerkConcPoison",   "Corrosive Retention" },
 };
 RE::BGSPerk*               g_perkForm[PK_COUNT] = {};
 std::atomic<std::uint32_t> g_perkMask{ 0 };  // bit i = kPerkDefs[i] is effectively active
@@ -1935,10 +1939,20 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
                     if (i >= PK_ALCH1 && i <= PK_ALCH5) ++na;
                 }
             }
-            g_capacityPerksResolved = (na > 0) || (g_perkForm[PK_CAPSTONE] != nullptr);
-            spdlog::info("[perks] resolved {}/{} alchemy perks ({}/5 Alchemist ranks); "
+            g_capacityPerksResolved = (na > 0);
+            // Rename the vanilla alchemy perks in-place to their MAO re-enlistment
+            // (skills menu shows MAO's perks by default). Names only for now;
+            // descriptions + effect neutralization arrive with the installer.
+            int renamed = 0;
+            for (int i = 0; i < PK_COUNT; ++i) {
+                if (g_perkForm[i] && !kPerkDefs[i].own && kPerkDefs[i].maoName[0]) {
+                    g_perkForm[i]->fullName = RE::BSFixedString(kPerkDefs[i].maoName);
+                    ++renamed;
+                }
+            }
+            spdlog::info("[perks] resolved {}/{} alchemy perks ({}/5 Alchemist ranks); renamed {}; "
                          "capacity {} (0=missing -> holds co-saved)",
-                         np, static_cast<int>(PK_COUNT), na,
+                         np, static_cast<int>(PK_COUNT), na, renamed,
                          g_capacityPerksResolved ? "live" : "held");
         }
         spdlog::info("[power] Open Field Kit spell: {}", g_fieldKitSpell ? "found" : "MISSING (is MAO.esp enabled?)");
