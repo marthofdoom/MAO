@@ -57,5 +57,8 @@ fi
 echo "== deployed =="
 ssh -o BatchMode=yes "$HOST" "ls -la '$PLUGINS/MAO.dll' '$PLUGINS/MAO.ini'"
 echo
-echo "Launch Skyrim (via skse64_loader / Steam), then tail the log:"
-echo "  ssh $HOST \"tail -f '/home/deck/.local/share/Steam/steamapps/compatdata/489830/pfx/drive_c/users/steamuser/Documents/My Games/Skyrim Special Edition/SKSE/MAO.log'\""
+# The My Games subfolder is 'Skyrim.INI' (not 'Skyrim Special Edition') under
+# Proton on this Deck, and can differ per setup — locate MAO.log by find.
+LOGCMD="find /home/deck/.local/share/Steam/steamapps/compatdata -iname MAO.log 2>/dev/null | head -1"
+echo "Launch Skyrim (via skse64_loader / Steam). Find + tail the log with:"
+echo "  ssh $HOST 'tail -f \"\$($LOGCMD)\"'"
