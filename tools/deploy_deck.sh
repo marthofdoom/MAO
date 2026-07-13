@@ -46,6 +46,11 @@ ssh -o BatchMode=yes "$HOST" "test -d '$PLUGINS'" \
 scp -q "$STAGE/MAO.dll" "$HOST:$PLUGINS/MAO.dll"
 [[ -f "$STAGE/MAO.pdb" ]] && scp -q "$STAGE/MAO.pdb" "$HOST:$PLUGINS/MAO.pdb" || true
 
+# Menu fonts (baked by the DLL at init; the skins expect them). Ship once.
+ssh -o BatchMode=yes "$HOST" "mkdir -p '$PLUGINS/MAO/fonts'"
+scp -q data/SKSE/Plugins/MAO/fonts/body.ttf data/SKSE/Plugins/MAO/fonts/head.ttf \
+       data/SKSE/Plugins/MAO/fonts/sans.ttf "$HOST:$PLUGINS/MAO/fonts/"
+
 # Seed the INI only if the Deck doesn't already have one (preserve edits).
 if ssh -o BatchMode=yes "$HOST" "test ! -f '$PLUGINS/MAO.ini'"; then
     scp -q data/SKSE/Plugins/MAO.ini "$HOST:$PLUGINS/MAO.ini"

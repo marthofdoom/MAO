@@ -65,7 +65,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.5.0 (P1c flasks)";
+constexpr auto kPluginVersion = "0.5.1 (P1c flasks + skins)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -137,6 +137,7 @@ std::uint32_t g_openHotkey = 0x25;    // iOpenHotkey — keyboard DirectInput sc
 // DEFAULT 0: the power is the opener. On the Steam Deck the View button (0x20)
 // doubles as Select, so binding an opener there collides — leave it off.
 std::uint32_t g_openButtonGamepad = 0x0;
+int           g_menuStyle         = 0;  // iMenuStyle — Field Kit skin 0..3
 
 const char* TierName(Tier a_t) {
     switch (a_t) {
@@ -302,6 +303,8 @@ void ApplyIniLine(std::string a_line) {
         g_openHotkey = static_cast<std::uint32_t>(std::strtoul(val.c_str(), nullptr, 0));
     } else if (key == "iOpenButtonGamepad") {
         g_openButtonGamepad = static_cast<std::uint32_t>(std::strtoul(val.c_str(), nullptr, 0));
+    } else if (key == "iMenuStyle") {
+        g_menuStyle = std::clamp(static_cast<int>(std::strtol(val.c_str(), nullptr, 0)), 0, 3);
     }
 }
 
@@ -461,6 +464,90 @@ namespace menuhook {
     float g_cursorX = -1.0f;
     float g_cursorY = -1.0f;
 
+    // Real typefaces (baked at backbuffer scale in D3DInit; optional — the
+    // draw falls back per-font). Ported from MEO along with the skins.
+    ImFont* g_fontBody = nullptr;
+    ImFont* g_fontHead = nullptr;
+    ImFont* g_fontSans = nullptr;
+
+    // ── Menu skins (ported from MEO; re-titled for MAO). Square corners, flat
+    // fills — ImGui's honest range, closer to Skyrim's UI than its debug grey.
+    // iMenuStyle picks one live.
+    struct MenuSkin {
+        const char* name;
+        ImVec4      winBg, panel, border, text, dim, sel, accent, btn, track, danger;
+        bool        sans;
+        const char* title;
+    };
+    inline constexpr MenuSkin kSkins[4] = {
+        { "Ebony & Brass",
+          { 0.04f, 0.04f, 0.06f, 0.95f }, { 0.07f, 0.07f, 0.10f, 0.95f },
+          { 0.55f, 0.48f, 0.27f, 0.60f }, { 0.91f, 0.89f, 0.84f, 1.00f },
+          { 0.58f, 0.55f, 0.47f, 1.00f }, { 0.34f, 0.29f, 0.16f, 0.85f },
+          { 0.78f, 0.70f, 0.45f, 1.00f }, { 0.13f, 0.11f, 0.07f, 0.90f },
+          { 1.00f, 1.00f, 1.00f, 0.08f }, { 0.76f, 0.29f, 0.24f, 1.00f },
+          false, "FIELD KIT" },
+        { "Dwemer Parchment",
+          { 0.92f, 0.88f, 0.80f, 0.97f }, { 0.95f, 0.92f, 0.85f, 1.00f },
+          { 0.54f, 0.45f, 0.25f, 0.85f }, { 0.21f, 0.17f, 0.12f, 1.00f },
+          { 0.48f, 0.43f, 0.34f, 1.00f }, { 0.86f, 0.81f, 0.66f, 1.00f },
+          { 0.43f, 0.29f, 0.16f, 1.00f }, { 0.89f, 0.84f, 0.72f, 1.00f },
+          { 0.00f, 0.00f, 0.00f, 0.10f }, { 0.55f, 0.23f, 0.18f, 1.00f },
+          false, "FIELD KIT" },
+        { "Soul Cairn",
+          { 0.07f, 0.06f, 0.13f, 0.95f }, { 0.10f, 0.08f, 0.19f, 0.95f },
+          { 0.35f, 0.31f, 0.55f, 0.70f }, { 0.85f, 0.84f, 0.92f, 1.00f },
+          { 0.55f, 0.52f, 0.66f, 1.00f }, { 0.16f, 0.14f, 0.31f, 0.90f },
+          { 0.53f, 0.85f, 0.92f, 1.00f }, { 0.13f, 0.10f, 0.23f, 0.90f },
+          { 1.00f, 1.00f, 1.00f, 0.08f }, { 0.76f, 0.29f, 0.24f, 1.00f },
+          false, "FIELD KIT" },
+        { "Quicksilver",
+          { 0.04f, 0.05f, 0.06f, 0.88f }, { 0.07f, 0.08f, 0.10f, 0.92f },
+          { 0.22f, 0.25f, 0.29f, 1.00f }, { 0.83f, 0.85f, 0.88f, 1.00f },
+          { 0.47f, 0.50f, 0.54f, 1.00f }, { 0.14f, 0.19f, 0.23f, 0.90f },
+          { 0.56f, 0.72f, 0.80f, 1.00f }, { 0.09f, 0.11f, 0.13f, 0.90f },
+          { 1.00f, 1.00f, 1.00f, 0.07f }, { 0.76f, 0.29f, 0.24f, 1.00f },
+          true, "F I E L D   K I T" },
+    };
+    ImVec4 Mix(const ImVec4& a, const ImVec4& b, float t) {
+        return { a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t, a.w };
+    }
+    int g_appliedSkin = -1;
+
+    void ApplyMenuStyle(const MenuSkin& s) {
+        auto& style             = ImGui::GetStyle();
+        style.WindowRounding    = 0.0f;
+        style.ChildRounding     = 0.0f;
+        style.FrameRounding     = 0.0f;
+        style.ScrollbarRounding = 0.0f;
+        style.WindowBorderSize  = 1.0f;
+        style.ChildBorderSize   = 1.0f;
+        style.WindowPadding     = ImVec2(18.0f, 14.0f);
+        style.ItemSpacing       = ImVec2(10.0f, 7.0f);
+        style.FramePadding      = ImVec2(10.0f, 7.0f);
+        style.ScrollbarSize     = 14.0f;
+        style.SelectableTextAlign = ImVec2(0.0f, 0.5f);
+        auto* c                    = style.Colors;
+        c[ImGuiCol_WindowBg]       = s.winBg;
+        c[ImGuiCol_ChildBg]        = s.panel;
+        c[ImGuiCol_PopupBg]        = s.panel;
+        c[ImGuiCol_Border]         = s.border;
+        c[ImGuiCol_Separator]      = s.border;
+        c[ImGuiCol_Text]           = s.text;
+        c[ImGuiCol_TextDisabled]   = s.dim;
+        c[ImGuiCol_Header]         = s.sel;
+        c[ImGuiCol_HeaderHovered]  = Mix(s.sel, s.accent, 0.25f);
+        c[ImGuiCol_HeaderActive]   = Mix(s.sel, s.accent, 0.40f);
+        c[ImGuiCol_Button]         = s.btn;
+        c[ImGuiCol_ButtonHovered]  = Mix(s.btn, s.accent, 0.25f);
+        c[ImGuiCol_ButtonActive]   = Mix(s.btn, s.accent, 0.40f);
+        c[ImGuiCol_ScrollbarBg]    = s.track;
+        c[ImGuiCol_ScrollbarGrab]  = ImVec4(s.dim.x, s.dim.y, s.dim.z, 0.60f);
+        c[ImGuiCol_TitleBg]        = s.winBg;
+        c[ImGuiCol_TitleBgActive]  = s.winBg;
+        c[ImGuiCol_NavHighlight]   = s.accent;
+    }
+
     // Keyboard/gamepad -> ImGui nav keys, so the menu drives from the pad (the
     // Steam Deck has no mouse). Ported from MEO's proven maps.
     ImGuiKey DIKToImGuiKey(std::uint32_t a_dik) {
@@ -491,6 +578,21 @@ namespace menuhook {
     void DrawFieldKit() {
         auto& io           = ImGui::GetIO();
         io.MouseDrawCursor = true;
+        const int       skinIdx = std::clamp(g_menuStyle, 0, 3);
+        const MenuSkin& skin    = kSkins[skinIdx];
+        if (g_appliedSkin != skinIdx) {
+            ApplyMenuStyle(skin);
+            g_appliedSkin = skinIdx;
+            spdlog::info("[menu] skin: {}", skin.name);
+        }
+        ImFont* fBody = skin.sans ? (g_fontSans ? g_fontSans : g_fontBody) : g_fontBody;
+        ImFont* fHead = skin.sans ? fBody : (g_fontHead ? g_fontHead : g_fontBody);
+        // Real typeface is baked at backbuffer scale; global scale is only the
+        // fallback when no font file loaded.
+        io.FontGlobalScale = fBody ? 1.0f : std::max(1.0f, io.DisplaySize.y / 1080.0f);
+        if (fBody) {
+            ImGui::PushFont(fBody);
+        }
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
                                 ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
         ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x * 0.40f, io.DisplaySize.y * 0.62f),
@@ -499,9 +601,24 @@ namespace menuhook {
                           ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
                               ImGuiWindowFlags_NoTitleBar)) {
             ImGui::End();
+            if (fBody) {
+                ImGui::PopFont();
+            }
             return;
         }
-        ImGui::TextUnformatted("FIELD KIT");
+        {  // centered title in the display face + accent color
+            if (fHead) {
+                ImGui::PushFont(fHead);
+            }
+            const float tw = ImGui::CalcTextSize(skin.title).x;
+            ImGui::SetCursorPosX(std::max(0.0f, (ImGui::GetWindowSize().x - tw) * 0.5f));
+            ImGui::PushStyleColor(ImGuiCol_Text, skin.accent);
+            ImGui::TextUnformatted(skin.title);
+            ImGui::PopStyleColor();
+            if (fHead) {
+                ImGui::PopFont();
+            }
+        }
         ImGui::Separator();
         ImGui::Text("Essence   Base %u    Catalyst %u    Apex %u", g_pouch.base, g_pouch.catalyst,
                     g_pouch.apex);
@@ -575,6 +692,9 @@ namespace menuhook {
         ImGui::Separator();
         ImGui::TextDisabled("Pad: D-pad/stick move, A select, B close.  KB: arrows, Enter, Esc.");
         ImGui::End();
+        if (fBody) {
+            ImGui::PopFont();
+        }
     }
 
     // Renderer-init hook: grab the device/context/swapchain, stand up ImGui.
@@ -603,6 +723,30 @@ namespace menuhook {
             io.IniFilename = nullptr;  // never write imgui.ini into the game dir
             io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
             io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+            // Bake real typefaces at backbuffer scale (the default bitmap font
+            // is blurry above 1080p). All optional; each falls back per-font.
+            {
+                const float uiScale =
+                    std::max(1.0f, static_cast<float>(sd.BufferDesc.Height) / 1080.0f);
+                constexpr const char* kBodyTTF = "Data/SKSE/Plugins/MAO/fonts/body.ttf";
+                constexpr const char* kHeadTTF = "Data/SKSE/Plugins/MAO/fonts/head.ttf";
+                constexpr const char* kSansTTF = "Data/SKSE/Plugins/MAO/fonts/sans.ttf";
+                if (std::ifstream(kBodyTTF).good()) {
+                    g_fontBody = io.Fonts->AddFontFromFileTTF(kBodyTTF, std::floor(19.0f * uiScale));
+                }
+                if (std::ifstream(kHeadTTF).good()) {
+                    g_fontHead = io.Fonts->AddFontFromFileTTF(kHeadTTF, std::floor(27.0f * uiScale));
+                }
+                if (std::ifstream(kSansTTF).good()) {
+                    g_fontSans = io.Fonts->AddFontFromFileTTF(kSansTTF, std::floor(16.5f * uiScale));
+                }
+                if (!g_fontHead) {
+                    g_fontHead = g_fontBody;
+                }
+                spdlog::info("[menu] fonts: body={} head={} sans={} (scale {:.2f})",
+                             g_fontBody ? "ok" : "default", g_fontHead ? "ok" : "default",
+                             g_fontSans ? "ok" : "default", uiScale);
+            }
             if (!ImGui_ImplWin32_Init(sd.OutputWindow) || !ImGui_ImplDX11_Init(g_device, g_context)) {
                 spdlog::error("[menu] ImGui backend init failed — viewer disabled");
                 return;
@@ -631,7 +775,6 @@ namespace menuhook {
             if (g_bbW > 0.0f) {
                 io.DisplaySize = ImVec2(g_bbW, g_bbH);
             }
-            io.FontGlobalScale = std::max(1.0f, io.DisplaySize.y / 1080.0f);
             // On open, push the cursor to center once — ImGui only ever learns
             // it from move events, so the first click before any mouse move
             // would otherwise land at an invalid position.

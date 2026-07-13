@@ -53,6 +53,12 @@ echo "DLL: $(stat -c '%s bytes' "$STAGE/SKSE/Plugins/MAO.dll")"
 # lets them keep their edited copy on reinstall).
 cp data/SKSE/Plugins/MAO.ini "$STAGE/SKSE/Plugins/MAO.ini"
 
+# Menu fonts (the DLL bakes them at init; skins expect them).
+mkdir -p "$STAGE/SKSE/Plugins/MAO/fonts"
+cp data/SKSE/Plugins/MAO/fonts/body.ttf data/SKSE/Plugins/MAO/fonts/head.ttf \
+   data/SKSE/Plugins/MAO/fonts/sans.ttf data/SKSE/Plugins/MAO/fonts/OFL-*.txt \
+   "$STAGE/SKSE/Plugins/MAO/fonts/"
+
 # Regenerate MAO.esp fresh (deterministic, never hand-edited) at the zip root
 # (= virtual Data/). Every release is a complete standalone mod.
 python3 MAO_GenerateESP.py "$STAGE/espgen" >/dev/null
@@ -70,7 +76,8 @@ cat > "$STAGE/fomod/info.xml" <<EOF
 </fomod>
 EOF
 
-for req in "SKSE/Plugins/MAO.dll" "SKSE/Plugins/MAO.ini" "MAO.esp" "fomod/info.xml"; do
+for req in "SKSE/Plugins/MAO.dll" "SKSE/Plugins/MAO.ini" "MAO.esp" "fomod/info.xml" \
+           "SKSE/Plugins/MAO/fonts/body.ttf" "SKSE/Plugins/MAO/fonts/head.ttf"; do
     [[ -f "$STAGE/$req" ]] || { echo "ERROR: release incomplete — missing $req" >&2; exit 1; }
 done
 
