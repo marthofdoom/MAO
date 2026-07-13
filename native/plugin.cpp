@@ -68,7 +68,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.14.0 (MAO capstone perk)";
+constexpr auto kPluginVersion = "0.15.0 (MCM: tuning + perk debug page)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -148,67 +148,75 @@ enum PerkIdx : int {
 // own = the form lives in MAO.esp (our capstone); otherwise it's a vanilla
 // Skyrim.esm alchemy perk. The capstone replaces vanilla Purity as the 6/9
 // ceiling — MAO's own perk so the load-order-aware installer can place it later.
-struct PerkDef { const char* label; RE::FormID id; bool own; };
+struct PerkDef { const char* label; RE::FormID id; bool own; const char* iniKey; };
 constexpr PerkDef kPerkDefs[PK_COUNT] = {
-    { "Alchemist I  (+1 charge)",             0xBE127, false },
-    { "Alchemist II  (+1 flask)",             0xC07CA, false },
-    { "Alchemist III  (refill eff, P2)",      0xC07CB, false },
-    { "Alchemist IV  (+1 flask +2 chg)",      0xC07CC, false },
-    { "Alchemist V  (rest refill, P2)",       0xC07CD, false },
-    { "Master's Crucible  (+2 flask +4 chg)", 0x816,   true  },  // MAO capstone
-    { "Benefactor  (Apex -35%)",              0x58216, false },
-    { "Experimenter  (+10% gather)",          0x58218, false },
-    { "Physician  (P2)",                      0x58215, false },
-    { "Poisoner  (P2)",                       0x58217, false },
-    { "Green Thumb  (P2)",                    0x105F2E, false },
-    { "Snakeblood  (P2)",                     0x105F2C, false },
-    { "Concentrated Poison  (P2)",            0x105F2F, false },
+    { "Alchemist I  (+1 charge)",             0xBE127, false, "bPerkAlch1" },
+    { "Alchemist II  (+1 flask)",             0xC07CA, false, "bPerkAlch2" },
+    { "Alchemist III  (refill eff, P2)",      0xC07CB, false, "bPerkAlch3" },
+    { "Alchemist IV  (+1 flask +2 chg)",      0xC07CC, false, "bPerkAlch4" },
+    { "Alchemist V  (rest refill, P2)",       0xC07CD, false, "bPerkAlch5" },
+    { "Master's Crucible  (+2 flask +4 chg)", 0x816,   true,  "bPerkCapstone" },  // MAO capstone
+    { "Benefactor  (Apex -35%)",              0x58216, false, "bPerkBenefactor" },
+    { "Experimenter  (+10% gather)",          0x58218, false, "bPerkExperimenter" },
+    { "Physician  (P2)",                      0x58215, false, "bPerkPhysician" },
+    { "Poisoner  (P2)",                       0x58217, false, "bPerkPoisoner" },
+    { "Green Thumb  (P2)",                    0x105F2E, false, "bPerkGreenThumb" },
+    { "Snakeblood  (P2)",                     0x105F2C, false, "bPerkSnakeblood" },
+    { "Concentrated Poison  (P2)",            0x105F2F, false, "bPerkConcPoison" },
 };
 RE::BGSPerk*               g_perkForm[PK_COUNT] = {};
-std::atomic<std::uint32_t> g_perkMask{ 0 };  // bit i = player holds kPerkDefs[i] (debug menu)
-bool              g_capacityPerksResolved = false;  // any Alchemist rank or the capstone found?
+std::atomic<std::uint32_t> g_perkMask{ 0 };  // bit i = kPerkDefs[i] is effectively active
+// MCM debug (MEO-style override): when g_perkDebug, capacity/efficiency are
+// driven by g_perkWantMask (the MCM toggles) INSTEAD of the real perks — no
+// AddPerk/RemovePerk, so real progression is never disturbed and it reverts
+// cleanly when the toggle is turned off.
+std::atomic<bool>          g_perkDebug{ false };
+std::atomic<std::uint32_t> g_perkWantMask{ 0 };
+bool              g_capacityPerksResolved = false;  // vanilla Alchemist chain present?
 std::atomic<int>  g_alchemistRank{ 0 };
 std::atomic<bool> g_hasCapstone{ false };
 std::atomic<bool> g_hasBenefactor{ false };   // read in VariantCost (render + task)
 std::atomic<bool> g_hasExperimenter{ false };  // read in the gather credit (task)
 
-int AlchemistRank(RE::PlayerCharacter* a_pc) {
+int RankFromMask(std::uint32_t a_mask) {
     int r = 0;
     for (int i = PK_ALCH1; i <= PK_ALCH5; ++i) {
-        if (g_perkForm[i] && a_pc->HasPerk(g_perkForm[i])) {
-            r = i - PK_ALCH1 + 1;  // highest chained rank owned
+        if (a_mask & (1u << i)) {
+            r = i - PK_ALCH1 + 1;  // highest chained rank present
         }
     }
     return r;
 }
-// Recompute flask/charge capacity + efficiency flags from the player's perks.
-// Safe to call whenever the perk set may have changed (load, menu open).
+// Recompute flask/charge capacity + efficiency flags from the player's perks —
+// or, when the MCM debug override is on, from its toggle bits instead. Safe to
+// call whenever the perk set may have changed (load, menu open, MCM close).
 void RecomputeCapacity(const char* a_why) {
     auto* pc = RE::PlayerCharacter::GetSingleton();
     if (!pc) {
         return;
     }
-    // Refresh the debug-menu mask + efficiency flags — independent of capacity.
-    std::uint32_t mask = 0;
+    std::uint32_t realMask = 0;
     for (int i = 0; i < PK_COUNT; ++i) {
         if (g_perkForm[i] && pc->HasPerk(g_perkForm[i])) {
-            mask |= (1u << i);
+            realMask |= (1u << i);
         }
     }
-    g_perkMask.store(mask);
-    g_hasBenefactor.store((mask & (1u << PK_BENEFACTOR)) != 0);
-    g_hasExperimenter.store((mask & (1u << PK_EXPERIMENTER)) != 0);
-    // If NONE of the vanilla capacity perks resolved (Requiem / missing masters),
-    // we can't infer real capacity — hold the co-saved counts rather than force
-    // the baseline and clamp away charges the player legitimately earned.
-    if (!g_capacityPerksResolved) {
+    const bool          debug = g_perkDebug.load();
+    const std::uint32_t eff   = debug ? g_perkWantMask.load() : realMask;
+    g_perkMask.store(eff);
+    g_hasBenefactor.store((eff & (1u << PK_BENEFACTOR)) != 0);
+    g_hasExperimenter.store((eff & (1u << PK_EXPERIMENTER)) != 0);
+    // If the vanilla Alchemist chain isn't present (Requiem / missing masters)
+    // and we're not overriding, hold the co-saved counts rather than force the
+    // baseline and clamp away charges the player legitimately earned.
+    if (!g_capacityPerksResolved && !debug) {
         spdlog::info("[perks] {}: no vanilla capacity perks resolved — holding co-saved "
                      "{} flasks / {} charges",
                      a_why, g_flaskCount, g_chargesPerFlask);
         return;
     }
-    const int  rank     = AlchemistRank(pc);
-    const bool capstone = (mask & (1u << PK_CAPSTONE)) != 0;
+    const int  rank     = RankFromMask(eff);
+    const bool capstone = (eff & (1u << PK_CAPSTONE)) != 0;
     std::uint32_t flasks = 2, charges = 2;  // unperked baseline
     if (rank >= 1) charges += 1;                     // Kit Calibration I   -> 2/3
     if (rank >= 2) flasks += 1;                      // Kit Calibration II  -> 3/3
@@ -226,10 +234,10 @@ void RecomputeCapacity(const char* a_why) {
             f.charges = std::min(f.charges, charges);
         }
     }
-    spdlog::info("[perks] {}: Alchemist rank {}, Capstone {}, Benefactor {}, Experimenter {} "
+    spdlog::info("[perks] {}{}: Alchemist rank {}, Capstone {}, Benefactor {}, Experimenter {} "
                  "-> {} flasks / {} charges",
-                 a_why, rank, capstone, g_hasBenefactor.load(), g_hasExperimenter.load(), flasks,
-                 charges);
+                 a_why, debug ? " [DEBUG override]" : "", rank, capstone, g_hasBenefactor.load(),
+                 g_hasExperimenter.load(), flasks, charges);
 }
 
 // ── Essence economy: per-effect flask cost, computed from the load order's
@@ -986,10 +994,27 @@ void ApplyIniLine(std::string a_line) {
         g_catalystLevel = std::clamp(static_cast<float>(std::strtod(val.c_str(), nullptr)), 1.1f, 50.0f);
     } else if (key == "fApexLevel") {
         g_apexLevel = std::clamp(static_cast<float>(std::strtod(val.c_str(), nullptr)), 1.2f, 100.0f);
+    } else if (key == "bDebugPerks") {
+        g_perkDebug.store(!(val == "0" || val == "false"));
+    } else {
+        // Per-perk debug override toggles (bPerk*). Set/clear the want-bit.
+        const bool on = !(val == "0" || val == "false");
+        for (int i = 0; i < PK_COUNT; ++i) {
+            if (key == kPerkDefs[i].iniKey) {
+                std::uint32_t m = g_perkWantMask.load();
+                m = on ? (m | (1u << i)) : (m & ~(1u << i));
+                g_perkWantMask.store(m);
+                break;
+            }
+        }
     }
 }
 
 void ReadConfig() {
+    // Reset the debug override each read so an MCM key that's absent (default)
+    // reverts to off rather than sticking from a previous pass.
+    g_perkDebug.store(false);
+    g_perkWantMask.store(0);
     for (const char* path : { "Data/SKSE/Plugins/MAO.ini", "Data/MCM/Settings/MAO.ini" }) {
         std::ifstream f(path);
         std::string   line;
@@ -997,7 +1022,8 @@ void ReadConfig() {
             ApplyIniLine(line);
         }
     }
-    spdlog::info("[config] bNotify={} iOpenHotkey=0x{:X}", g_notify, g_openHotkey);
+    spdlog::info("[config] bNotify={} iOpenHotkey=0x{:X} debugPerks={} wantMask=0x{:X}", g_notify,
+                 g_openHotkey, g_perkDebug.load(), g_perkWantMask.load());
 }
 
 // Which flask slot (if any) uses this form as its physical item. -1 = none.
@@ -1439,41 +1465,6 @@ namespace menuhook {
                 ImGui::EndChild();
             }
         }
-        // ── Debug: grant/revoke each alchemy perk individually (testing the
-        // capacity ladder without grinding Alchemy). Toggling a box adds/removes
-        // the REAL vanilla perk on the player, then recomputes capacity. Disabled
-        // rows are perks that didn't resolve (non-vanilla load order).
-        if (ImGui::CollapsingHeader("DEBUG  —  grant perks")) {
-            const std::uint32_t mask = g_perkMask.load();
-            ImGui::TextDisabled("Kit: rank %d -> %d flasks / %d charges", g_alchemistRank.load(),
-                                static_cast<int>(g_flaskCount), static_cast<int>(g_chargesPerFlask));
-            for (int i = 0; i < PK_COUNT; ++i) {
-                const bool resolved = g_perkForm[i] != nullptr;
-                if (!resolved) {
-                    ImGui::BeginDisabled();
-                }
-                bool has = (mask & (1u << i)) != 0;
-                if (ImGui::Checkbox(kPerkDefs[i].label, &has)) {
-                    const int  idx  = i;
-                    const bool want = has;
-                    SKSE::GetTaskInterface()->AddTask([idx, want]() {
-                        auto* pc = RE::PlayerCharacter::GetSingleton();
-                        if (!pc || !g_perkForm[idx]) {
-                            return;
-                        }
-                        if (want && !pc->HasPerk(g_perkForm[idx])) {
-                            pc->AddPerk(g_perkForm[idx], 1);
-                        } else if (!want && pc->HasPerk(g_perkForm[idx])) {
-                            pc->RemovePerk(g_perkForm[idx]);
-                        }
-                        RecomputeCapacity("debug");
-                    });
-                }
-                if (!resolved) {
-                    ImGui::EndDisabled();
-                }
-            }
-        }
         ImGui::Separator();
         ImGui::TextDisabled("Pad: D-pad/stick move, A select, B close.  KB: arrows, Enter, Esc.");
         ImGui::End();
@@ -1752,6 +1743,14 @@ public:
                     // chrome through our overlay. Ejecting breaks that loop.
                     player->NotifyAnimationGraph("IdleForceDefaultState");
                 }
+            });
+        } else if (a_event && !a_event->opening &&
+                   a_event->menuName == RE::JournalMenu::MENU_NAME) {
+            // MCM lives in the Journal (pause) menu; MCM Helper flushes settings
+            // to MAO.ini on close. Re-read config + reapply perk overrides now.
+            SKSE::GetTaskInterface()->AddTask([]() {
+                ReadConfig();
+                RecomputeCapacity("mcm");
             });
         }
         return RE::BSEventNotifyControl::kContinue;

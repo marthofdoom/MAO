@@ -51,6 +51,12 @@ ssh -o BatchMode=yes "$HOST" "mkdir -p '$PLUGINS/MAO/fonts'"
 scp -q data/SKSE/Plugins/MAO/fonts/body.ttf data/SKSE/Plugins/MAO/fonts/head.ttf \
        data/SKSE/Plugins/MAO/fonts/sans.ttf "$HOST:$PLUGINS/MAO/fonts/"
 
+# MCM Helper page definition (read-only; MCM Helper writes user choices to
+# Data/MCM/Settings/MAO.ini, which the DLL reads last). Always refresh.
+ssh -o BatchMode=yes "$HOST" "mkdir -p '$GAME/Data/MCM/Config/MAO'"
+scp -q data/MCM/Config/MAO/config.json "$HOST:$GAME/Data/MCM/Config/MAO/config.json"
+echo "MCM config deployed"
+
 # Seed the INI only if the Deck doesn't already have one (preserve edits).
 if ssh -o BatchMode=yes "$HOST" "test ! -f '$PLUGINS/MAO.ini'"; then
     scp -q data/SKSE/Plugins/MAO.ini "$HOST:$PLUGINS/MAO.ini"
