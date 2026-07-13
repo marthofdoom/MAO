@@ -68,7 +68,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.13.0 (perk capacity ladder)";
+constexpr auto kPluginVersion = "0.13.1 (perk ladder + review fixes)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -143,6 +143,7 @@ struct AlchemyPerks {
     RE::BGSPerk* experimenter = nullptr;  // 00058218 — gather yield +10%
 };
 AlchemyPerks      g_perks;
+bool              g_capacityPerksResolved = false;  // any Alchemist rank or Purity found?
 std::atomic<int>  g_alchemistRank{ 0 };
 std::atomic<bool> g_hasPurity{ false };
 std::atomic<bool> g_hasBenefactor{ false };   // read in VariantCost (render + task)
@@ -164,6 +165,18 @@ void RecomputeCapacity(const char* a_why) {
     if (!pc) {
         return;
     }
+    // Efficiency flags are independent of the capacity perks — always refresh.
+    g_hasBenefactor.store(g_perks.benefactor && pc->HasPerk(g_perks.benefactor));
+    g_hasExperimenter.store(g_perks.experimenter && pc->HasPerk(g_perks.experimenter));
+    // If NONE of the vanilla capacity perks resolved (Requiem / missing masters),
+    // we can't infer real capacity — hold the co-saved counts rather than force
+    // the baseline and clamp away charges the player legitimately earned.
+    if (!g_capacityPerksResolved) {
+        spdlog::info("[perks] {}: no vanilla capacity perks resolved — holding co-saved "
+                     "{} flasks / {} charges",
+                     a_why, g_flaskCount, g_chargesPerFlask);
+        return;
+    }
     const int  rank   = AlchemistRank(pc);
     const bool purity = g_perks.purity && pc->HasPerk(g_perks.purity);
     std::uint32_t flasks = 2, charges = 2;  // unperked baseline
@@ -175,8 +188,6 @@ void RecomputeCapacity(const char* a_why) {
     charges = std::min<std::uint32_t>(charges, 9u);
     g_alchemistRank.store(rank);
     g_hasPurity.store(purity);
-    g_hasBenefactor.store(g_perks.benefactor && pc->HasPerk(g_perks.benefactor));
-    g_hasExperimenter.store(g_perks.experimenter && pc->HasPerk(g_perks.experimenter));
     {
         std::scoped_lock lk(g_flasksLock);
         g_flaskCount      = flasks;
@@ -1327,8 +1338,12 @@ namespace menuhook {
         // ── Flasks ──
         ImGui::TextDisabled("FLASKS  —  select one, then a variant below");
         ImGui::Separator();
+        // Snapshot the perk-scaled charge cap under the lock — RecomputeCapacity
+        // writes it from the task thread while this menu renders.
+        std::uint32_t chargesCap = 2;
         {
             std::scoped_lock lk(g_flasksLock);
+            chargesCap = g_chargesPerFlask;
             if (g_selectedSlot >= static_cast<int>(g_flaskCount)) {
                 g_selectedSlot = -1;
             }
@@ -1344,7 +1359,7 @@ namespace menuhook {
                 }
                 char label[160];
                 std::snprintf(label, sizeof(label), "Flask %d:  %s    [%u/%u]##flask%d", i + 1,
-                              name, f.charges, g_chargesPerFlask, i);
+                              name, f.charges, chargesCap, i);
                 if (ImGui::Selectable(label, g_selectedSlot == i)) {
                     g_selectedSlot = i;
                 }
@@ -1353,7 +1368,7 @@ namespace menuhook {
         ImGui::Spacing();
 
         // ── Discovered variants (the specific potions you've found/bought) ──
-        ImGui::TextDisabled("VARIANTS  —  cost fills all %u charges", g_chargesPerFlask);
+        ImGui::TextDisabled("VARIANTS  —  cost fills all %u charges", chargesCap);
         ImGui::Separator();
         {
             std::scoped_lock lk(g_discoveredLock);
@@ -1373,7 +1388,7 @@ namespace menuhook {
                     auto*           eff  = alch->effects[0]->baseEffect;
                     const char*     pn   = alch->GetName();
                     const bool      coat = eff->IsHostile() || eff->IsDetrimental();
-                    const FlaskCost cost = VariantCost(alch) * g_chargesPerFlask;
+                    const FlaskCost cost = VariantCost(alch) * chargesCap;
                     char            label[224];
                     std::snprintf(label, sizeof(label), "%-26.80s %s %s##v%08X",
                                   (pn && *pn) ? pn : "(unknown)", coat ? "[coating]" : "        ",
@@ -1856,6 +1871,7 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
             g_perks.purity       = dh->LookupForm<RE::BGSPerk>(0x5821D, SK);
             g_perks.benefactor   = dh->LookupForm<RE::BGSPerk>(0x58216, SK);
             g_perks.experimenter = dh->LookupForm<RE::BGSPerk>(0x58218, SK);
+            g_capacityPerksResolved = (np > 0) || (g_perks.purity != nullptr);
             spdlog::info("[perks] resolved {}/5 Alchemist ranks; purity={} benefactor={} "
                          "experimenter={} (0=missing -> capacity holds at baseline)",
                          np, g_perks.purity != nullptr, g_perks.benefactor != nullptr,
@@ -1880,8 +1896,8 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
         // absent; retries every load, so a mid-save ESP enable still lands.
         SKSE::GetTaskInterface()->AddTask([]() {
             RemoveFieldKitPower();
-            SyncFlaskItems();
-            RecomputeCapacity("load");  // perks are authoritative over co-saved counts
+            RecomputeCapacity("load");  // authoritative capacity BEFORE we sync items,
+            SyncFlaskItems();           // so a shrunk kit doesn't grant now-dead slots
         });
         break;
     default:
