@@ -57,17 +57,21 @@
 #include <cstdlib>
 #include <format>
 #include <fstream>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <unordered_set>
+#include <vector>
 
 namespace {
 
-constexpr auto kPluginVersion = "0.3.2 (P1a; power opener)";
+constexpr auto kPluginVersion = "0.4.0 (P1b blueprints)";
 
-constexpr std::uint32_t kSerID       = 'MAO1';
-constexpr std::uint32_t kRecPouch    = 'POCH';
-constexpr std::uint32_t kSerVersion  = 1;
-constexpr RE::FormID    kPlayerID    = 0x14;
+constexpr std::uint32_t kSerID         = 'MAO1';
+constexpr std::uint32_t kRecPouch      = 'POCH';
+constexpr std::uint32_t kRecBlueprints = 'BLPT';
+constexpr std::uint32_t kSerVersion    = 1;
+constexpr RE::FormID    kPlayerID      = 0x14;
 
 // MAO.esp forms (P1a). FROZEN — must match MAO_GenerateESP.py. ESL-flagged
 // plugin, so LookupForm takes the low local ID + the plugin name.
@@ -86,6 +90,14 @@ struct Pouch {
     std::uint32_t apex     = 0;
 };
 Pouch g_pouch;
+
+// ── Known blueprints (P1b): the set of effect profiles the player has
+// discovered by analyzing found potions. Keyed by the potion's primary
+// MagicEffect FormID, so all strength variants of an effect collapse into one
+// blueprint (the design's "family by effect"). Persisted in 'BLPT'. Guarded by
+// a mutex — the render thread reads it while the task thread inserts.
+std::unordered_set<RE::FormID> g_blueprints;
+std::mutex                     g_blueprintsLock;
 
 // ── Field Kit viewer state (M2). open/close is driven by the input hook and
 // read by the present hook — both run off the game's render/input threads, so
@@ -249,42 +261,89 @@ public:
             return RE::BSEventNotifyControl::kContinue;
         }
         auto* form = RE::TESForm::LookupByID(a_event->baseObj);
-        auto* ingr = form ? form->As<RE::IngredientItem>() : nullptr;
-        if (!ingr) {
+        if (!form) {
             return RE::BSEventNotifyControl::kContinue;
         }
-        const char*      cname = ingr->GetName();
-        std::string_view name  = cname ? cname : "";
-        if (IsExcluded(name)) {
-            spdlog::info("[gather] EXCLUDED '{}' ({:08X}) — kept as item, no conversion",
-                         name, a_event->baseObj);
+        const int count = a_event->itemCount;
+
+        // ── Ingredient → essence (M1 gathering) ──
+        if (auto* ingr = form->As<RE::IngredientItem>()) {
+            const char*      cname = ingr->GetName();
+            std::string_view name  = cname ? cname : "";
+            if (IsExcluded(name)) {
+                spdlog::info("[gather] EXCLUDED '{}' ({:08X}) — kept as item, no conversion",
+                             name, a_event->baseObj);
+                return RE::BSEventNotifyControl::kContinue;
+            }
+            const Tier          tier    = TierOf(name);
+            const int           value   = ingr->value;
+            const std::uint32_t total   = YieldFor(value, tier) * static_cast<std::uint32_t>(count);
+            const std::string   nameStr(name);
+            SKSE::GetTaskInterface()->AddTask([ingr, count, tier, total, value, nameStr]() {
+                auto* player = RE::PlayerCharacter::GetSingleton();
+                if (!player) {
+                    return;
+                }
+                player->RemoveItem(ingr, count, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+                CreditPouch(tier, total);
+                spdlog::info("[gather] +{} {} essence <- {}x '{}' (value {}); pouch B={} C={} A={}",
+                             total, TierName(tier), count, nameStr, value,
+                             g_pouch.base, g_pouch.catalyst, g_pouch.apex);
+                if (g_notify) {
+                    RE::DebugNotification(
+                        std::format("+{} {} Essence ({})", total, TierName(tier), nameStr).c_str());
+                }
+            });
             return RE::BSEventNotifyControl::kContinue;
         }
 
-        const Tier          tier    = TierOf(name);
-        const int           value   = ingr->value;
-        const int           count   = a_event->itemCount;
-        const std::uint32_t perItem = YieldFor(value, tier);
-        const std::uint32_t total   = perItem * static_cast<std::uint32_t>(count);
-        const std::string   nameStr(name);
+        // ── Potion → blueprint discovery (P1b) ──
+        // Single-use potions/poisons are stripped and analyzed: the physical
+        // item is destroyed, its primary effect becomes a permanent blueprint
+        // unlock, and it yields essence. Food is NOT a potion — leave it. (P1c
+        // adds a flask-item exclusion here once flasks exist.)
+        if (auto* alch = form->As<RE::AlchemyItem>()) {
+            if (alch->IsFood()) {
+                return RE::BSEventNotifyControl::kContinue;
+            }
+            RE::FormID  bpKey   = 0;
+            const char* bpCName = nullptr;
+            if (!alch->effects.empty() && alch->effects[0] && alch->effects[0]->baseEffect) {
+                bpKey   = alch->effects[0]->baseEffect->GetFormID();
+                bpCName = alch->effects[0]->baseEffect->GetName();
+            }
+            const int           value   = alch->value;
+            const std::uint32_t total   = YieldFor(value, Tier::Base) * static_cast<std::uint32_t>(count);
+            const char*         pcName  = alch->GetName();
+            const std::string   potName(pcName ? pcName : "potion");
+            const std::string   bpName(bpCName ? bpCName : "");
+            SKSE::GetTaskInterface()->AddTask([alch, count, bpKey, total, potName, bpName]() {
+                auto* player = RE::PlayerCharacter::GetSingleton();
+                if (!player) {
+                    return;
+                }
+                player->RemoveItem(alch, count, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+                bool learned = false;
+                if (bpKey) {
+                    std::scoped_lock lk(g_blueprintsLock);
+                    learned = g_blueprints.insert(bpKey).second;
+                }
+                CreditPouch(Tier::Base, total);
+                spdlog::info("[discover] '{}' analyzed -> blueprint '{}' ({}); +{} Base essence; "
+                             "pouch B={} C={} A={}",
+                             potName, bpName.empty() ? "?" : bpName,
+                             bpKey ? (learned ? "NEW" : "known") : "no-effect", total,
+                             g_pouch.base, g_pouch.catalyst, g_pouch.apex);
+                if (g_notify) {
+                    if (learned && !bpName.empty()) {
+                        RE::DebugNotification(std::format("Blueprint learned: {}", bpName).c_str());
+                    }
+                    RE::DebugNotification(std::format("+{} Base Essence ({})", total, potName).c_str());
+                }
+            });
+            return RE::BSEventNotifyControl::kContinue;
+        }
 
-        // Mutating inventory inside a container-changed event is unsafe; defer
-        // one frame via the task interface (the same discipline MEO uses).
-        SKSE::GetTaskInterface()->AddTask([ingr, count, tier, total, value, nameStr]() {
-            auto* player = RE::PlayerCharacter::GetSingleton();
-            if (!player) {
-                return;
-            }
-            player->RemoveItem(ingr, count, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
-            CreditPouch(tier, total);
-            spdlog::info("[gather] +{} {} essence <- {}x '{}' (value {}); pouch B={} C={} A={}",
-                         total, TierName(tier), count, nameStr, value,
-                         g_pouch.base, g_pouch.catalyst, g_pouch.apex);
-            if (g_notify) {
-                RE::DebugNotification(
-                    std::format("+{} {} Essence ({})", total, TierName(tier), nameStr).c_str());
-            }
-        });
         return RE::BSEventNotifyControl::kContinue;
     }
 };
@@ -328,11 +387,11 @@ namespace menuhook {
         auto& io = ImGui::GetIO();
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
                                 ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-        ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x * 0.34f, io.DisplaySize.y * 0.30f),
+        ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x * 0.36f, io.DisplaySize.y * 0.52f),
                                  ImGuiCond_Appearing);
         if (ImGui::Begin("MAO Field Kit", nullptr,
                          ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
-                             ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar)) {
+                             ImGuiWindowFlags_NoTitleBar)) {
             ImGui::TextUnformatted("FIELD KIT  —  ESSENCE STORES");
             ImGui::Separator();
             ImGui::Spacing();
@@ -341,7 +400,25 @@ namespace menuhook {
             ImGui::Text("Apex Essence      %u", g_pouch.apex);
             ImGui::Spacing();
             ImGui::Separator();
-            ImGui::TextDisabled("Read-only preview (P0). Flask setup arrives in P1.");
+            {
+                std::scoped_lock lk(g_blueprintsLock);
+                ImGui::Text("KNOWN BLUEPRINTS  (%u)", static_cast<unsigned>(g_blueprints.size()));
+                ImGui::Separator();
+                if (g_blueprints.empty()) {
+                    ImGui::TextDisabled("None yet — pick up potions to analyze them.");
+                } else {
+                    ImGui::BeginChild("blueprints", ImVec2(0, io.DisplaySize.y * 0.20f));
+                    for (const RE::FormID id : g_blueprints) {
+                        auto* mgef = RE::TESForm::LookupByID<RE::EffectSetting>(id);
+                        const char* n = mgef ? mgef->GetName() : nullptr;
+                        ImGui::BulletText("%s", (n && *n) ? n : "(unknown effect)");
+                    }
+                    ImGui::EndChild();
+                }
+            }
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::TextDisabled("Read-only preview (P1b). Flask setup arrives in P1c.");
             ImGui::TextDisabled("Cast Open Field Kit again, or press B / Esc, to close.");
         }
         ImGui::End();
@@ -530,31 +607,67 @@ void SaveCallback(SKSE::SerializationInterface* a_intfc) {
     a_intfc->WriteRecordData(g_pouch.catalyst);
     a_intfc->WriteRecordData(g_pouch.apex);
     spdlog::info("[save] pouch B={} C={} A={}", g_pouch.base, g_pouch.catalyst, g_pouch.apex);
+
+    if (a_intfc->OpenRecord(kRecBlueprints, kSerVersion)) {
+        std::scoped_lock lk(g_blueprintsLock);
+        const std::uint32_t n = static_cast<std::uint32_t>(g_blueprints.size());
+        a_intfc->WriteRecordData(n);
+        for (const RE::FormID id : g_blueprints) {
+            a_intfc->WriteRecordData(id);
+        }
+        spdlog::info("[save] {} blueprint(s)", n);
+    } else {
+        spdlog::error("[save] OpenRecord('BLPT') failed");
+    }
 }
 
 void LoadCallback(SKSE::SerializationInterface* a_intfc) {
     g_pouch = Pouch{};
+    {
+        std::scoped_lock lk(g_blueprintsLock);
+        g_blueprints.clear();
+    }
     std::uint32_t type = 0, version = 0, length = 0;
     while (a_intfc->GetNextRecordInfo(type, version, length)) {
-        if (type != kRecPouch) {
-            continue;
-        }
         if (version > kSerVersion) {
-            spdlog::error("[load] 'POCH' v{} is from a NEWER MAO — pouch left empty this session",
-                          version);
+            spdlog::error("[load] a co-save record (v{}) is from a NEWER MAO — skipped", version);
             continue;
         }
-        a_intfc->ReadRecordData(g_pouch.base);
-        a_intfc->ReadRecordData(g_pouch.catalyst);
-        a_intfc->ReadRecordData(g_pouch.apex);
+        if (type == kRecPouch) {
+            a_intfc->ReadRecordData(g_pouch.base);
+            a_intfc->ReadRecordData(g_pouch.catalyst);
+            a_intfc->ReadRecordData(g_pouch.apex);
+        } else if (type == kRecBlueprints) {
+            std::uint32_t n = 0;
+            a_intfc->ReadRecordData(n);
+            std::scoped_lock lk(g_blueprintsLock);
+            for (std::uint32_t i = 0; i < n; ++i) {
+                RE::FormID id = 0, resolved = 0;
+                a_intfc->ReadRecordData(id);
+                // Remap across load-order changes; drop forms whose plugin is gone.
+                if (a_intfc->ResolveFormID(id, resolved) && resolved) {
+                    g_blueprints.insert(resolved);
+                }
+            }
+        }
     }
-    spdlog::info("[load] pouch B={} C={} A={}", g_pouch.base, g_pouch.catalyst, g_pouch.apex);
+    std::size_t bp = 0;
+    {
+        std::scoped_lock lk(g_blueprintsLock);
+        bp = g_blueprints.size();
+    }
+    spdlog::info("[load] pouch B={} C={} A={}; {} blueprint(s)", g_pouch.base, g_pouch.catalyst,
+                 g_pouch.apex, bp);
 }
 
 void RevertCallback(SKSE::SerializationInterface*) {
     g_pouch = Pouch{};
+    {
+        std::scoped_lock lk(g_blueprintsLock);
+        g_blueprints.clear();
+    }
     g_menu.open.store(false);
-    spdlog::info("[revert] pouch cleared");
+    spdlog::info("[revert] pouch + blueprints cleared");
 }
 
 void OnMessage(SKSE::MessagingInterface::Message* a_message) {
