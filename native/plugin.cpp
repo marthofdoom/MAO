@@ -306,8 +306,7 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
         ReadConfig();
         RE::ScriptEventSourceHolder::GetSingleton()
             ->AddEventSink<RE::TESContainerChangedEvent>(ContainerSink::GetSingleton());
-        RE::TESHarvestedEvent::ItemHarvested::GetEventSource()->AddEventSink(
-            HarvestSink::GetSingleton());
+        RE::TESHarvestedEvent::GetEventSource()->AddEventSink(HarvestSink::GetSingleton());
         const auto gameVersion = REL::Module::get().version();
         if (auto* console = RE::ConsoleLog::GetSingleton()) {
             console->Print("MAO native v%s loaded", kPluginVersion);
