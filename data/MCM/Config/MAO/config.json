@@ -50,8 +50,11 @@
 					"text": "Field Kit skin",
 					"type": "enum",
 					"help": "Menu color theme.",
-					"valueOptions": { "sourceType": "ModSettingInt", "defaultValue": 0 },
-					"content": { "options": ["Ebony & Brass", "Dwemer Parchment", "Soul Cairn", "Quicksilver"] }
+					"valueOptions": {
+						"options": ["Ebony & Brass", "Dwemer Parchment", "Soul Cairn", "Quicksilver"],
+						"shortNames": ["Ebony & Brass", "Dwemer Parchment", "Soul Cairn", "Quicksilver"],
+						"sourceType": "ModSettingInt"
+					}
 				},
 				{
 					"id": "bNotify:Interface",
