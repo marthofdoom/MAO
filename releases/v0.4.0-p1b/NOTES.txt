@@ -1,0 +1,2 @@
+P1b: blueprint discovery (potions -> effect blueprints + essence)
+built from native run 29219792646
