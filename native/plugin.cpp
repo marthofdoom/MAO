@@ -92,7 +92,11 @@ MenuState g_menu;
 // ── Config (Data/SKSE/Plugins/MAO.ini). The full MCM option set arrives with
 // P1; P0 seeds the surface with the keys it needs.
 bool          g_notify     = true;    // bNotify — per-pickup essence notifications
-std::uint32_t g_openHotkey = 0x25;    // iOpenHotkey — DirectInput scancode; 0x25 = K
+std::uint32_t g_openHotkey = 0x25;    // iOpenHotkey — keyboard DirectInput scancode; 0x25 = K
+// iOpenButtonGamepad — RE::BSWin32GamepadDevice::Key bitflag. 0x20 = Back/View
+// (the Deck's ⊟ button). Steam Deck has no keyboard, so the viewer must be
+// reachable from the pad; this is its opener there.
+std::uint32_t g_openButtonGamepad = 0x20;
 
 const char* TierName(Tier a_t) {
     switch (a_t) {
@@ -205,6 +209,8 @@ void ApplyIniLine(std::string a_line) {
         g_notify = !(val == "0" || val == "false");
     } else if (key == "iOpenHotkey") {
         g_openHotkey = static_cast<std::uint32_t>(std::strtoul(val.c_str(), nullptr, 0));
+    } else if (key == "iOpenButtonGamepad") {
+        g_openButtonGamepad = static_cast<std::uint32_t>(std::strtoul(val.c_str(), nullptr, 0));
     }
 }
 
@@ -330,7 +336,7 @@ namespace menuhook {
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::TextDisabled("Read-only preview (P0). Flask setup arrives in P1.");
-            ImGui::TextDisabled("Press the Field Kit key or Esc to close.");
+            ImGui::TextDisabled("Field Kit button again, or B / Esc, to close.");
         }
         ImGui::End();
     }
@@ -408,6 +414,20 @@ namespace menuhook {
                 func(a_source, a_events);
                 return;
             }
+            // The viewer opener works from keyboard (iOpenHotkey) OR gamepad
+            // (iOpenButtonGamepad) — the Steam Deck has no keyboard, so the
+            // pad path is what opens it there. The same control closes it, as
+            // do Esc (keyboard) and B (gamepad).
+            constexpr std::uint32_t kGamepadB = 0x2000;  // BSWin32GamepadDevice::Key::kB
+            auto isOpener = [&](RE::INPUT_DEVICE a_dev, std::uint32_t a_code) {
+                return (a_dev == RE::INPUT_DEVICE::kKeyboard && a_code == g_openHotkey) ||
+                       (a_dev == RE::INPUT_DEVICE::kGamepad && a_code == g_openButtonGamepad);
+            };
+            auto isCloser = [&](RE::INPUT_DEVICE a_dev, std::uint32_t a_code) {
+                return isOpener(a_dev, a_code) ||
+                       (a_dev == RE::INPUT_DEVICE::kKeyboard && a_code == 0x01 /* Esc */) ||
+                       (a_dev == RE::INPUT_DEVICE::kGamepad && a_code == kGamepadB);
+            };
             const bool wasOpen  = g_menu.open.load();
             bool       justOpen = false;
             for (auto* e = *a_events; e; e = e->next) {
@@ -415,16 +435,17 @@ namespace menuhook {
                     continue;
                 }
                 auto* b = static_cast<RE::ButtonEvent*>(e);
-                if (!b->IsDown() || b->device.get() != RE::INPUT_DEVICE::kKeyboard) {
-                    continue;  // act on key press, keyboard only (P0)
+                if (!b->IsDown()) {
+                    continue;  // act on press
                 }
+                const auto          dev  = b->device.get();
                 const std::uint32_t code = b->GetIDCode();
                 if (!wasOpen) {
-                    if (code == g_openHotkey) {
+                    if (isOpener(dev, code)) {
                         g_menu.open.store(true);
                         justOpen = true;
                     }
-                } else if (code == g_openHotkey || code == 0x01 /* Esc */) {
+                } else if (isCloser(dev, code)) {
                     g_menu.open.store(false);
                 }
             }
@@ -450,7 +471,8 @@ namespace menuhook {
         write_thunk_call<D3DInitHook>();
         write_thunk_call<DXGIPresentHook>();
         write_thunk_call<InputDispatchHook>();
-        spdlog::info("[menu] render + input hooks installed (viewer key 0x{:X})", g_openHotkey);
+        spdlog::info("[menu] render + input hooks installed (kb key 0x{:X}, pad button 0x{:X})",
+                     g_openHotkey, g_openButtonGamepad);
     }
 
 }  // namespace menuhook
