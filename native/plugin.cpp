@@ -62,7 +62,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.3.0 (P1a field kit power)";
+constexpr auto kPluginVersion = "0.3.1 (P1a; button opener)";
 
 constexpr std::uint32_t kSerID       = 'MAO1';
 constexpr std::uint32_t kRecPouch    = 'POCH';
@@ -483,18 +483,21 @@ namespace menuhook {
 
 }  // namespace menuhook
 
-// ── The Open Field Kit power (P1a). MAO is native-first: the DLL grants the
-// lesser power and a cast-event sink opens the viewer — no Papyrus, no quest.
-// The gamepad/keyboard opener stays as a fallback.
-void GrantFieldKitPower() {
+// ── Field Kit opener. P1a proved the ESP + castable power work, but a utility
+// menu doesn't belong in the Powers select list (it competes with real shouts
+// for the equip slot), so per Marth the opener is the gamepad/keyboard button
+// (input hook), NOT a granted power. This keeps the ESP/spell form (frozen,
+// dormant) and actively removes the power from saves where the P1a test
+// granted it. The cast sink stays wired so the power still opens the kit if
+// ever equipped, but it is never granted.
+void SyncFieldKitPower() {
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (!player || !g_fieldKitSpell) {
         return;
     }
-    if (!player->HasSpell(g_fieldKitSpell)) {
-        player->AddSpell(g_fieldKitSpell);
-        spdlog::info("[power] granted Open Field Kit power");
-        RE::DebugNotification("Learned the Open Field Kit power.");
+    if (player->HasSpell(g_fieldKitSpell)) {
+        player->RemoveSpell(g_fieldKitSpell);
+        spdlog::info("[power] removed Open Field Kit power (opener is the button, not a power)");
     }
 }
 
@@ -575,7 +578,7 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
     case SKSE::MessagingInterface::kNewGame:
         // Player exists here (after LoadCallback/Revert). Grant the power if
         // absent; retries every load, so a mid-save ESP enable still lands.
-        SKSE::GetTaskInterface()->AddTask([]() { GrantFieldKitPower(); });
+        SKSE::GetTaskInterface()->AddTask([]() { SyncFieldKitPower(); });
         break;
     default:
         break;
