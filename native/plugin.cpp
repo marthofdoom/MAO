@@ -1578,6 +1578,10 @@ public:
     }
     RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* a_event,
                                           RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override {
+        if (a_event && g_menu.open.load()) {  // DIAG: what menus churn while the kit is open
+            spdlog::info("[diag] menu '{}' {} (kit open)", a_event->menuName.c_str(),
+                         a_event->opening ? "OPEN" : "close");
+        }
         if (a_event && a_event->opening && a_event->menuName == RE::CraftingMenu::MENU_NAME) {
             SKSE::GetTaskInterface()->AddTask([]() {
                 auto* player = RE::PlayerCharacter::GetSingleton();
