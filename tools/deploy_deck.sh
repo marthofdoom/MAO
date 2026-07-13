@@ -54,6 +54,27 @@ else
     echo "MAO.ini already on Deck — left as-is (delete it there to reset)"
 fi
 
+# ── ESP (P1a+): regenerate locally (pure Python, no CI), deploy flat into
+# Data/, and enable it in the load order. The ESP is deterministic and never
+# hand-edited, so it is always freshly generated here.
+python3 MAO_GenerateESP.py "$STAGE/esp" >/dev/null
+[[ -f "$STAGE/esp/MAO.esp" ]] || { echo "ERROR: MAO_GenerateESP.py produced no MAO.esp" >&2; exit 1; }
+scp -q "$STAGE/esp/MAO.esp" "$HOST:$GAME/Data/MAO.esp"
+echo "ESP: $(stat -c '%s bytes' "$STAGE/esp/MAO.esp")"
+
+# Enable *MAO.esp in Plugins.txt if not already listed (flat install = manual
+# load order). Located by find; the leading '*' marks it active.
+ssh -o BatchMode=yes "$HOST" 'bash -s' <<'REMOTE'
+P=$(find "$HOME/.local/share/Steam/steamapps/compatdata/489830" -iname 'plugins.txt' 2>/dev/null | head -1)
+if [ -z "$P" ]; then echo "WARN: Plugins.txt not found — enable *MAO.esp manually"; exit 0; fi
+if grep -qiE '^\*?MAO\.esp' "$P"; then
+    echo "MAO.esp already in load order"
+else
+    printf '*MAO.esp\n' >> "$P"
+    echo "enabled *MAO.esp in $(basename "$P")"
+fi
+REMOTE
+
 echo "== deployed =="
 ssh -o BatchMode=yes "$HOST" "ls -la '$PLUGINS/MAO.dll' '$PLUGINS/MAO.ini'"
 echo
