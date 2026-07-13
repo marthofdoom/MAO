@@ -31,7 +31,8 @@ FID_FIELDKIT_MGEF  = OWN | 0x800  # FROZEN — inert effect the power carries
 FID_FIELDKIT_SPELL = OWN | 0x801  # FROZEN — the Open Field Kit lesser power (dormant)
 FID_FLASK_BASE     = OWN | 0x810  # FROZEN — 6 dedicated flask AlchemyItems (0x810..0x815)
 NUM_FLASKS         = 6            # = kMaxFlaskSlots in the DLL
-NEXT_OBJECT_ID     = 0x816        # first unused local; grows as forms are added
+FID_PERK_CAPSTONE  = OWN | 0x816  # FROZEN — MAO capstone perk (the 6/9 kit ceiling)
+NEXT_OBJECT_ID     = 0x817        # first unused local; grows as forms are added
 
 # Vanilla Skyrim.esm forms referenced by the flask records.
 KWD_VENDOR_POTION   = 0x0008CDEC  # KYWD VendorItemPotion (classifies it as a potion)
@@ -129,6 +130,21 @@ def make_flasks():
     return group('ALCH', out)
 
 
+# ── MAO capstone perk (DESIGN §5.2 "Master Alchemist's Crucible"). A minimal,
+# effect-less BGSPerk: the DLL reads HasPerk to unlock the 6/9 kit ceiling, so
+# the record needs no entry points. Not placed in any tree yet — granted via the
+# debug/MCM toggle now, positioned by the load-order-aware installer later. DATA
+# = trait0 level0 ranks1 playable1 hidden0 (PERK recipe ported from MEO). ──
+def make_perk():
+    data = struct.pack('<BBBBB', 0, 0, 1, 1, 0)
+    body = subrec('EDID', zstr("MAO_Perk_Capstone")) \
+        + subrec('FULL', zstr("Master Alchemist's Crucible")) \
+        + subrec('DESC', zstr("Your field kit reaches its master configuration: "
+                              "6 flasks, 9 charges each.")) \
+        + subrec('DATA', data)
+    return group('PERK', record('PERK', FID_PERK_CAPSTONE, 0, body))
+
+
 def main():
     out_dir = sys.argv[1] if len(sys.argv) > 1 else "out"
     os.makedirs(out_dir, exist_ok=True)
@@ -137,13 +153,15 @@ def main():
     esp.write(make_mgef())
     esp.write(make_flasks())
     esp.write(make_spel())
+    esp.write(make_perk())
     data = esp.getvalue()
     path = os.path.join(out_dir, "MAO.esp")
     with open(path, 'wb') as f:
         f.write(data)
     print(f"Written: {path} ({len(data):,} bytes)")
     print(f"  MGEF x1 (inert)   ALCH x{NUM_FLASKS} (flasks 0x{FID_FLASK_BASE & 0xFFFFFF:03X}.."
-          f"0x{(FID_FLASK_BASE + NUM_FLASKS - 1) & 0xFFFFFF:03X})   SPEL x1 (dormant)")
+          f"0x{(FID_FLASK_BASE + NUM_FLASKS - 1) & 0xFFFFFF:03X})   SPEL x1 (dormant)"
+          f"   PERK x1 (capstone 0x{FID_PERK_CAPSTONE & 0xFFFFFF:03X})")
     print("  ESL-flagged, master Skyrim.esm")
 
 

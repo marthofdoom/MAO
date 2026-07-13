@@ -68,7 +68,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.13.2 (debug perk toggles)";
+constexpr auto kPluginVersion = "0.14.0 (MAO capstone perk)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -141,31 +141,34 @@ std::mutex                        g_flasksLock;
 // PK_ALCH1..5 are the vanilla Alchemist chain (separate records, ranks 1..5).
 enum PerkIdx : int {
     PK_ALCH1, PK_ALCH2, PK_ALCH3, PK_ALCH4, PK_ALCH5,
-    PK_PURITY, PK_BENEFACTOR, PK_EXPERIMENTER,
+    PK_CAPSTONE, PK_BENEFACTOR, PK_EXPERIMENTER,
     PK_PHYSICIAN, PK_POISONER, PK_GREENTHUMB, PK_SNAKEBLOOD, PK_CONCPOISON,
     PK_COUNT
 };
-struct PerkDef { const char* label; RE::FormID id; };
+// own = the form lives in MAO.esp (our capstone); otherwise it's a vanilla
+// Skyrim.esm alchemy perk. The capstone replaces vanilla Purity as the 6/9
+// ceiling — MAO's own perk so the load-order-aware installer can place it later.
+struct PerkDef { const char* label; RE::FormID id; bool own; };
 constexpr PerkDef kPerkDefs[PK_COUNT] = {
-    { "Alchemist I  (+1 charge)",        0xBE127 },
-    { "Alchemist II  (+1 flask)",        0xC07CA },
-    { "Alchemist III  (refill eff, P2)", 0xC07CB },
-    { "Alchemist IV  (+1 flask +2 chg)", 0xC07CC },
-    { "Alchemist V  (rest refill, P2)",  0xC07CD },
-    { "Purity  (+2 flask +4 charge)",    0x5821D },
-    { "Benefactor  (Apex -35%)",         0x58216 },
-    { "Experimenter  (+10% gather)",     0x58218 },
-    { "Physician  (P2)",                 0x58215 },
-    { "Poisoner  (P2)",                  0x58217 },
-    { "Green Thumb  (P2)",               0x105F2E },
-    { "Snakeblood  (P2)",                0x105F2C },
-    { "Concentrated Poison  (P2)",       0x105F2F },
+    { "Alchemist I  (+1 charge)",             0xBE127, false },
+    { "Alchemist II  (+1 flask)",             0xC07CA, false },
+    { "Alchemist III  (refill eff, P2)",      0xC07CB, false },
+    { "Alchemist IV  (+1 flask +2 chg)",      0xC07CC, false },
+    { "Alchemist V  (rest refill, P2)",       0xC07CD, false },
+    { "Master's Crucible  (+2 flask +4 chg)", 0x816,   true  },  // MAO capstone
+    { "Benefactor  (Apex -35%)",              0x58216, false },
+    { "Experimenter  (+10% gather)",          0x58218, false },
+    { "Physician  (P2)",                      0x58215, false },
+    { "Poisoner  (P2)",                       0x58217, false },
+    { "Green Thumb  (P2)",                    0x105F2E, false },
+    { "Snakeblood  (P2)",                     0x105F2C, false },
+    { "Concentrated Poison  (P2)",            0x105F2F, false },
 };
 RE::BGSPerk*               g_perkForm[PK_COUNT] = {};
 std::atomic<std::uint32_t> g_perkMask{ 0 };  // bit i = player holds kPerkDefs[i] (debug menu)
-bool              g_capacityPerksResolved = false;  // any Alchemist rank or Purity found?
+bool              g_capacityPerksResolved = false;  // any Alchemist rank or the capstone found?
 std::atomic<int>  g_alchemistRank{ 0 };
-std::atomic<bool> g_hasPurity{ false };
+std::atomic<bool> g_hasCapstone{ false };
 std::atomic<bool> g_hasBenefactor{ false };   // read in VariantCost (render + task)
 std::atomic<bool> g_hasExperimenter{ false };  // read in the gather credit (task)
 
@@ -204,17 +207,17 @@ void RecomputeCapacity(const char* a_why) {
                      a_why, g_flaskCount, g_chargesPerFlask);
         return;
     }
-    const int  rank   = AlchemistRank(pc);
-    const bool purity = (mask & (1u << PK_PURITY)) != 0;
+    const int  rank     = AlchemistRank(pc);
+    const bool capstone = (mask & (1u << PK_CAPSTONE)) != 0;
     std::uint32_t flasks = 2, charges = 2;  // unperked baseline
-    if (rank >= 1) charges += 1;                    // Kit Calibration I   -> 2/3
-    if (rank >= 2) flasks += 1;                     // Kit Calibration II  -> 3/3
-    if (rank >= 4) { flasks += 1; charges += 2; }   // Field Deployment    -> 4/5
-    if (purity)    { flasks += 2; charges += 4; }   // Master's Crucible   -> 6/9
+    if (rank >= 1) charges += 1;                     // Kit Calibration I   -> 2/3
+    if (rank >= 2) flasks += 1;                      // Kit Calibration II  -> 3/3
+    if (rank >= 4) { flasks += 1; charges += 2; }    // Field Deployment    -> 4/5
+    if (capstone)  { flasks += 2; charges += 4; }    // Master's Crucible   -> 6/9
     flasks  = std::min<std::uint32_t>(flasks, kMaxFlaskSlots);
     charges = std::min<std::uint32_t>(charges, 9u);
     g_alchemistRank.store(rank);
-    g_hasPurity.store(purity);
+    g_hasCapstone.store(capstone);
     {
         std::scoped_lock lk(g_flasksLock);
         g_flaskCount      = flasks;
@@ -1926,13 +1929,14 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
             // (and the rest, so the debug menu can toggle them individually).
             int np = 0, na = 0;
             for (int i = 0; i < PK_COUNT; ++i) {
-                g_perkForm[i] = dh->LookupForm<RE::BGSPerk>(kPerkDefs[i].id, "Skyrim.esm");
+                g_perkForm[i] = dh->LookupForm<RE::BGSPerk>(
+                    kPerkDefs[i].id, kPerkDefs[i].own ? kPluginName : "Skyrim.esm");
                 if (g_perkForm[i]) {
                     ++np;
                     if (i >= PK_ALCH1 && i <= PK_ALCH5) ++na;
                 }
             }
-            g_capacityPerksResolved = (na > 0) || (g_perkForm[PK_PURITY] != nullptr);
+            g_capacityPerksResolved = (na > 0) || (g_perkForm[PK_CAPSTONE] != nullptr);
             spdlog::info("[perks] resolved {}/{} alchemy perks ({}/5 Alchemist ranks); "
                          "capacity {} (0=missing -> holds co-saved)",
                          np, static_cast<int>(PK_COUNT), na,
