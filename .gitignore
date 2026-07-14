@@ -2,3 +2,7 @@ out/
 __pycache__/
 *.pyc
 .aider*
+
+# installer-generated, per load order
+data/mao_tiers.json
+data/mao_tiers.json.debug.json

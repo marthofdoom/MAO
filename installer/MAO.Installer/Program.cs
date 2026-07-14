@@ -21,8 +21,10 @@ using Mutagen.Bethesda.Plugins.Order;
 using Mutagen.Bethesda.Skyrim;
 
 const string Usage =
-    "usage: MAO.Installer <stats|tree|tree-effects|perk> <MO2-or-game root> <profile-or-plugins.txt|auto> [args]\n" +
+    "usage: MAO.Installer <stats|tree|tree-effects|perk|write-tiers> <MO2-or-game root> <profile-or-plugins.txt|auto> [args]\n" +
     "       tree/tree-effects default the AVIF to AVAlchemy when no EditorID is given\n" +
+    "       write-tiers [out.json] classifies every ingredient into a rarity tier\n" +
+    "                   by availability and writes it (default data/mao_tiers.json)\n" +
     "       (write-patch is not implemented yet — blocked on a design decision)";
 if (args.Length == 0 || args[0] is "-h" or "--help" or "help")
 {
@@ -111,6 +113,7 @@ try
         "tree" => Commands.DumpTree(loadOrder, cache, positional.ElementAtOrDefault(0) ?? "AVAlchemy"),
         "tree-effects" => Commands.DumpTreeEffects(loadOrder, cache, positional.ElementAtOrDefault(0) ?? "AVAlchemy"),
         "perk" => Commands.DumpPerk(loadOrder, cache, positional[0]),
+        "write-tiers" => Commands.WriteTiers(loadOrder, cache, positional.ElementAtOrDefault(0) ?? "data/mao_tiers.json"),
         _ => Commands.Fail($"unknown command {cmd}"),
     };
 }
@@ -261,6 +264,153 @@ static class Commands
                               (ep != null ? $" entryPoint={ep}" : "") +
                               (fn != null ? $" function={fn}" : ""));
         }
+        return 0;
+    }
+
+    // Rarity classifier (MEO's WriteCalibration analogue): read the winning
+    // load order, score every ingredient by AVAILABILITY — how obtainable it is
+    // in THIS modlist, NOT its gold value — and write the tiers JSON the DLL
+    // loads. Higher score = more common = Base; score 0 (creature-drops / quest
+    // items with no world source) = scarcest = Apex.
+    //
+    // Signals, summed per INGR FormKey over WINNING overrides:
+    //   FLOR/TREE .Ingredient  ×3  — harvestable from the world is the strongest
+    //                                availability signal (pick it in the field).
+    //   CONT .Items[].Item.Item ×1 — vendor chests, barrels, world containers.
+    //   LVLI .Entries[].Data.Reference ×1 — loot tables.
+    public static int WriteTiers(
+        LoadOrder<IModListingGetter<ISkyrimModGetter>> lo, ILinkCache cache, string outPath)
+    {
+        // Ingredients worth classifying: one entry per WINNING INGR override,
+        // with a real name. INGR has no "Playable" record flag (unlike ARMO/
+        // WEAP); a reagent that carries a real Name IS a player-facing,
+        // obtainable ingredient, so a non-empty Name is the playable filter
+        // here. Nameless/templated/deleted stubs fall out naturally.
+        var ingr = new Dictionary<FormKey, IIngredientGetter>();
+        foreach (var i in lo.PriorityOrder.Ingredient().WinningOverrides())
+            if (!string.IsNullOrWhiteSpace(i.Name?.String))
+                ingr[i.FormKey] = i;
+        if (ingr.Count == 0) return Fail("no named INGR records in the load order");
+
+        // Raw reference counts per signal (kept separate so the availability
+        // score is a tunable function of them, not a fixed sum).
+        var harvest = ingr.Keys.ToDictionary(k => k, _ => 0);  // FLOR + TREE producers
+        var cont = ingr.Keys.ToDictionary(k => k, _ => 0);     // CONT static placements
+        var lvli = ingr.Keys.ToDictionary(k => k, _ => 0);     // LVLI loot-table entries
+        int floraHits = 0, treeHits = 0, contHits = 0, lvliHits = 0;
+
+        foreach (var f in lo.PriorityOrder.Flora().WinningOverrides())
+            if (!f.Ingredient.IsNull && harvest.ContainsKey(f.Ingredient.FormKey))
+            { harvest[f.Ingredient.FormKey]++; floraHits++; }
+        foreach (var t in lo.PriorityOrder.Tree().WinningOverrides())
+            if (!t.Ingredient.IsNull && harvest.ContainsKey(t.Ingredient.FormKey))
+            { harvest[t.Ingredient.FormKey]++; treeHits++; }
+        foreach (var c in lo.PriorityOrder.Container().WinningOverrides())
+            foreach (var e in c.Items ?? [])
+            {
+                var fk = e.Item.Item.FormKey;
+                if (cont.ContainsKey(fk)) { cont[fk]++; contHits++; }
+            }
+        foreach (var l in lo.PriorityOrder.LeveledItem().WinningOverrides())
+            foreach (var e in l.Entries ?? [])
+                if (e.Data is { } d && lvli.ContainsKey(d.Reference.FormKey))
+                { lvli[d.Reference.FormKey]++; lvliHits++; }
+        var loot = ingr.Keys.ToDictionary(k => k, k => cont[k] + lvli[k]);
+
+        // AVAILABILITY SCORE. Three signals, ranked by how RELIABLY they put the
+        // ingredient in the player's hands:
+        //   harvest ×6  FLOR/TREE producer — you can farm it from the world
+        //               infinitely; the decisive availability signal.
+        //   cont    ×2  static container placement (barrels, vendor chests) —
+        //               a reliable, repeatable place to grab it.
+        //   lvli    ×1  leveled-list entry — RNG loot; being in many lists is
+        //               weak evidence you will ever get the drop, so it is
+        //               CAPPED (min(lvli,LvliCap)) as a light tie-breaker only.
+        // (marth 2026-07-13: Vampire Dust is not treated as an immovable Apex
+        // anchor. In LoreRim it is referenced by 17 leveled lists + 1 container,
+        // so by any monotonic availability measure it is mid-pack, not scarce —
+        // 164 ingredients are strictly less available. It classifies by its real
+        // availability like everything else. See the report/commit note.)
+        const int FloraWeight = 6;
+        const int ContWeight = 2;
+        const int LvliCap = 3;
+        var score = ingr.Keys.ToDictionary(
+            k => k, k => harvest[k] * FloraWeight + cont[k] * ContWeight + Math.Min(lvli[k], LvliCap));
+
+        // Bucketing: percentiles over the ascending score distribution.
+        //   Apex     = least-available ~12% (scarce), ALWAYS incl. every score 0.
+        //   Catalyst = next ~30% (uncommon).
+        //   Base     = remaining ~58% (common) — harvestables + heavily-stocked
+        //              non-harvestables (Wheat, salts) land here.
+        // Ties at a cut all fall to the LOWER (rarer) tier.
+        var sorted = score.Values.OrderBy(v => v).ToList();
+        int n = sorted.Count;
+        int apexThresh = sorted[Math.Min((int)(n * 0.12), n - 1)];
+        int catThresh = sorted[Math.Min((int)(n * 0.42), n - 1)];
+
+        string Tier(int s) =>
+            s == 0 || s <= apexThresh ? "Apex" :
+            s <= catThresh ? "Catalyst" : "Base";
+        static int TierRank(string t) => t switch { "Apex" => 0, "Catalyst" => 1, _ => 2 };
+
+        var entries = new List<object>();
+        var tierCount = new Dictionary<string, int> { ["Apex"] = 0, ["Catalyst"] = 0, ["Base"] = 0 };
+        foreach (var (fk, rec) in ingr
+                     .OrderBy(kv => TierRank(Tier(score[kv.Key])))
+                     .ThenBy(kv => score[kv.Key])
+                     .ThenBy(kv => kv.Value.Name?.String ?? kv.Value.EditorID ?? ""))
+        {
+            var s = score[fk];
+            var tier = Tier(s);
+            tierCount[tier]++;
+            entries.Add(new Dictionary<string, object>
+            {
+                ["plugin"] = fk.ModKey.FileName.String,
+                ["fid"] = $"0x{fk.ID:X6}",
+                ["name"] = rec.Name?.String ?? rec.EditorID ?? "?",
+                ["tier"] = tier,
+                ["score"] = s,
+            });
+        }
+
+        var doc = new Dictionary<string, object>
+        {
+            ["from"] = $"{ingr.Count} ingredients scored over {lo.ListedOrder.Count()} plugins",
+            ["tiers"] = entries,
+        };
+        var dir = Path.GetDirectoryName(Path.GetFullPath(outPath));
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+        File.WriteAllText(outPath, System.Text.Json.JsonSerializer.Serialize(doc,
+            new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+
+        Console.WriteLine($"scored {ingr.Count} ingredients: " +
+            $"{floraHits} flora + {treeHits} tree (x{FloraWeight}), {contHits} container, {lvliHits} lvli references");
+        Console.WriteLine($"cut points: apex<=score {apexThresh}, catalyst<=score {catThresh}");
+        Console.WriteLine($"tiers: Apex={tierCount["Apex"]}  Catalyst={tierCount["Catalyst"]}  Base={tierCount["Base"]}");
+        // Sanity reference (NOT an immovable anchor): report where the named
+        // Vampire Dust ingredient lands, with its raw signals, so the tiering
+        // can be eyeballed. NOTE: the design note's FormKey 0x0003AD5F is
+        // vanilla FROST SALTS, not Vampire Dust — so we locate it by name.
+        var vd = ingr.FirstOrDefault(kv =>
+            (kv.Value.Name?.String ?? "").Equals("Vampire Dust", StringComparison.OrdinalIgnoreCase));
+        if (vd.Value is not null)
+            Console.WriteLine($"ref: Vampire Dust [{vd.Key}] harvest={harvest[vd.Key]} " +
+                              $"cont={cont[vd.Key]} lvli={lvli[vd.Key]} score={score[vd.Key]} -> {Tier(score[vd.Key])}");
+        else
+            Console.WriteLine("ref: no ingredient named 'Vampire Dust' in this load order");
+        if (Environment.GetEnvironmentVariable("MAO_TIER_DEBUG") == "1")
+        {
+            var dbg = ingr.Keys.Select(k => new Dictionary<string, object>
+            {
+                ["name"] = ingr[k].Name?.String ?? ingr[k].EditorID ?? "?",
+                ["harvest"] = harvest[k], ["cont"] = cont[k], ["lvli"] = lvli[k],
+                ["loot"] = loot[k], ["score"] = score[k],
+            }).OrderBy(e => (int)e["score"]).ToList();
+            File.WriteAllText(outPath + ".debug.json", System.Text.Json.JsonSerializer.Serialize(
+                dbg, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+            Console.WriteLine($"wrote {outPath}.debug.json (raw components)");
+        }
+        Console.WriteLine($"wrote {outPath}");
         return 0;
     }
 }
