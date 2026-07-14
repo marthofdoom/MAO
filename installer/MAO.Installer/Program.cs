@@ -317,58 +317,77 @@ static class Commands
                 { lvli[d.Reference.FormKey]++; lvliHits++; }
         var loot = ingr.Keys.ToDictionary(k => k, k => cont[k] + lvli[k]);
 
-        // AVAILABILITY SCORE. Three signals, ranked by how RELIABLY they put the
-        // ingredient in the player's hands:
-        //   harvest ×6  FLOR/TREE producer — you can farm it from the world
-        //               infinitely; the decisive availability signal.
-        //   cont    ×2  static container placement (barrels, vendor chests) —
-        //               a reliable, repeatable place to grab it.
-        //   lvli    ×1  leveled-list entry — RNG loot; being in many lists is
-        //               weak evidence you will ever get the drop, so it is
-        //               CAPPED (min(lvli,LvliCap)) as a light tie-breaker only.
-        // (marth 2026-07-13: Vampire Dust is not treated as an immovable Apex
-        // anchor. In LoreRim it is referenced by 17 leveled lists + 1 container,
-        // so by any monotonic availability measure it is mid-pack, not scarce —
-        // 164 ingredients are strictly less available. It classifies by its real
-        // availability like everything else. See the report/commit note.)
-        // Weak-tiebreak model (marth 2026-07-13): harvest (farmable) and container
-        // (buyable) DRIVE the tier; leveled-list presence (RNG loot) only orders
-        // ties and can never cross a tier boundary — its capped contribution (<=3)
-        // is dwarfed by the x60/x20 farm/vendor weights. So Vampire Dust (no
-        // harvest, 1 container, 7 leveled lists) lands Catalyst, not Base.
-        const int FloraWeight = 60;
-        const int ContWeight = 20;
-        // Bucketing score = farmable + buyable ONLY. Leveled-list presence is
-        // deliberately EXCLUDED from the tier score (RNG loot isn't reliable
-        // availability) — it's reported below and used only to order ties in the
-        // sort, so it can never bump an ingredient across a tier boundary.
-        var score = ingr.Keys.ToDictionary(
-            k => k, k => harvest[k] * FloraWeight + cont[k] * ContWeight);
+        // OBTAINABILITY. How reliably you can put the ingredient in your hands:
+        //   harvest ×60  FLOR/TREE producer — farmable from the world forever;
+        //                the decisive availability signal.
+        //   cont    ×20  static container placement (barrels, vendor chests) —
+        //                a reliable, repeatable place to grab it.
+        //   lvli    ×4   leveled-list entry — RNG loot; being in many lists is
+        //                weak evidence you will ever get the drop, so it is
+        //                CAPPED (min(lvli,LvliCap)) so a widely-listed reagent
+        //                (Vampire Dust: 17 lists in LoreRim) can't out-score a
+        //                farmable one.
+        const int FloraWeight = 60, ContWeight = 20, LvliWeight = 4, LvliCap = 3;
+        var obtain = ingr.Keys.ToDictionary(
+            k => k, k => harvest[k] * FloraWeight + cont[k] * ContWeight
+                       + Math.Min(lvli[k], LvliCap) * LvliWeight);
 
-        // RANK-based buckets. Rank every ingredient by availability: farm+buy
-        // score is the primary key; leveled-list count is the weak tiebreak
-        // (more lists = more obtainable). Percentiles over the RANK keep the tier
-        // sizes stable no matter how many ingredients are drop-only — and within
-        // the score-0 (drop-only) group, the ones in many leveled lists (Vampire
-        // Dust) rise out of Apex into Catalyst while the truly unobtainable stay
-        // Apex. So Apex means genuinely scarce, not merely "not farmable".
-        //   Apex = rarest 12%, Catalyst = next 30%, Base = the common ~58%.
-        var order = ingr.Keys
-            .OrderBy(k => score[k])
-            .ThenBy(k => lvli[k])
-            .ThenBy(k => ingr[k].Name?.String ?? ingr[k].EditorID ?? "")
-            .ToList();
+        // GOLD VALUE (INGR base value). A premium reagent reads as "worth
+        // seeking" even when not farmable; a cheap one does not, no matter how
+        // scarce. This is the co-factor that keeps cheap-but-unfarmable junk
+        // (Blue Dartwing 15g, antlers, pearls) OUT of Apex and lets the truly
+        // premium drops (Daedra Heart 250g, Void Salts, Vampire Dust) IN.
+        var value = ingr.Keys.ToDictionary(k => k, k => (int)ingr[k].Value);
+
+        // HARD RULE (marth 2026-07-13): an ingredient with NO source at all —
+        // no flora/tree, no container, no leveled list — cannot be gathered.
+        // These are quest/templated leftovers (Berit's Ashes). Apex must be
+        // *obtainable*, so they go straight to Base and are pulled from the
+        // ranked pool entirely.
+        bool NoSource(FormKey k) => harvest[k] == 0 && cont[k] == 0 && lvli[k] == 0;
+        var pool = ingr.Keys.Where(k => !NoSource(k)).ToList();
+        int orphans = ingr.Count - pool.Count;
+
+        // BLENDED RARITY over the pool. Two independent percentile ranks so the
+        // very different scales of "obtain score" and "gold value" combine
+        // fairly:
+        //   availRank — rarest (lowest obtain) first, 0 = hardest to get.
+        //   valueRank — priciest (highest value) first, 0 = most valuable.
+        // rarity = 25% "hard to obtain" + 75% "worth a lot"; LOW = Apex-like.
+        // VALUE-DOMINANT by design (marth 2026-07-13 calibration): our obtain
+        // signal can't see caught fish / stream reagents, so it falsely reads
+        // cheap fish (15g) as "rare" and floated them into Apex at 60/40. Gold
+        // value is the clean signal — it's what makes Daedra Heart (250g), Void
+        // Salts (125g) and Vampire Dust (25g) read as Apex while 15g fish drop to
+        // Catalyst. Availability stays a 25% co-factor so a valuable-but-buyable
+        // reagent still ranks below an equally-priced rare.
+        const double AvailW = 0.25, ValueW = 0.75;
+        string NameOf(FormKey k) => ingr[k].Name?.String ?? ingr[k].EditorID ?? "";
+        var availRank = PercentileRank(pool.OrderBy(k => obtain[k]).ThenBy(NameOf).ToList());
+        var valueRank = PercentileRank(pool.OrderByDescending(k => value[k]).ThenBy(NameOf).ToList());
+        var rarity = pool.ToDictionary(k => k, k => AvailW * availRank[k] + ValueW * valueRank[k]);
+
+        // RANK-based buckets over the pool. Percentiles keep tier sizes stable no
+        // matter the load-order size. Apex = rarest+priciest 12%, Catalyst = next
+        // 30%, Base = the common ~58% (plus every 0-source orphan).
+        var order = pool.OrderBy(k => rarity[k]).ThenBy(NameOf).ToList();
         int n = order.Count;
         int apexCut = (int)(n * 0.12);
         int catCut = (int)(n * 0.42);
-        var tierByKey = new Dictionary<FormKey, string>(n);
+        var tierByKey = new Dictionary<FormKey, string>(ingr.Count);
         for (int i = 0; i < n; i++)
             tierByKey[order[i]] = i < apexCut ? "Apex" : i < catCut ? "Catalyst" : "Base";
+        foreach (var k in ingr.Keys)
+            if (!tierByKey.ContainsKey(k)) tierByKey[k] = "Base";  // 0-source orphans
         string Tier(FormKey k) => tierByKey[k];
 
+        // Emit pool in rarity order (Apex first), then orphans, so the JSON reads
+        // rarest-to-commonest.
+        var emitOrder = order.Concat(ingr.Keys.Where(k => !order.Contains(k))
+            .OrderByDescending(k => value[k]).ThenBy(NameOf)).ToList();
         var entries = new List<object>();
         var tierCount = new Dictionary<string, int> { ["Apex"] = 0, ["Catalyst"] = 0, ["Base"] = 0 };
-        foreach (var fk in order)
+        foreach (var fk in emitOrder)
         {
             var rec = ingr[fk];
             var tier = tierByKey[fk];
@@ -379,7 +398,8 @@ static class Commands
                 ["fid"] = $"0x{fk.ID:X6}",
                 ["name"] = rec.Name?.String ?? rec.EditorID ?? "?",
                 ["tier"] = tier,
-                ["score"] = score[fk],
+                ["obtain"] = obtain[fk],
+                ["value"] = value[fk],
                 ["lvli"] = lvli[fk],
             });
         }
@@ -396,17 +416,20 @@ static class Commands
 
         Console.WriteLine($"scored {ingr.Count} ingredients: " +
             $"{floraHits} flora + {treeHits} tree (x{FloraWeight}), {contHits} container, {lvliHits} lvli references");
+        Console.WriteLine($"pool {pool.Count} ranked (avail {AvailW:0.00} + value {ValueW:0.00}), " +
+            $"{orphans} 0-source -> Base");
         Console.WriteLine($"rank cuts: Apex rarest {apexCut}, Catalyst next {catCut - apexCut}, Base rest");
         Console.WriteLine($"tiers: Apex={tierCount["Apex"]}  Catalyst={tierCount["Catalyst"]}  Base={tierCount["Base"]}");
-        // Sanity reference (NOT an immovable anchor): report where the named
-        // Vampire Dust ingredient lands, with its raw signals, so the tiering
-        // can be eyeballed. NOTE: the design note's FormKey 0x0003AD5F is
-        // vanilla FROST SALTS, not Vampire Dust — so we locate it by name.
+        // Sanity reference: report where the named Vampire Dust ingredient lands,
+        // with its raw signals, so the tiering can be eyeballed. NOTE: the design
+        // note's FormKey 0x0003AD5F is vanilla FROST SALTS, not Vampire Dust — so
+        // we locate it by name.
         var vd = ingr.FirstOrDefault(kv =>
             (kv.Value.Name?.String ?? "").Equals("Vampire Dust", StringComparison.OrdinalIgnoreCase));
         if (vd.Value is not null)
             Console.WriteLine($"ref: Vampire Dust [{vd.Key}] harvest={harvest[vd.Key]} " +
-                              $"cont={cont[vd.Key]} lvli={lvli[vd.Key]} score={score[vd.Key]} -> {Tier(vd.Key)}");
+                              $"cont={cont[vd.Key]} lvli={lvli[vd.Key]} obtain={obtain[vd.Key]} " +
+                              $"value={value[vd.Key]} -> {Tier(vd.Key)}");
         else
             Console.WriteLine("ref: no ingredient named 'Vampire Dust' in this load order");
         if (Environment.GetEnvironmentVariable("MAO_TIER_DEBUG") == "1")
@@ -415,14 +438,27 @@ static class Commands
             {
                 ["name"] = ingr[k].Name?.String ?? ingr[k].EditorID ?? "?",
                 ["harvest"] = harvest[k], ["cont"] = cont[k], ["lvli"] = lvli[k],
-                ["loot"] = loot[k], ["score"] = score[k],
-            }).OrderBy(e => (int)e["score"]).ToList();
+                ["loot"] = loot[k], ["obtain"] = obtain[k], ["value"] = value[k],
+                ["tier"] = tierByKey[k],
+            }).OrderBy(e => (int)e["obtain"]).ToList();
             File.WriteAllText(outPath + ".debug.json", System.Text.Json.JsonSerializer.Serialize(
                 dbg, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
             Console.WriteLine($"wrote {outPath}.debug.json (raw components)");
         }
         Console.WriteLine($"wrote {outPath}");
         return 0;
+    }
+
+    // Map an ordered list to a [0,1] percentile per key: first element -> 0,
+    // last -> 1. Used so obtain-score and gold-value (wildly different scales)
+    // can be blended on equal footing.
+    static Dictionary<FormKey, double> PercentileRank(List<FormKey> ordered)
+    {
+        var rank = new Dictionary<FormKey, double>(ordered.Count);
+        int last = ordered.Count - 1;
+        for (int i = 0; i < ordered.Count; i++)
+            rank[ordered[i]] = last == 0 ? 0.0 : (double)i / last;
+        return rank;
     }
 }
 
