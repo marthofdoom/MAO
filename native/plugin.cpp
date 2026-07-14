@@ -68,7 +68,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.16.1 (alchemy XP)";
+constexpr auto kPluginVersion = "0.17.0 (field power + limited kit)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -307,9 +307,19 @@ struct MenuState {
 };
 MenuState g_menu;
 
+// Field mode (power opener) is a LIMITED kit: view essences + change up to
+// kFieldChangeLimit flask(s) per trip, and a field change starts the flask EMPTY
+// (0 charges, no upfront essence) — it fills from the refill loop over time. A
+// station is the full kit (full charges, full cost, unlimited changes).
+constexpr int    kFieldChangeLimit = 1;
+std::atomic<int> g_fieldChanges{ 0 };  // reconfigurations used this field session
+
 // Open/close the Field Kit. When opened from a station, closing forces the
 // player up out of the furniture (the vanilla crafting menu was hidden).
 void OpenFieldKit(bool a_station) {
+    if (!a_station) {
+        g_fieldChanges.store(0);  // fresh field trip
+    }
     g_menu.station.store(a_station);
     g_menu.cursorInit.store(true);
     g_menu.open.store(true);
@@ -690,7 +700,9 @@ bool PlayerHasItem(RE::TESObjectREFR* a_ref, RE::TESBoundObject* a_obj) {
 }
 
 // Configure a flask slot with a specific DISCOVERED potion variant (a_potion).
-void ConfigureFlask(std::size_t a_slot, RE::FormID a_potion) {
+// a_field = opened from the power (limited kit): capped changes per trip, and
+// the flask starts EMPTY with no upfront essence (refills over time).
+void ConfigureFlask(std::size_t a_slot, RE::FormID a_potion, bool a_field = false) {
     if (a_slot >= g_flaskCount || !a_potion) {
         return;
     }
@@ -728,19 +740,32 @@ void ConfigureFlask(std::size_t a_slot, RE::FormID a_potion) {
         return;
     }
     const FlaskCost cost = VariantCost(alch) * g_chargesPerFlask;
-    if (!SpendCost(cost)) {
+    if (a_field) {  // limited kit: cap changes per trip; no upfront essence
+        if (g_fieldChanges.load() >= kFieldChangeLimit) {
+            spdlog::info("[flask] slot {} field-configure DENIED — {} change(s)/trip used", a_slot,
+                         kFieldChangeLimit);
+            if (g_notify.load()) {
+                RE::DebugNotification("Field kit: only one flask change per trip.");
+            }
+            return;
+        }
+    } else if (!SpendCost(cost)) {
         spdlog::info("[flask] slot {} configure DENIED — need {} (have B={} C={} A={})", a_slot,
                      CostString(cost), g_pouch.base, g_pouch.catalyst, g_pouch.apex);
-        if (g_notify) {
+        if (g_notify.load()) {
             RE::DebugNotification(std::format("Not enough essence — need {}.", CostString(cost)).c_str());
         }
         return;
     }
-    std::uint32_t hadCharges = 0;
+    const std::uint32_t startCharges = a_field ? 0u : g_chargesPerFlask;
+    std::uint32_t       hadCharges   = 0;
     {
         std::scoped_lock lk(g_flasksLock);
         hadCharges       = g_flasks[a_slot].charges;
-        g_flasks[a_slot] = { a_blueprint, rep, g_chargesPerFlask };  // rep = variant source
+        g_flasks[a_slot] = { a_blueprint, rep, startCharges };  // rep = variant source
+    }
+    if (a_field) {
+        g_fieldChanges.fetch_add(1);
     }
 
     // The physical item is the SLOT'S dedicated flask form — stable across
@@ -753,13 +778,16 @@ void ConfigureFlask(std::size_t a_slot, RE::FormID a_potion) {
     }
 
     const char* vName = alch->GetName();
-    spdlog::info("[flask] slot {} <- '{}' (variant {:08X}, {} charges); spent {}(was {} charges); "
+    spdlog::info("[flask] slot {} <- '{}' (variant {:08X}, {} charges); {}; (was {} charges); "
                  "pouch B={} C={} A={}",
-                 a_slot, vName ? vName : "?", rep, g_chargesPerFlask, CostString(cost), hadCharges,
-                 g_pouch.base, g_pouch.catalyst, g_pouch.apex);
-    if (g_notify) {
+                 a_slot, vName ? vName : "?", rep, startCharges,
+                 a_field ? std::string("field (empty, no cost)") : ("spent " + CostString(cost)),
+                 hadCharges, g_pouch.base, g_pouch.catalyst, g_pouch.apex);
+    if (g_notify.load()) {
         RE::DebugNotification(
-            std::format("Flask {} set: {}", a_slot + 1, vName ? vName : "potion").c_str());
+            std::format("Flask {} set: {}{}", a_slot + 1, vName ? vName : "potion",
+                        a_field ? " (filling)" : "")
+                .c_str());
     }
 }
 
@@ -1515,6 +1543,12 @@ namespace menuhook {
         ImGui::Separator();
         {
             std::scoped_lock lk(g_discoveredLock);
+            const bool field = !g_menu.station.load();  // power opener = limited field kit
+            if (field) {
+                const int left = std::max(0, kFieldChangeLimit - g_fieldChanges.load());
+                ImGui::TextDisabled("FIELD KIT — %d change(s) left; a field change starts empty",
+                                    left);
+            }
             if (g_discovered.empty()) {
                 ImGui::TextDisabled("None yet — pick up potions to analyze them.");
             } else {
@@ -1537,15 +1571,21 @@ namespace menuhook {
                                   (pn && *pn) ? pn : "(unknown)", coat ? "[coating]" : "        ",
                                   CostString(cost).c_str(), pid);
                     // Coatings are selectable only once Vanguard is held (P2).
-                    const bool coatOk  = !coat || g_hasVanguard.load();
-                    const bool enabled = g_selectedSlot >= 0 && coatOk && CanAfford(cost);
+                    const bool coatOk = !coat || g_hasVanguard.load();
+                    // Field mode is free up front (fills over time) but capped per
+                    // trip; station mode pays essence now.
+                    const bool canChange = field ? (g_fieldChanges.load() < kFieldChangeLimit)
+                                                  : CanAfford(cost);
+                    const bool enabled   = g_selectedSlot >= 0 && coatOk && canChange;
                     if (!enabled) {
                         ImGui::BeginDisabled();
                     }
                     if (ImGui::Selectable(label)) {
-                        const std::size_t slot = static_cast<std::size_t>(g_selectedSlot);
-                        const RE::FormID  p    = pid;
-                        SKSE::GetTaskInterface()->AddTask([slot, p]() { ConfigureFlask(slot, p); });
+                        const std::size_t slot  = static_cast<std::size_t>(g_selectedSlot);
+                        const RE::FormID  p     = pid;
+                        const bool        field = !g_menu.station.load();  // power = field mode
+                        SKSE::GetTaskInterface()->AddTask(
+                            [slot, p, field]() { ConfigureFlask(slot, p, field); });
                     }
                     if (!enabled) {
                         ImGui::EndDisabled();
@@ -1790,15 +1830,34 @@ namespace menuhook {
 // closes; a keyboard fallback stays available for non-Deck testing.
 // The Field Kit opens via ALCHEMY STATION TAKEOVER (copied from MEO's proven
 // enchanting-station takeover), replacing the old lesser-power opener. The
-// dormant "Open Field Kit" SPEL stays frozen in the ESP; remove it from any
-// save that got it during the power era so it doesn't clutter Powers.
-void RemoveFieldKitPower() {
+// The "Open Field Kit" lesser power opens the kit in FIELD mode away from a
+// station (view essences; limited flask changes). Grant it if the player lacks
+// it (retries each load, so a mid-save ESP enable still lands).
+void GrantFieldKitPower() {
     auto* player = RE::PlayerCharacter::GetSingleton();
-    if (player && g_fieldKitSpell && player->HasSpell(g_fieldKitSpell)) {
-        player->RemoveSpell(g_fieldKitSpell);
-        spdlog::info("[power] removed the legacy Open Field Kit power (opener is now the station)");
+    if (player && g_fieldKitSpell && !player->HasSpell(g_fieldKitSpell)) {
+        player->AddSpell(g_fieldKitSpell);
+        spdlog::info("[power] granted the Open Field Kit power");
     }
 }
+
+// Casting the power opens the field kit. Lesser-power casts fire a spell-cast
+// event; open on the task thread.
+class CastSink : public RE::BSTEventSink<RE::TESSpellCastEvent> {
+public:
+    static CastSink* GetSingleton() {
+        static CastSink singleton;
+        return &singleton;
+    }
+    RE::BSEventNotifyControl ProcessEvent(const RE::TESSpellCastEvent* a_event,
+                                          RE::BSTEventSource<RE::TESSpellCastEvent>*) override {
+        if (a_event && a_event->object && a_event->object->IsPlayerRef() && g_fieldKitSpell &&
+            a_event->spell == g_fieldKitSpell->GetFormID()) {
+            SKSE::GetTaskInterface()->AddTask([]() { OpenFieldKit(false); });  // field mode
+        }
+        return RE::BSEventNotifyControl::kContinue;
+    }
+};
 
 class MenuSink : public RE::BSTEventSink<RE::MenuOpenCloseEvent> {
 public:
@@ -2002,6 +2061,7 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
         auto* holder = RE::ScriptEventSourceHolder::GetSingleton();
         holder->AddEventSink<RE::TESContainerChangedEvent>(ContainerSink::GetSingleton());
         holder->AddEventSink<RE::TESSleepStopEvent>(SleepSink::GetSingleton());
+        holder->AddEventSink<RE::TESSpellCastEvent>(CastSink::GetSingleton());  // field-kit power
         RE::UI::GetSingleton()->AddEventSink<RE::MenuOpenCloseEvent>(MenuSink::GetSingleton());
         RE::TESHarvestedEvent::GetEventSource()->AddEventSink(HarvestSink::GetSingleton());
         if (auto* dh = RE::TESDataHandler::GetSingleton()) {
@@ -2058,7 +2118,7 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
         // Player exists here (after LoadCallback/Revert). Grant the power if
         // absent; retries every load, so a mid-save ESP enable still lands.
         SKSE::GetTaskInterface()->AddTask([]() {
-            RemoveFieldKitPower();
+            GrantFieldKitPower();
             RecomputeCapacity("load");  // authoritative capacity BEFORE we sync items,
             SyncFlaskItems();           // so a shrunk kit doesn't grant now-dead slots
         });
