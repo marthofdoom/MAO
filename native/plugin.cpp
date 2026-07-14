@@ -70,7 +70,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.17.1 (ingredient tier map loader)";
+constexpr auto kPluginVersion = "0.18.0 (conversion toggle)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -315,6 +315,12 @@ MenuState g_menu;
 // station is the full kit (full charges, full cost, unlimited changes).
 constexpr int    kFieldChangeLimit = 1;
 std::atomic<int> g_fieldChanges{ 0 };  // reconfigurations used this field session
+
+// Ingredient→essence conversion toggle (bConversionEnabled). When OFF, picked-up
+// and harvested ingredients stay in the inventory as normal items instead of
+// being consumed into essence — the rest of the mod (flasks, field kit, power,
+// perks) is unaffected. Read live from the MCM.
+std::atomic<bool> g_conversionEnabled{ true };
 
 // Open/close the Field Kit. When opened from a station, closing forces the
 // player up out of the furniture (the vanilla crafting menu was hidden).
@@ -1148,7 +1154,9 @@ void ApplyIniLine(std::string a_line) {
     };
     const std::string key = trim(a_line.substr(0, eq));
     const std::string val = trim(a_line.substr(eq + 1));
-    if (key == "bNotify") {
+    if (key == "bConversionEnabled") {
+        g_conversionEnabled = !(val == "0" || val == "false");
+    } else if (key == "bNotify") {
         g_notify = !(val == "0" || val == "false");
     } else if (key == "iOpenHotkey") {
         g_openHotkey = static_cast<std::uint32_t>(std::strtoul(val.c_str(), nullptr, 0));
@@ -1188,6 +1196,7 @@ void ReadConfig() {
     // reverts to off rather than sticking from a previous pass.
     g_perkDebug.store(false);
     g_perkWantMask.store(0);
+    g_conversionEnabled.store(true);  // absent key = conversion on (default)
     for (const char* path : { "Data/SKSE/Plugins/MAO.ini", "Data/MCM/Settings/MAO.ini" }) {
         std::ifstream f(path);
         std::string   line;
@@ -1195,8 +1204,9 @@ void ReadConfig() {
             ApplyIniLine(line);
         }
     }
-    spdlog::info("[config] bNotify={} iOpenHotkey=0x{:X} debugPerks={} wantMask=0x{:X}",
-                 g_notify.load(), g_openHotkey.load(), g_perkDebug.load(), g_perkWantMask.load());
+    spdlog::info("[config] conversion={} bNotify={} iOpenHotkey=0x{:X} debugPerks={} wantMask=0x{:X}",
+                 g_conversionEnabled.load(), g_notify.load(), g_openHotkey.load(), g_perkDebug.load(),
+                 g_perkWantMask.load());
 }
 
 // Which flask slot (if any) uses this form as its physical item. -1 = none.
@@ -1250,6 +1260,9 @@ public:
     }
     RE::BSEventNotifyControl ProcessEvent(const RE::TESContainerChangedEvent* a_event,
                                           RE::BSTEventSource<RE::TESContainerChangedEvent>*) override {
+        if (!g_conversionEnabled.load()) {
+            return RE::BSEventNotifyControl::kContinue;  // OFF: ingredients/potions stay as items
+        }
         // Only credit items ENTERING the player. Removals (our own included)
         // have newContainer != player and are ignored — so RemoveItem below
         // can't re-trigger us (no loop).

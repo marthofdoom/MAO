@@ -8,6 +8,14 @@
 			"pageDisplayName": "Field Kit",
 			"cursorFillMode": "topToBottom",
 			"content": [
+				{ "text": "General", "type": "header" },
+				{
+					"id": "bConversionEnabled:General",
+					"text": "Convert ingredients to essence",
+					"type": "toggle",
+					"help": "When ON, harvested and picked-up ingredients (and potions) are consumed into essence. When OFF, they stay in your inventory as normal items and nothing is converted. Flasks, the field kit, and perks are unaffected. Applies when you close the menu.",
+					"valueOptions": { "sourceType": "ModSettingBool", "defaultValue": true }
+				},
 				{ "text": "Economy", "type": "header" },
 				{
 					"id": "fEssenceTax:Economy",
