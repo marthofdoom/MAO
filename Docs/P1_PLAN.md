@@ -1,10 +1,13 @@
 # P1 Plan — Core (flasks, variants, the real system)
 
-> **Status (2026-07-13):** P1a–P1d complete and in-game tested (tag
-> `v0.8.2-p1d`), plus alchemy-station takeover as the opener (v0.9.0), the
-> compound recipe-based economy (v0.12.x), and **P1e** perk-driven capacity
-> (v0.13.1, Fable-reviewed). The flask loop is playable end-to-end. **Next: P1f**
-> (MCM). Two design shifts from the original plan below: the opener is
+> **Status (2026-07-13):** **P1 COMPLETE** and in-game tested. P1a–P1d (tag
+> `v0.8.2-p1d`), alchemy-station takeover opener (v0.9.0), compound recipe-based
+> economy (v0.12.x), **P1e** perk-driven capacity + in-place perk rename
+> (v0.13–v0.15.1, Fable-reviewed), and **P1f** the MCM (v0.15, MCM Helper page +
+> per-perk debug override). The flask loop is playable end-to-end. **Next: P2**
+> (coatings) and the MEO-style Mutagen installer (full load-order-aware perk
+> override — descriptions, effect neutralization, tree placement of the MAO
+> capstone). Two design shifts from the original plan below: the opener is
 > the **alchemy station**, not a power (DESIGN §3.3); and a flask embodies a
 > **specific discovered potion variant** (you must have found it), not one
 > derived representative.
@@ -31,7 +34,7 @@ subrecords against a working vanilla twin. FormIDs are frozen from first commit
 | **P1c** | **Flasks + configuration UI.** Flask items (ESP `AlchemyItem`s, so auto-potion mods see them). The viewer becomes interactive (port MEO's full mouse/input routing): assign a blueprint to a flask slot, deduct essence, apply the §3.1 overwrite penalty. | flask forms; interactive menu | Configure a flask from known blueprints; essence deducted; state persists |
 | **P1d** | **Real drinkable flasks + refill** (user chose real items, 2026-07-13). **Permanent-item approach** — the count-as-charges shortcut is REJECTED: a dry flask would hit 0 count and vanish, dropping it from **Favorites / Wheeler** and losing the binding on refill (user requirement: the flask stays bound when empty). So: distinct flask `AlchemyItem` forms per slot in the ESP (favorite/Wheeler each independently), granted on configure and **never consumed** (count stays 1). Charges tracked natively in `'FLSK'`. Drinking is intercepted (the §6 consume/`EquipItem` code hook): apply the payload — cast the blueprint's **representative discovered potion** via `ActorMagicCaster::CastSpellImmediate` — decrement the native charge, and block the vanilla consume so the item persists. A dry flask stays in inventory (bindings intact), does nothing on use, until refill tops the charge back up from essence on `TESSleepStop` + a timer. Needs: 6 flask forms (frozen FormIDs); `'BLPT'` stores rep-potion FormID per blueprint (co-save bump); the consume code hook (address-library, `verify_hook_site_live`); sleep sink + timer; runtime rename via `ExtraTextDisplayData`. Higher-risk (first gameplay code hook) — land the consume hook as its own isolated step. | 6 flask forms; consume **code hook**; sleep sink + timer | Flask stays favorited/on Wheeler when empty; drinking applies effect + depletes without consuming; sleep/timer refills |
 | **P1e** ✅ | **Perk-driven capacity + efficiency (native).** DLL reads the vanilla Skyrim.esm alchemy perks and recomputes flask/charge capacity from them (Alchemist chain → 2/2→4/5, Purity → 6/9; Benefactor −35% Apex cost, Experimenter +10% gather). Recomputed on load + menu open; holds co-saved capacity when perks don't resolve (Requiem). **Deferred:** the ESP cosmetic perk-rename ("Kit Calibration" etc.) and the coating/drink/duration perks (need P2 systems). | PERK reads (HasPerk) | Perks grant the capacity ladder (2/2 → 6/9) |
-| **P1f** | **MCM.** The full option set via MCM Helper (the M1 INI surface grows here): tier rates, notification style, refill cadence, hotkey/power binding. | MCM config/quest | MCM page live; toggles drive the DLL |
+| **P1f** ✅ | **MCM (MCM Helper).** Field Kit page (essence tax, cost rate, catalyst/apex thresholds, refill cadence, menu skin, notifications) + a Debug page (master perk-override toggle + per-perk toggles). Registers via a start-game QUST (`MAO_MCMQuest`) carrying an empty `MCM_ConfigBase` script (`MAO_MCM.pex`) — MCM Helper reads `Config/MAO/config.json` only for a mod with such a quest; a `Settings/MAO.ini` seed supplies defaults. DLL reads the settings INI + reloads on Journal(MCM) close. | MCM config + QUST/PEX | MCM page live; toggles drive the DLL |
 
 ## What stays native vs. ESP
 

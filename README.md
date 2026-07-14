@@ -71,8 +71,11 @@ sibling repos ([MRO](https://github.com/marthofdoom/MRO),
     permanent flasks (variants you must find, sound, native charges, sleep +
     timer refill; poisons parked as coatings) · alchemy-station takeover opener.
   - ✅ **P1e** perk-driven capacity, read natively from the vanilla alchemy
-    perks (Alchemist chain + Purity → flask slots 2→6, charges 2→9; Benefactor
-    −35% Apex cost, Experimenter +10% gather). ⬜ **P1f** the MCM.
+    perks (Alchemist chain → flask slots 2→6, charges 2→9; a MAO-own capstone
+    for the 6/9 ceiling; Benefactor −35% Apex cost, Experimenter +10% gather).
+    The vanilla perks are renamed in-place to their MAO re-enlistment.
+  - ✅ **P1f** the MCM (MCM Helper): a Field Kit tuning page + a Debug page with
+    a per-perk override for testing the ladder. **P1 complete.**
 - **P2 — coatings & polish.** Weapon coating conversion (Vanguard Coating /
   Corrosive Retention) — the poison-application hook — plus field-kit polish.
 - **P3 — packaging & compat.** FOMOD with load-order-aware installation

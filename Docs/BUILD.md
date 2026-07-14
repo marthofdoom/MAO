@@ -39,7 +39,7 @@ only the panel content is MAO's, and it's read-only (no mouse/font/skin code).
 | **P1d** | Drinkable permanent flasks (`DrinkPotion` hook), discovered variants (must be found), drink sound, `'FLSK'` co-save, refill on `TESSleepStop` + timer, coatings deferred | ✅ Fable-reviewed, tag `v0.8.2-p1d` |
 | — | Alchemy-station takeover opener (`MenuOpenCloseEvent` sink) — replaces the power | ✅ v0.9.0 |
 | **P1e** | Perk-driven capacity read natively from the vanilla alchemy perks — flask slots 2→6, charges 2→9, Apex −35% (Benefactor), gather +10% (Experimenter); ESP perk-rename + coating/drink perks deferred to P2 | ✅ v0.13.1 |
-| **P1f** | MCM (the INI surface grown into MCM Helper) | ⬜ |
+| **P1f** | MCM Helper page (tuning + per-perk debug override); registered via a start-game QUST + `MAO_MCM.pex` (`MCM_ConfigBase` stub), seeded `Settings/MAO.ini` | ✅ v0.15 |
 
 Economy note: flask cost is computed natively from the load order (2×mean
 ingredient value × `fEssenceTax`); see the `essence-economy-tax` memory.
@@ -70,6 +70,19 @@ straight into `Data/SKSE/Plugins` over SSH (`deck@marthdeck`, game at
 CrashLogger installed). The Deck has **no keyboard** — the viewer opens from the
 gamepad (`iOpenButtonGamepad`, default `0x20` = Back/View). `MAO.log` lands under
 `compatdata/489830/pfx/.../My Games/Skyrim Special Edition/SKSE/`.
+
+## ESP + MCM assets (built locally, not in CI)
+
+- **ESP:** `python3 MAO_GenerateESP.py [out_dir]` generates `MAO.esp` byte-by-byte
+  (MGEF, 6 ALCH flasks, SPEL, the capstone PERK, and `MAO_MCMQuest` QUST).
+  `deploy_deck.sh` regenerates and deploys it every run. FormIDs are frozen.
+- **MCM registration:** MCM Helper only shows a page for a mod whose start-game
+  quest carries an `MCM_ConfigBase`-derived script. `Source/Scripts/MAO_MCM.psc`
+  is that (empty) stub; compile it with `tools/compile.sh MAO_MCM` (ports MEO's
+  Papyrus toolchain — Proton wine + Nemesis compiler) → `out/Scripts/MAO_MCM.pex`,
+  then copy to `data/Scripts/MAO_MCM.pex` (committed; `deploy_deck.sh` ships it).
+  `data/MCM/Config/MAO/config.json` is the page; `data/MCM/Settings/MAO.ini` is
+  the defaults seed (deployed if-absent).
 
 ## Per-build checklist
 
