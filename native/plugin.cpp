@@ -64,11 +64,13 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+
+#include <nlohmann/json.hpp>
 #include <vector>
 
 namespace {
 
-constexpr auto kPluginVersion = "0.17.0 (field power + limited kit)";
+constexpr auto kPluginVersion = "0.17.1 (ingredient tier map loader)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -423,6 +425,65 @@ Tier TierOf(std::string_view a_name) {
     return Tier::Base;
 }
 
+// Availability-based tier map produced by the installer (mao_tiers.json). It
+// reads the real load order — Base=common, Catalyst=uncommon, Apex=scarce — so
+// it supersedes the name-substring heuristic (which stays as the fallback when
+// the file is absent). Populated read-only at kDataLoaded, before any gather.
+std::unordered_map<RE::FormID, Tier> g_ingredientTier;
+
+Tier TierFromString(std::string_view a_s) {
+    if (a_s == "Apex") return Tier::Apex;
+    if (a_s == "Catalyst") return Tier::Catalyst;
+    return Tier::Base;
+}
+
+void LoadTierMap() {
+    g_ingredientTier.clear();
+    std::ifstream f("Data/SKSE/Plugins/MAO/mao_tiers.json");
+    auto*         dh = RE::TESDataHandler::GetSingleton();
+    if (!f || !dh) {
+        spdlog::info("[tiers] no mao_tiers.json — using the name-substring fallback");
+        return;
+    }
+    try {
+        nlohmann::json j;
+        f >> j;
+        int n = 0, miss = 0;
+        for (const auto& e : j.value("tiers", nlohmann::json::array())) {
+            const std::string plugin = e.value("plugin", std::string{});
+            const std::string fidStr = e.value("fid", std::string{});
+            if (plugin.empty() || fidStr.empty()) {
+                continue;
+            }
+            const RE::FormID raw =
+                static_cast<RE::FormID>(std::strtoul(fidStr.c_str(), nullptr, 0)) & 0xFFFFFF;
+            if (auto* ingr = dh->LookupForm<RE::IngredientItem>(raw, plugin)) {
+                g_ingredientTier[ingr->GetFormID()] = TierFromString(e.value("tier", "Base"));
+                ++n;
+            } else {
+                ++miss;
+            }
+        }
+        spdlog::info("[tiers] loaded {} ingredient tiers ({} unresolved) from mao_tiers.json", n,
+                     miss);
+    } catch (const std::exception& ex) {
+        spdlog::error("[tiers] parse failed ({}) — using the name fallback", ex.what());
+        g_ingredientTier.clear();
+    }
+}
+
+// Tier for a specific ingredient FORM: the installer map wins; else name-heuristic.
+Tier TierOfForm(RE::IngredientItem* a_ingr) {
+    if (!a_ingr) {
+        return Tier::Base;
+    }
+    if (auto it = g_ingredientTier.find(a_ingr->GetFormID()); it != g_ingredientTier.end()) {
+        return it->second;
+    }
+    const char* nm = a_ingr->GetName();
+    return TierOf(nm ? nm : "");
+}
+
 bool IsExcluded(std::string_view a_name) {
     for (const auto& ex : kExclusions) {
         if (ContainsCI(a_name, ex)) {
@@ -464,7 +525,7 @@ void BuildRecipeTable() {
         }
         ++ingredients;
         const char*         nm = ingr->GetName();
-        const Tier          it = TierOf(nm ? nm : "");
+        const Tier          it = TierOfForm(ingr);
         const std::uint32_t v  = static_cast<std::uint32_t>(ingr->value);
         if (it == Tier::Catalyst) {
             catVals.push_back(v);
@@ -1211,7 +1272,7 @@ public:
                              name, a_event->baseObj);
                 return RE::BSEventNotifyControl::kContinue;
             }
-            const Tier tier  = TierOf(name);
+            const Tier tier  = TierOfForm(ingr);
             const int  value = ingr->value;
             std::uint32_t total = YieldFor(value, tier) * static_cast<std::uint32_t>(count);
             if (g_hasExperimenter.load()) {  // Field Extraction: +10% gather yield
@@ -2101,6 +2162,7 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
                          g_capacityPerksResolved ? "live" : "held");
         }
         spdlog::info("[power] Open Field Kit spell: {}", g_fieldKitSpell ? "found" : "MISSING (is MAO.esp enabled?)");
+        LoadTierMap();  // before BuildRecipeTable — it tiers ingredients per this map
         BuildRecipeTable();
         BuildEffectPotionTable();
         InstallDrinkHook();
