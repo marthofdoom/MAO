@@ -68,7 +68,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.16.0 (P2a: weapon coatings)";
+constexpr auto kPluginVersion = "0.16.1 (alchemy XP)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -566,6 +566,22 @@ FlaskCost operator*(const FlaskCost& c, std::uint32_t m) {
 bool CanAfford(const FlaskCost& c) {
     return g_pouch.base >= c.base && g_pouch.catalyst >= c.catalyst && g_pouch.apex >= c.apex;
 }
+// Train the vanilla Alchemy skill for MAO's alchemy work. MAO replaces potion-
+// crafting, so preparing/refilling flasks should advance Alchemy just as brewing
+// did — including the automatic (timer/sleep) refills, each of which is one
+// charge's worth of potion-making. Must run on the game thread (SpendCost and
+// the discovery sink both do).
+constexpr float kAlchemyXpPerEssence = 0.1f;  // XP per essence spent (tune in-game)
+constexpr float kDiscoverXp          = 3.0f;  // XP for analyzing a new variant
+void AwardAlchemyXP(float a_xp) {
+    if (a_xp <= 0.0f) {
+        return;
+    }
+    if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+        player->AddSkillExperience(RE::ActorValue::kAlchemy, a_xp);
+    }
+}
+
 bool SpendCost(const FlaskCost& c) {
     if (!CanAfford(c)) {
         return false;
@@ -573,6 +589,8 @@ bool SpendCost(const FlaskCost& c) {
     g_pouch.base -= c.base;
     g_pouch.catalyst -= c.catalyst;
     g_pouch.apex -= c.apex;
+    // Spending essence = making potion(s): train Alchemy (configure + refills).
+    AwardAlchemyXP(static_cast<float>(c.base + c.catalyst + c.apex) * kAlchemyXpPerEssence);
     return true;
 }
 std::string CostString(const FlaskCost& c) {
@@ -1238,6 +1256,9 @@ public:
                     learned = g_discovered.insert(potForm).second;  // this SPECIFIC variant
                 }
                 CreditPouch(Tier::Base, total);
+                if (learned) {  // learning a new variant trains Alchemy (like eating an ingredient)
+                    AwardAlchemyXP(kDiscoverXp);
+                }
                 spdlog::info("[discover] '{}' analyzed ({}); effect '{}'; +{} Base essence; "
                              "pouch B={} C={} A={}",
                              potName, bpKey ? (learned ? "NEW variant" : "known") : "no-effect",
