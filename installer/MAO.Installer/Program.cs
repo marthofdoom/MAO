@@ -353,15 +353,18 @@ static class Commands
         // fairly:
         //   availRank — rarest (lowest obtain) first, 0 = hardest to get.
         //   valueRank — priciest (highest value) first, 0 = most valuable.
-        // rarity = 25% "hard to obtain" + 75% "worth a lot"; LOW = Apex-like.
+        // rarity = 15% "hard to obtain" + 85% "worth a lot"; LOW = Apex-like.
         // VALUE-DOMINANT by design (marth 2026-07-13 calibration): our obtain
         // signal can't see caught fish / stream reagents, so it falsely reads
         // cheap fish (15g) as "rare" and floated them into Apex at 60/40. Gold
-        // value is the clean signal — it's what makes Daedra Heart (250g), Void
-        // Salts (125g) and Vampire Dust (25g) read as Apex while 15g fish drop to
-        // Catalyst. Availability stays a 25% co-factor so a valuable-but-buyable
-        // reagent still ranks below an equally-priced rare.
-        const double AvailW = 0.25, ValueW = 0.75;
+        // value is the clean signal — it's what makes Daedra Heart (250g) and the
+        // salts read as Apex while 15g fish drop to Catalyst. Availability is only
+        // a 15% tiebreak: strong enough to order equally-priced reagents by how
+        // farmable they are, but NOT strong enough to demote the single most
+        // valuable reagent out of Apex just because it's widely looted (on the
+        // 75-CC Deck load Daedra Heart has obtain=112 yet is still Apex at 0.15;
+        // at 0.25 it wrongly sank below 30g Curios rares).
+        const double AvailW = 0.15, ValueW = 0.85;
         string NameOf(FormKey k) => ingr[k].Name?.String ?? ingr[k].EditorID ?? "";
         var availRank = PercentileRank(pool.OrderBy(k => obtain[k]).ThenBy(NameOf).ToList());
         var valueRank = PercentileRank(pool.OrderByDescending(k => value[k]).ThenBy(NameOf).ToList());
