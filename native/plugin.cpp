@@ -1197,6 +1197,7 @@ void ReadConfig() {
     g_perkDebug.store(false);
     g_perkWantMask.store(0);
     g_conversionEnabled.store(true);  // absent key = conversion on (default)
+    g_notify.store(true);             // absent key = notifications on (default)
     for (const char* path : { "Data/SKSE/Plugins/MAO.ini", "Data/MCM/Settings/MAO.ini" }) {
         std::ifstream f(path);
         std::string   line;
