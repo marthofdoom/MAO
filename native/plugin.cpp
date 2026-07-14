@@ -68,7 +68,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.15.1 (perks renamed in-place)";
+constexpr auto kPluginVersion = "0.15.2 (MCM review fixes)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -210,10 +210,14 @@ void RecomputeCapacity(const char* a_why) {
     g_perkMask.store(eff);
     g_hasBenefactor.store((eff & (1u << PK_BENEFACTOR)) != 0);
     g_hasExperimenter.store((eff & (1u << PK_EXPERIMENTER)) != 0);
-    // If the vanilla Alchemist chain isn't present (Requiem / missing masters)
-    // and we're not overriding, hold the co-saved counts rather than force the
-    // baseline and clamp away charges the player legitimately earned.
-    if (!g_capacityPerksResolved && !debug) {
+    // If the vanilla Alchemist chain isn't present (Requiem / missing masters),
+    // hold the co-saved counts rather than force the baseline and clamp away
+    // charges the player legitimately earned. This applies EVEN in debug: the
+    // override would otherwise write debug capacity into g_flaskCount here and,
+    // once debug is turned back off, this same hold-path would "hold" those
+    // debug values (and SaveCallback would persist them). Debug capacity only
+    // takes effect where we can cleanly revert to real perks (vanilla tree).
+    if (!g_capacityPerksResolved) {
         spdlog::info("[perks] {}: no vanilla capacity perks resolved — holding co-saved "
                      "{} flasks / {} charges",
                      a_why, g_flaskCount, g_chargesPerFlask);
@@ -263,14 +267,18 @@ std::unordered_map<RE::FormID, Recipe> g_effectRecipe;
 std::uint32_t g_catalystUnit = 40;   // representative Catalyst ingredient value (surcharge unit)
 std::uint32_t g_apexUnit     = 120;  // representative Apex ingredient value
 std::mutex    g_effectCostLock;
-float                                         g_essenceTax = 1.3f;   // fEssenceTax
+// Tuning globals are atomic: ReadConfig() now re-runs mid-session (on MCM/menu
+// close) on the task thread while these are read from the render / refill /
+// input / event-sink threads. Aligned scalars don't tear on x86-64, but atomic
+// makes the concurrent read/write well-defined (matches g_perkDebug's pattern).
+std::atomic<float>                            g_essenceTax = 1.3f;   // fEssenceTax
 // Flask cost = round(effect baseCost * magnitude * g_costRate * tax) per charge
 // (linear in magnitude = "each concentration level costs 1x more"). The flask's
 // ESSENCE TIER steps up with concentration = magnitude / the effect's weakest
 // (standard) magnitude: >= g_catalystLevel -> Catalyst, >= g_apexLevel -> Apex.
-float g_costRate      = 1.0f;  // fCostRate
-float g_catalystLevel = 3.0f;  // fCatalystLevel — concentration x for Catalyst tier
-float g_apexLevel     = 6.0f;  // fApexLevel — concentration x for Apex tier
+std::atomic<float> g_costRate = 1.0f;  // fCostRate
+std::atomic<float> g_catalystLevel = 3.0f;  // fCatalystLevel — concentration x for Catalyst tier
+std::atomic<float> g_apexLevel     = 6.0f;  // fApexLevel — concentration x for Apex tier
 
 // Effect -> the strongest load-order potion/poison carrying it as its primary
 // effect. This is what physically embodies a blueprint (the flask item + what
@@ -321,14 +329,14 @@ void CloseFieldKit() {
 
 // ── Config (Data/SKSE/Plugins/MAO.ini). The full MCM option set arrives with
 // P1; P0 seeds the surface with the keys it needs.
-bool          g_notify     = true;    // bNotify — per-pickup essence notifications
-std::uint32_t g_openHotkey = 0x25;    // iOpenHotkey — keyboard DirectInput scancode; 0x25 = K
+std::atomic<bool> g_notify   = true;  // bNotify — per-pickup essence notifications
+std::atomic<std::uint32_t> g_openHotkey = 0x25;  // iOpenHotkey — keyboard DirectInput scancode; 0x25 = K
 // iOpenButtonGamepad — RE::BSWin32GamepadDevice::Key bitflag, or 0 = disabled.
 // DEFAULT 0: the power is the opener. On the Steam Deck the View button (0x20)
 // doubles as Select, so binding an opener there collides — leave it off.
-std::uint32_t g_openButtonGamepad = 0x0;
-int           g_menuStyle         = 0;    // iMenuStyle — Field Kit skin 0..3
-std::uint32_t g_refillSeconds     = 300;  // iRefillSeconds — real-time refill cadence
+std::atomic<std::uint32_t> g_openButtonGamepad = 0x0;
+std::atomic<int> g_menuStyle = 0;  // iMenuStyle — Field Kit skin 0..3
+std::atomic<std::uint32_t> g_refillSeconds = 300;  // iRefillSeconds — real-time refill cadence
 
 const char* TierName(Tier a_t) {
     switch (a_t) {
@@ -840,7 +848,7 @@ void StartRefillTimer() {
     }
     std::thread([]() {
         for (;;) {
-            const std::uint32_t secs = g_refillSeconds ? g_refillSeconds : 300;
+            const std::uint32_t secs = g_refillSeconds.load() ? g_refillSeconds.load() : 300u;
             std::this_thread::sleep_for(std::chrono::seconds(secs));
             SKSE::GetTaskInterface()->AddTask([]() { RefillFlasks("timer"); });
         }
@@ -1026,8 +1034,8 @@ void ReadConfig() {
             ApplyIniLine(line);
         }
     }
-    spdlog::info("[config] bNotify={} iOpenHotkey=0x{:X} debugPerks={} wantMask=0x{:X}", g_notify,
-                 g_openHotkey, g_perkDebug.load(), g_perkWantMask.load());
+    spdlog::info("[config] bNotify={} iOpenHotkey=0x{:X} debugPerks={} wantMask=0x{:X}",
+                 g_notify.load(), g_openHotkey.load(), g_perkDebug.load(), g_perkWantMask.load());
 }
 
 // Which flask slot (if any) uses this form as its physical item. -1 = none.
@@ -1349,7 +1357,7 @@ namespace menuhook {
     void DrawFieldKit() {
         auto& io           = ImGui::GetIO();
         io.MouseDrawCursor = true;
-        const int       skinIdx = std::clamp(g_menuStyle, 0, 3);
+        const int       skinIdx = std::clamp(g_menuStyle.load(), 0, 3);
         const MenuSkin& skin    = kSkins[skinIdx];
         if (g_appliedSkin != skinIdx) {
             ApplyMenuStyle(skin);
@@ -1692,7 +1700,7 @@ namespace menuhook {
         write_thunk_call<DXGIPresentHook>();
         write_thunk_call<InputDispatchHook>();
         spdlog::info("[menu] render + input hooks installed (kb key 0x{:X}, pad button 0x{:X})",
-                     g_openHotkey, g_openButtonGamepad);
+                     g_openHotkey.load(), g_openButtonGamepad.load());
     }
 
 }  // namespace menuhook
