@@ -70,7 +70,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.18.0 (conversion toggle)";
+constexpr auto kPluginVersion = "0.18.1 (coatings unlocked for test + field diag)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -184,6 +184,13 @@ std::atomic<bool> g_hasCapstone{ false };
 std::atomic<bool> g_hasBenefactor{ false };   // read in VariantCost (render + task)
 std::atomic<bool> g_hasExperimenter{ false };  // read in the gather credit (task)
 std::atomic<bool> g_hasVanguard{ false };  // Poisoner -> coatings unlocked (P2)
+
+// DESIGN: coatings unlock with the Vanguard Coating perk (Poisoner). Relaxed to
+// false during P2 testing (marth 2026-07-13) so coatings are craftable AND
+// applicable without the perk until the perk tree is finalized via the
+// installer. Flip back to true to restore the gate (the g_hasVanguard checks
+// below all key off this).
+constexpr bool kCoatingsRequireVanguard = false;
 
 int RankFromMask(std::uint32_t a_mask) {
     int r = 0;
@@ -331,6 +338,17 @@ void OpenFieldKit(bool a_station) {
     g_menu.station.store(a_station);
     g_menu.cursorInit.store(true);
     g_menu.open.store(true);
+    // Diagnostic (Bug B — "field change empties other flasks"): dump every slot's
+    // charge state at open so a repro shows exactly which slots held what.
+    {
+        std::scoped_lock lk(g_flasksLock);
+        std::string dump;
+        for (std::uint32_t i = 0; i < g_flaskCount; ++i) {
+            dump += std::format("[{}]bp={:X} {}/{}  ", i, g_flasks[i].blueprint, g_flasks[i].charges,
+                                g_chargesPerFlask);
+        }
+        spdlog::info("[field] open ({}): {}", a_station ? "station" : "field", dump);
+    }
     // Refresh perk-scaled capacity in case a perk was taken since the last load.
     SKSE::GetTaskInterface()->AddTask([]() { RecomputeCapacity("open"); });
 }
@@ -791,7 +809,7 @@ void ConfigureFlask(std::size_t a_slot, RE::FormID a_potion, bool a_field = fals
     // the Vanguard Coating perk. Without it, they can't be prepared.
     const bool isCoating = alch->effects[0]->baseEffect->IsHostile() ||
                            alch->effects[0]->baseEffect->IsDetrimental();
-    if (isCoating && !g_hasVanguard.load()) {
+    if (kCoatingsRequireVanguard && isCoating && !g_hasVanguard.load()) {
         spdlog::info("[flask] slot {} DENIED — coating needs the Vanguard Coating perk", a_slot);
         if (g_notify.load()) {
             RE::DebugNotification("Coatings need the Vanguard Coating perk.");
@@ -1040,7 +1058,7 @@ struct DrinkPotionHook {
                                  variant);
                     return true;
                 }
-                if (coating && !g_hasVanguard.load()) {
+                if (kCoatingsRequireVanguard && coating && !g_hasVanguard.load()) {
                     spdlog::info("[drink] flask slot {} is a coating — Vanguard perk not held", slot);
                     if (g_notify.load()) {
                         RE::DebugNotification("Coatings need the Vanguard Coating perk.");
@@ -1645,8 +1663,9 @@ namespace menuhook {
                     std::snprintf(label, sizeof(label), "%-26.80s %s %s##v%08X",
                                   (pn && *pn) ? pn : "(unknown)", coat ? "[coating]" : "        ",
                                   CostString(cost).c_str(), pid);
-                    // Coatings are selectable only once Vanguard is held (P2).
-                    const bool coatOk = !coat || g_hasVanguard.load();
+                    // Coatings are selectable only once Vanguard is held (P2);
+                    // relaxed for testing via kCoatingsRequireVanguard.
+                    const bool coatOk = !coat || !kCoatingsRequireVanguard || g_hasVanguard.load();
                     // Field mode is free up front (fills over time) but capped per
                     // trip; station mode pays essence now.
                     const bool canChange = field ? (g_fieldChanges.load() < kFieldChangeLimit)
