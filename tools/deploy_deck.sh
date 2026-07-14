@@ -69,13 +69,25 @@ else
 fi
 
 # MCM settings store (defaults). MCM Helper reads initial ModSetting values from
-# here and writes user changes back, so seed it ONLY if absent (preserve edits).
-if ssh -o BatchMode=yes "$HOST" "test ! -f '$GAME/Data/MCM/Settings/MAO.ini'"; then
+# here and writes user changes back. Seed it if absent; otherwise BACKFILL any
+# keys added to the seed since the file was created (MCM Helper reads a key that
+# is absent from an existing settings file as OFF/zero and won't fall back to
+# config.json's defaultValue, so a new control looks dead until its key exists).
+# The merge preserves the user's existing values — only missing keys are added.
+SETTINGS="$GAME/Data/MCM/Settings/MAO.ini"
+if ssh -o BatchMode=yes "$HOST" "test ! -f '$SETTINGS'"; then
     ssh -o BatchMode=yes "$HOST" "mkdir -p '$GAME/Data/MCM/Settings'"
-    scp -q data/MCM/Settings/MAO.ini "$HOST:$GAME/Data/MCM/Settings/MAO.ini"
+    scp -q data/MCM/Settings/MAO.ini "$HOST:$SETTINGS"
     echo "seeded MCM Settings/MAO.ini (defaults)"
 else
-    echo "MCM Settings/MAO.ini already on Deck — left as-is (delete it there to reset)"
+    scp -q "$HOST:$SETTINGS" "$STAGE/MAO.settings.ini"
+    if python3 tools/merge_mcm_settings.py data/MCM/Settings/MAO.ini "$STAGE/MAO.settings.ini" \
+       | grep -q "added"; then
+        scp -q "$STAGE/MAO.settings.ini" "$HOST:$SETTINGS"
+        echo "MCM Settings/MAO.ini on Deck — backfilled new keys (user values kept)"
+    else
+        echo "MCM Settings/MAO.ini already complete on Deck — left as-is"
+    fi
 fi
 
 # Seed the INI only if the Deck doesn't already have one (preserve edits).
