@@ -331,37 +331,47 @@ static class Commands
         // so by any monotonic availability measure it is mid-pack, not scarce —
         // 164 ingredients are strictly less available. It classifies by its real
         // availability like everything else. See the report/commit note.)
-        const int FloraWeight = 6;
-        const int ContWeight = 2;
-        const int LvliCap = 3;
+        // Weak-tiebreak model (marth 2026-07-13): harvest (farmable) and container
+        // (buyable) DRIVE the tier; leveled-list presence (RNG loot) only orders
+        // ties and can never cross a tier boundary — its capped contribution (<=3)
+        // is dwarfed by the x60/x20 farm/vendor weights. So Vampire Dust (no
+        // harvest, 1 container, 7 leveled lists) lands Catalyst, not Base.
+        const int FloraWeight = 60;
+        const int ContWeight = 20;
+        // Bucketing score = farmable + buyable ONLY. Leveled-list presence is
+        // deliberately EXCLUDED from the tier score (RNG loot isn't reliable
+        // availability) — it's reported below and used only to order ties in the
+        // sort, so it can never bump an ingredient across a tier boundary.
         var score = ingr.Keys.ToDictionary(
-            k => k, k => harvest[k] * FloraWeight + cont[k] * ContWeight + Math.Min(lvli[k], LvliCap));
+            k => k, k => harvest[k] * FloraWeight + cont[k] * ContWeight);
 
-        // Bucketing: percentiles over the ascending score distribution.
-        //   Apex     = least-available ~12% (scarce), ALWAYS incl. every score 0.
-        //   Catalyst = next ~30% (uncommon).
-        //   Base     = remaining ~58% (common) — harvestables + heavily-stocked
-        //              non-harvestables (Wheat, salts) land here.
-        // Ties at a cut all fall to the LOWER (rarer) tier.
-        var sorted = score.Values.OrderBy(v => v).ToList();
-        int n = sorted.Count;
-        int apexThresh = sorted[Math.Min((int)(n * 0.12), n - 1)];
-        int catThresh = sorted[Math.Min((int)(n * 0.42), n - 1)];
-
-        string Tier(int s) =>
-            s == 0 || s <= apexThresh ? "Apex" :
-            s <= catThresh ? "Catalyst" : "Base";
-        static int TierRank(string t) => t switch { "Apex" => 0, "Catalyst" => 1, _ => 2 };
+        // RANK-based buckets. Rank every ingredient by availability: farm+buy
+        // score is the primary key; leveled-list count is the weak tiebreak
+        // (more lists = more obtainable). Percentiles over the RANK keep the tier
+        // sizes stable no matter how many ingredients are drop-only — and within
+        // the score-0 (drop-only) group, the ones in many leveled lists (Vampire
+        // Dust) rise out of Apex into Catalyst while the truly unobtainable stay
+        // Apex. So Apex means genuinely scarce, not merely "not farmable".
+        //   Apex = rarest 12%, Catalyst = next 30%, Base = the common ~58%.
+        var order = ingr.Keys
+            .OrderBy(k => score[k])
+            .ThenBy(k => lvli[k])
+            .ThenBy(k => ingr[k].Name?.String ?? ingr[k].EditorID ?? "")
+            .ToList();
+        int n = order.Count;
+        int apexCut = (int)(n * 0.12);
+        int catCut = (int)(n * 0.42);
+        var tierByKey = new Dictionary<FormKey, string>(n);
+        for (int i = 0; i < n; i++)
+            tierByKey[order[i]] = i < apexCut ? "Apex" : i < catCut ? "Catalyst" : "Base";
+        string Tier(FormKey k) => tierByKey[k];
 
         var entries = new List<object>();
         var tierCount = new Dictionary<string, int> { ["Apex"] = 0, ["Catalyst"] = 0, ["Base"] = 0 };
-        foreach (var (fk, rec) in ingr
-                     .OrderBy(kv => TierRank(Tier(score[kv.Key])))
-                     .ThenBy(kv => score[kv.Key])
-                     .ThenBy(kv => kv.Value.Name?.String ?? kv.Value.EditorID ?? ""))
+        foreach (var fk in order)
         {
-            var s = score[fk];
-            var tier = Tier(s);
+            var rec = ingr[fk];
+            var tier = tierByKey[fk];
             tierCount[tier]++;
             entries.Add(new Dictionary<string, object>
             {
@@ -369,7 +379,8 @@ static class Commands
                 ["fid"] = $"0x{fk.ID:X6}",
                 ["name"] = rec.Name?.String ?? rec.EditorID ?? "?",
                 ["tier"] = tier,
-                ["score"] = s,
+                ["score"] = score[fk],
+                ["lvli"] = lvli[fk],
             });
         }
 
@@ -385,7 +396,7 @@ static class Commands
 
         Console.WriteLine($"scored {ingr.Count} ingredients: " +
             $"{floraHits} flora + {treeHits} tree (x{FloraWeight}), {contHits} container, {lvliHits} lvli references");
-        Console.WriteLine($"cut points: apex<=score {apexThresh}, catalyst<=score {catThresh}");
+        Console.WriteLine($"rank cuts: Apex rarest {apexCut}, Catalyst next {catCut - apexCut}, Base rest");
         Console.WriteLine($"tiers: Apex={tierCount["Apex"]}  Catalyst={tierCount["Catalyst"]}  Base={tierCount["Base"]}");
         // Sanity reference (NOT an immovable anchor): report where the named
         // Vampire Dust ingredient lands, with its raw signals, so the tiering
@@ -395,7 +406,7 @@ static class Commands
             (kv.Value.Name?.String ?? "").Equals("Vampire Dust", StringComparison.OrdinalIgnoreCase));
         if (vd.Value is not null)
             Console.WriteLine($"ref: Vampire Dust [{vd.Key}] harvest={harvest[vd.Key]} " +
-                              $"cont={cont[vd.Key]} lvli={lvli[vd.Key]} score={score[vd.Key]} -> {Tier(score[vd.Key])}");
+                              $"cont={cont[vd.Key]} lvli={lvli[vd.Key]} score={score[vd.Key]} -> {Tier(vd.Key)}");
         else
             Console.WriteLine("ref: no ingredient named 'Vampire Dust' in this load order");
         if (Environment.GetEnvironmentVariable("MAO_TIER_DEBUG") == "1")
