@@ -68,7 +68,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.15.2 (MCM review fixes)";
+constexpr auto kPluginVersion = "0.16.0 (P2a: weapon coatings)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -181,6 +181,7 @@ std::atomic<int>  g_alchemistRank{ 0 };
 std::atomic<bool> g_hasCapstone{ false };
 std::atomic<bool> g_hasBenefactor{ false };   // read in VariantCost (render + task)
 std::atomic<bool> g_hasExperimenter{ false };  // read in the gather credit (task)
+std::atomic<bool> g_hasVanguard{ false };  // Poisoner -> coatings unlocked (P2)
 
 int RankFromMask(std::uint32_t a_mask) {
     int r = 0;
@@ -210,6 +211,7 @@ void RecomputeCapacity(const char* a_why) {
     g_perkMask.store(eff);
     g_hasBenefactor.store((eff & (1u << PK_BENEFACTOR)) != 0);
     g_hasExperimenter.store((eff & (1u << PK_EXPERIMENTER)) != 0);
+    g_hasVanguard.store((eff & (1u << PK_POISONER)) != 0);
     // If the vanilla Alchemist chain isn't present (Requiem / missing masters),
     // hold the co-saved counts rather than force the baseline and clamp away
     // charges the player legitimately earned. This applies EVEN in debug: the
@@ -688,13 +690,14 @@ void ConfigureFlask(std::size_t a_slot, RE::FormID a_potion) {
     const RE::FormID a_blueprint = alch->effects[0]->baseEffect->GetFormID();
     const RE::FormID rep         = a_potion;  // the flask IS this exact variant
 
-    // Coatings (detrimental) can't be prepared into a drink-flask yet: a poison
-    // is USED via the weapon-application path (not DrinkPotion), so vanilla
-    // would just consume the flask. The coating mechanic is P2.
-    if (alch->effects[0]->baseEffect->IsHostile() || alch->effects[0]->baseEffect->IsDetrimental()) {
-        spdlog::info("[flask] slot {} DENIED — coating (weapon application is P2)", a_slot);
-        if (g_notify) {
-            RE::DebugNotification("Coatings can't be prepared yet (coming with the Vanguard perk).");
+    // Coatings (detrimental variants) are weapon treatments (P2), unlocked by
+    // the Vanguard Coating perk. Without it, they can't be prepared.
+    const bool isCoating = alch->effects[0]->baseEffect->IsHostile() ||
+                           alch->effects[0]->baseEffect->IsDetrimental();
+    if (isCoating && !g_hasVanguard.load()) {
+        spdlog::info("[flask] slot {} DENIED — coating needs the Vanguard Coating perk", a_slot);
+        if (g_notify.load()) {
+            RE::DebugNotification("Coatings need the Vanguard Coating perk.");
         }
         return;
     }
@@ -855,6 +858,36 @@ void StartRefillTimer() {
     }).detach();
 }
 
+// ── Coating application (P2). A coating flask (detrimental variant) isn't drunk
+// — it's applied to the equipped weapon(s) as a poison, exactly like vanilla
+// poison. Sets an ExtraPoison on each equipped weapon's worn extra list,
+// replacing any existing poison. Returns how many weapons were coated. Count is
+// a per-application hit budget for now; the time-based 45s/120s durations (per
+// the Vanguard/Corrosive perks) land in the next slice.
+int ApplyCoating(RE::Actor* a_actor, RE::AlchemyItem* a_poison, std::int32_t a_count) {
+    if (!a_actor || !a_poison) {
+        return 0;
+    }
+    int coated = 0;
+    for (bool left : { false, true }) {
+        auto* entry = a_actor->GetEquippedEntryData(left);
+        if (!entry || !entry->object || !entry->object->Is(RE::FormType::Weapon)) {
+            continue;
+        }
+        if (!entry->extraLists || entry->extraLists->empty()) {
+            continue;  // no worn instance to hold the poison (rare for equipped)
+        }
+        auto* xList = entry->extraLists->front();
+        if (!xList) {
+            continue;
+        }
+        xList->RemoveByType(RE::ExtraDataType::kPoison);  // one coating at a time
+        xList->Add(new RE::ExtraPoison(a_poison, a_count));
+        ++coated;
+    }
+    return coated;
+}
+
 // ── Consume intercept (P1d): the flask is a PERMANENT item — it must never be
 // removed (so it stays favorited / on Wheeler). Hooking Actor::DrinkPotion
 // (the funnel all drink paths reach, incl. potion mods) lets us apply the
@@ -879,19 +912,11 @@ struct DrinkPotionHook {
                 if (!variant) {
                     return true;  // reconfigured mid-call; leave the item intact
                 }
-                // A coating (detrimental effect) isn't drunk — it applies to a
-                // weapon. The application mechanic is P2; for now, don't harm
-                // the player and don't spend a charge.
+                // A coating (detrimental effect) isn't drunk — it applies to the
+                // equipped weapon(s) as a poison (P2), gated behind Vanguard.
                 bool coating = false;
                 if (auto* eff = RE::TESForm::LookupByID<RE::EffectSetting>(bpMgef)) {
                     coating = eff->IsHostile() || eff->IsDetrimental();
-                }
-                if (coating) {
-                    spdlog::info("[drink] flask slot {} is a coating — not drinkable (P2)", slot);
-                    if (g_notify) {
-                        RE::DebugNotification("That's a coating — weapon application coming soon.");
-                    }
-                    return true;
                 }
                 // Resolve the VARIANT (the flask form carries only a placeholder
                 // effect) BEFORE spending a charge — if it can't resolve, the
@@ -902,6 +927,13 @@ struct DrinkPotionHook {
                                  variant);
                     return true;
                 }
+                if (coating && !g_hasVanguard.load()) {
+                    spdlog::info("[drink] flask slot {} is a coating — Vanguard perk not held", slot);
+                    if (g_notify.load()) {
+                        RE::DebugNotification("Coatings need the Vanguard Coating perk.");
+                    }
+                    return true;
+                }
                 int remaining = -1;
                 {
                     std::scoped_lock lk(g_flasksLock);
@@ -910,7 +942,29 @@ struct DrinkPotionHook {
                         remaining = static_cast<int>(g_flasks[slot].charges);
                     }
                 }
-                if (remaining >= 0) {
+                if (remaining >= 0 && coating) {
+                    // Coating: apply to the equipped weapon(s) instead of drinking.
+                    constexpr std::int32_t kCoatingHits = 10;  // interim; time-based next slice
+                    const int coated = ApplyCoating(a_this, vAlch, kCoatingHits);
+                    if (coated == 0) {  // nothing to coat — refund the charge
+                        std::scoped_lock lk(g_flasksLock);
+                        if (g_flasks[slot].repPotion == variant) {
+                            g_flasks[slot].charges++;
+                        }
+                        spdlog::info("[coat] flask slot {} — no weapon equipped; charge refunded",
+                                     slot);
+                        if (g_notify.load()) {
+                            RE::DebugNotification("Equip a weapon to coat it.");
+                        }
+                        return true;
+                    }
+                    PlayDrinkSound(a_this, vAlch);
+                    spdlog::info("[coat] flask slot {} -> {} weapon(s); {} charge(s) left", slot,
+                                 coated, remaining);
+                    if (g_notify.load()) {
+                        RE::DebugNotification("Weapon coated.");
+                    }
+                } else if (remaining >= 0) {
                     if (auto* caster =
                             a_this->GetMagicCaster(RE::MagicSystem::CastingSource::kInstant)) {
                         caster->CastSpellImmediate(vAlch, false, a_this, 1.0f, false, 0.0f, a_this);
@@ -1461,7 +1515,9 @@ namespace menuhook {
                     std::snprintf(label, sizeof(label), "%-26.80s %s %s##v%08X",
                                   (pn && *pn) ? pn : "(unknown)", coat ? "[coating]" : "        ",
                                   CostString(cost).c_str(), pid);
-                    const bool enabled = g_selectedSlot >= 0 && !coat && CanAfford(cost);
+                    // Coatings are selectable only once Vanguard is held (P2).
+                    const bool coatOk  = !coat || g_hasVanguard.load();
+                    const bool enabled = g_selectedSlot >= 0 && coatOk && CanAfford(cost);
                     if (!enabled) {
                         ImGui::BeginDisabled();
                     }
