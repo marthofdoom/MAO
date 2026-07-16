@@ -78,7 +78,8 @@ FID_FLASK_BASE     = OWN | 0x810  # FROZEN — 6 dedicated flask AlchemyItems (0
 NUM_FLASKS         = 6            # = kMaxFlaskSlots in the DLL
 FID_PERK_CAPSTONE  = OWN | 0x816  # FROZEN — MAO capstone perk (the 6/9 kit ceiling)
 FID_MCM_QUEST      = OWN | 0x817  # FROZEN — MCM Helper config quest (attaches MAO_MCM)
-NEXT_OBJECT_ID     = 0x818        # first unused local; grows as forms are added
+FID_PERK_BASE      = OWN | 0x818  # FROZEN — MAO flag perks 0x818..0x823 (MAO_PERKS order)
+NEXT_OBJECT_ID     = 0x824        # first unused local; grows as forms are added
 
 # Papyrus VMAD (script attachment) format — versions per MEO's proven generator.
 VMAD_VERSION, OBJECT_FORMAT = 5, 2
@@ -226,14 +227,70 @@ def make_flasks():
 # the record needs no entry points. Not placed in any tree yet — granted via the
 # debug/MCM toggle now, positioned by the load-order-aware installer later. DATA
 # = trait0 level0 ranks1 playable1 hidden0 (PERK recipe ported from MEO). ──
-def make_perk():
-    data = struct.pack('<BBBBB', 0, 0, 1, 1, 0)
+
+# MAO flag perks (DESIGN §5.2). Minimal marker perks — no entry points; the DLL
+# reads HasPerk and applies effects. Order/index FROZEN (the DLL looks them up
+# by these local FormIDs). The C# installer wires these into the load order's
+# alchemy tree (MAO - Patch.esp); interim the DLL auto-grants them by skill.
+# (edid, name, desc, skill_req, next_slot). skill_req becomes a CTDA
+# GetBaseActorValue(Alchemy) >= req on the record (the skill menu greys the
+# perk until it passes) and mirrors the DLL's interim auto-grant thresholds.
+# next_slot chains ranked perks via NNAM (Requiem convention) so the five
+# Kit Calibrations display as one 5-rank node in the installer-written tree.
+# Vehicle ported verbatim from MEO_PERKS; only content and AV (16 = Alchemy,
+# was 23 = Enchanting) differ. Vanilla survivors Snakeblood/Green Thumb stay
+# in the tree untouched — these perks ADD effects, they replace nothing.
+MAO_PERKS = [
+    ("MAO_Perk_KitCalibration1",    "Kit Calibration I",   "Your field kit holds an extra charge per flask (2 flasks / 3 charges).",                     0, 1),   # 0x818
+    ("MAO_Perk_KitCalibration2",    "Kit Calibration II",  "Your field kit mounts a third flask (3 flasks / 3 charges).",                               20, 2),   # 0x819
+    ("MAO_Perk_KitCalibration3",    "Kit Calibration III", "Tier I and Tier II essences are 15% more efficient during automated refills.",              40, 3),   # 0x81A
+    ("MAO_Perk_FieldDeployment",    "Field Deployment",    "Bulk capacity burst: your kit scales to 4 flasks / 5 charges.",                             60, 4),   # 0x81B
+    ("MAO_Perk_KitCalibration5",    "Kit Calibration V",   "Tier I and Tier II essence maintenance costs are halved during resting checkouts.",         80, None),# 0x81C
+    ("MAO_Perk_FluidMotion",        "Fluid Motion",        "The movement penalty while drinking from a flask is halved.",                               20, None),# 0x81D
+    ("MAO_Perk_VanguardCoating",    "Vanguard Coating",    "Offensive blueprints become weapon coatings instead of drinkables. Coatings last 45 seconds.", 30, None),# 0x81E
+    ("MAO_Perk_ApexStabilization",  "Apex Stabilization",  "Tier III Apex essence costs are reduced by 35%.",                                           30, None),# 0x81F
+    ("MAO_Perk_FieldExtraction",    "Field Extraction",    "Gathering flora and looting creatures yields 10% more essence.",                            50, None),# 0x820
+    ("MAO_Perk_CorrosiveRetention", "Corrosive Retention", "Weapon coatings persist for 120 seconds.",                                                  60, None),# 0x821
+    ("MAO_Perk_PouchExpansion",     "Pouch Expansion",     "Harvesting flora has a 15% chance to also yield a Tier II Catalyst essence.",               70, None),# 0x822
+    ("MAO_Perk_ExtendedSynthesis",  "Extended Synthesis",  "Drinkable flask buff durations are extended by 30 seconds.",                                80, None),# 0x823
+]
+
+
+def ctda_skill_req(av_index, value):
+    """CTDA: GetBaseActorValue(av) >= value, run on subject. 32 bytes.
+    (Byte recipe verbatim from MEO.)"""
+    return struct.pack('<B3xfH2xiiiii',
+                       0x60,        # operator GreaterThanOrEqual (3<<5)
+                       float(value),
+                       277,         # function index GetBaseActorValue
+                       av_index, 0, # param1 = actor value, param2 unused
+                       0, 0, -1)    # runOn Subject, reference, param3
+
+
+AV_ALCHEMY = 16  # GetBaseActorValue index (MEO used 23 = Enchanting)
+
+
+def make_perks():
+    out = BytesIO()
+    data = struct.pack('<BBBBB', 0, 0, 1, 1, 0)  # trait0 level0 ranks1 playable1 hidden0
+    # The capstone keeps its FROZEN pre-band FormID 0x816; it gains the same
+    # skill gate as the rest (Alchemy 100) now that the vehicle is real perks.
     body = subrec('EDID', zstr("MAO_Perk_Capstone")) \
         + subrec('FULL', zstr("Master Alchemist's Crucible")) \
         + subrec('DESC', zstr("Your field kit reaches its master configuration: "
                               "6 flasks, 9 charges each.")) \
+        + subrec('CTDA', ctda_skill_req(AV_ALCHEMY, 100)) \
         + subrec('DATA', data)
-    return group('PERK', record('PERK', FID_PERK_CAPSTONE, 0, body))
+    out.write(record('PERK', FID_PERK_CAPSTONE, 0, body))
+    for i, (edid, name, desc, req, nxt) in enumerate(MAO_PERKS):
+        body = subrec('EDID', zstr(edid)) + subrec('FULL', zstr(name)) + subrec('DESC', zstr(desc))
+        if req > 0:
+            body += subrec('CTDA', ctda_skill_req(AV_ALCHEMY, req))
+        body += subrec('DATA', data)
+        if nxt is not None:
+            body += subrec('NNAM', struct.pack('<I', FID_PERK_BASE + nxt))
+        out.write(record('PERK', FID_PERK_BASE + i, 0, body))
+    return group('PERK', out.getvalue())
 
 
 def main():
@@ -244,7 +301,7 @@ def main():
     esp.write(make_mgef())
     esp.write(make_flasks())
     esp.write(make_spel())
-    esp.write(make_perk())
+    esp.write(make_perks())
     esp.write(make_mcm_quest())
     data = esp.getvalue()
     path = os.path.join(out_dir, "MAO.esp")
@@ -254,7 +311,8 @@ def main():
     print(f"Written: {path} ({len(data):,} bytes)")
     print(f"  MGEF x1 (inert)   ALCH x{NUM_FLASKS} (flasks 0x{FID_FLASK_BASE & 0xFFFFFF:03X}.."
           f"0x{(FID_FLASK_BASE + NUM_FLASKS - 1) & 0xFFFFFF:03X})   SPEL x1 (dormant)"
-          f"   PERK x1 (capstone 0x{FID_PERK_CAPSTONE & 0xFFFFFF:03X})"
+          f"   PERK x{1 + len(MAO_PERKS)} (capstone 0x{FID_PERK_CAPSTONE & 0xFFFFFF:03X}"
+          f" + flags 0x{FID_PERK_BASE & 0xFFFFFF:03X}..0x{(FID_PERK_BASE + len(MAO_PERKS) - 1) & 0xFFFFFF:03X})"
           f"   QUST x1 (MCM 0x{FID_MCM_QUEST & 0xFFFFFF:03X})")
     print("  ESL-flagged, master Skyrim.esm")
 

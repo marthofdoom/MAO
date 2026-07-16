@@ -142,7 +142,7 @@
 					"type": "text",
 					"help": "MAO version, stamped from the build. Matches the MAO.dll built from the same commit.",
 					"valueOptions": {
-						"value": "v0.18.2 (co-save hardening + MCM version stamp)"
+						"value": "v0.19.0 (MEO perk vehicle: own flag perks + auto-grant)"
 					}
 				},
 				{
@@ -165,7 +165,7 @@
 				},
 				{
 					"id": "bPerkAlch1:Debug",
-					"text": "Alchemist I  (+1 charge)",
+					"text": "Kit Calibration I  (+1 charge)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -174,7 +174,7 @@
 				},
 				{
 					"id": "bPerkAlch2:Debug",
-					"text": "Alchemist II  (+1 flask)",
+					"text": "Kit Calibration II  (+1 flask)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -183,7 +183,7 @@
 				},
 				{
 					"id": "bPerkAlch3:Debug",
-					"text": "Alchemist III  (refill eff, P2)",
+					"text": "Kit Calibration III  (refill eff, P2)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -192,7 +192,7 @@
 				},
 				{
 					"id": "bPerkAlch4:Debug",
-					"text": "Alchemist IV  (+1 flask +2 charge)",
+					"text": "Field Deployment  (+1 flask +2 charge)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -201,7 +201,7 @@
 				},
 				{
 					"id": "bPerkAlch5:Debug",
-					"text": "Alchemist V  (rest refill, P2)",
+					"text": "Kit Calibration V  (rest refill, P2)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -223,7 +223,7 @@
 				},
 				{
 					"id": "bPerkBenefactor:Debug",
-					"text": "Benefactor  (Apex cost -35%)",
+					"text": "Apex Stabilization  (Apex cost -35%)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -232,7 +232,7 @@
 				},
 				{
 					"id": "bPerkExperimenter:Debug",
-					"text": "Experimenter  (+10% gather)",
+					"text": "Field Extraction  (+10% gather)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -245,7 +245,7 @@
 				},
 				{
 					"id": "bPerkPhysician:Debug",
-					"text": "Physician",
+					"text": "Fluid Motion  (P2)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -254,7 +254,7 @@
 				},
 				{
 					"id": "bPerkPoisoner:Debug",
-					"text": "Poisoner",
+					"text": "Vanguard Coating  (coatings)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -263,7 +263,7 @@
 				},
 				{
 					"id": "bPerkGreenThumb:Debug",
-					"text": "Green Thumb",
+					"text": "Pouch Expansion  (P2)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -272,7 +272,7 @@
 				},
 				{
 					"id": "bPerkSnakeblood:Debug",
-					"text": "Snakeblood",
+					"text": "Extended Synthesis  (P2)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -281,7 +281,7 @@
 				},
 				{
 					"id": "bPerkConcPoison:Debug",
-					"text": "Concentrated Poison",
+					"text": "Corrosive Retention  (P2)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",

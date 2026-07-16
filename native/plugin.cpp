@@ -70,7 +70,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.18.2 (co-save hardening + MCM version stamp)";
+constexpr auto kPluginVersion = "0.19.0 (MEO perk vehicle: own flag perks + auto-grant)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -140,37 +140,43 @@ std::mutex                        g_flasksLock;
 // at the unperked baseline until the FOMOD retargets them (P2).
 // The alchemy perks MAO reads, table-driven so the debug menu can enumerate and
 // toggle each individually. Indices are fixed (capacity logic references them);
-// PK_ALCH1..5 are the vanilla Alchemist chain (separate records, ranks 1..5).
+// PK_ALCH1..5 are the Kit Calibration chain (MAO's own NNAM-chained ranks 1..5,
+// the vanilla-Alchemist analog — enum names kept for the stable MCM debug keys).
 enum PerkIdx : int {
     PK_ALCH1, PK_ALCH2, PK_ALCH3, PK_ALCH4, PK_ALCH5,
     PK_CAPSTONE, PK_BENEFACTOR, PK_EXPERIMENTER,
     PK_PHYSICIAN, PK_POISONER, PK_GREENTHUMB, PK_SNAKEBLOOD, PK_CONCPOISON,
     PK_COUNT
 };
-// own = the form lives in MAO.esp (our capstone); otherwise it's a vanilla
-// Skyrim.esm alchemy perk. The capstone replaces vanilla Purity as the 6/9
-// ceiling — MAO's own perk so the load-order-aware installer can place it later.
-// maoName = the DESIGN §5.2 re-enlistment name; the DLL renames the vanilla
-// perk record's fullName to this at load (native-first, like the flask rename)
-// so the skills menu shows MAO's perks by default — no MCM, no installer. The
-// capstone (own) already ships with its name in MAO.esp, so it needs no rename.
-struct PerkDef { const char* label; RE::FormID id; bool own; const char* iniKey; const char* maoName; };
+// MEO perk vehicle (verbatim port): ALL perks are MAO's OWN flag records in
+// MAO.esp (frozen band: capstone 0x816, flags 0x818..0x823 — MAO_GenerateESP
+// MAO_PERKS order). Vanilla alchemy perks are no longer touched (no renames):
+// the installer-written "MAO - Patch.esp" removes the vanilla craft nodes from
+// the tree and inserts these; without the patch the DLL AUTO-GRANTS them at
+// their skill thresholds (req = the record's CTDA GetBaseActorValue gate,
+// mirrored here). Vanilla survivors (Snakeblood, Green Thumb) keep their own
+// vanilla effects and are none of our business.
+struct PerkDef { const char* label; RE::FormID id; const char* iniKey; float req; };
 constexpr PerkDef kPerkDefs[PK_COUNT] = {
-    { "Alchemist I  (+1 charge)",             0xBE127, false, "bPerkAlch1",        "Kit Calibration I" },
-    { "Alchemist II  (+1 flask)",             0xC07CA, false, "bPerkAlch2",        "Kit Calibration II" },
-    { "Alchemist III  (refill eff, P2)",      0xC07CB, false, "bPerkAlch3",        "Kit Calibration III" },
-    { "Alchemist IV  (+1 flask +2 chg)",      0xC07CC, false, "bPerkAlch4",        "Field Deployment" },
-    { "Alchemist V  (rest refill, P2)",       0xC07CD, false, "bPerkAlch5",        "Kit Calibration V" },
-    { "Master's Crucible  (+2 flask +4 chg)", 0x816,   true,  "bPerkCapstone",     "" },  // MAO capstone (named in ESP)
-    { "Benefactor  (Apex -35%)",              0x58216, false, "bPerkBenefactor",   "Apex Stabilization" },
-    { "Experimenter  (+10% gather)",          0x58218, false, "bPerkExperimenter", "Field Extraction" },
-    { "Physician  (P2)",                      0x58215, false, "bPerkPhysician",    "Fluid Motion" },
-    { "Poisoner  (P2)",                       0x58217, false, "bPerkPoisoner",     "Vanguard Coating" },
-    { "Green Thumb  (P2)",                    0x105F2E, false, "bPerkGreenThumb",   "Pouch Expansion" },
-    { "Snakeblood  (P2)",                     0x105F2C, false, "bPerkSnakeblood",   "Extended Synthesis" },
-    { "Concentrated Poison  (P2)",            0x105F2F, false, "bPerkConcPoison",   "Corrosive Retention" },
+    { "Kit Calibration I  (+1 charge)",        0x818, "bPerkAlch1",        0.0f },
+    { "Kit Calibration II  (+1 flask)",        0x819, "bPerkAlch2",        20.0f },
+    { "Kit Calibration III  (refill eff, P2)", 0x81A, "bPerkAlch3",        40.0f },
+    { "Field Deployment  (+1 flask +2 chg)",   0x81B, "bPerkAlch4",        60.0f },
+    { "Kit Calibration V  (rest refill, P2)",  0x81C, "bPerkAlch5",        80.0f },
+    { "Master's Crucible  (+2 flask +4 chg)",  0x816, "bPerkCapstone",     100.0f },
+    { "Apex Stabilization  (Apex -35%)",       0x81F, "bPerkBenefactor",   30.0f },
+    { "Field Extraction  (+10% gather)",       0x820, "bPerkExperimenter", 50.0f },
+    { "Fluid Motion  (P2)",                    0x81D, "bPerkPhysician",    20.0f },
+    { "Vanguard Coating  (coatings)",          0x81E, "bPerkPoisoner",     30.0f },
+    { "Pouch Expansion  (P2)",                 0x822, "bPerkGreenThumb",   70.0f },
+    { "Extended Synthesis  (P2)",              0x823, "bPerkSnakeblood",   80.0f },
+    { "Corrosive Retention  (P2)",             0x821, "bPerkConcPoison",   60.0f },
 };
 RE::BGSPerk*               g_perkForm[PK_COUNT] = {};
+// TREE mode = "MAO - Patch.esp" present (perks live in the AVAlchemy
+// constellation, bought with perk points). Otherwise the DLL auto-grants them
+// at their skill thresholds (MEO's interim vehicle for patch-less installs).
+std::atomic<bool>          g_treeMode{ false };
 std::atomic<std::uint32_t> g_perkMask{ 0 };  // bit i = kPerkDefs[i] is effectively active
 // MCM debug (MEO-style override): when g_perkDebug, capacity/efficiency are
 // driven by g_perkWantMask (the MCM toggles) INSTEAD of the real perks — no
@@ -178,7 +184,7 @@ std::atomic<std::uint32_t> g_perkMask{ 0 };  // bit i = kPerkDefs[i] is effectiv
 // cleanly when the toggle is turned off.
 std::atomic<bool>          g_perkDebug{ false };
 std::atomic<std::uint32_t> g_perkWantMask{ 0 };
-bool              g_capacityPerksResolved = false;  // vanilla Alchemist chain present?
+bool              g_capacityPerksResolved = false;  // MAO.esp Kit Calibration chain resolved?
 std::atomic<int>  g_alchemistRank{ 0 };
 std::atomic<bool> g_hasCapstone{ false };
 std::atomic<bool> g_hasBenefactor{ false };   // read in VariantCost (render + task)
@@ -209,6 +215,22 @@ void RecomputeCapacity(const char* a_why) {
     if (!pc) {
         return;
     }
+    // AUTO-GRANT (MEO's patch-less vehicle): without the installer-written
+    // tree patch the player has no node to buy these from, so grant each flag
+    // perk once its skill threshold is met. Runs on the task thread (all
+    // callers AddTask this). Real perks only — the MCM debug override below
+    // never touches them.
+    auto* avo = pc->AsActorValueOwner();
+    if (!g_treeMode.load() && g_capacityPerksResolved && avo) {
+        const float skill = avo->GetBaseActorValue(RE::ActorValue::kAlchemy);
+        for (int i = 0; i < PK_COUNT; ++i) {
+            if (g_perkForm[i] && skill >= kPerkDefs[i].req && !pc->HasPerk(g_perkForm[i])) {
+                pc->AddPerk(g_perkForm[i], 1);
+                spdlog::info("[perks] auto-grant '{}' (Alchemy {} >= {})", kPerkDefs[i].label,
+                             skill, kPerkDefs[i].req);
+            }
+        }
+    }
     std::uint32_t realMask = 0;
     for (int i = 0; i < PK_COUNT; ++i) {
         if (g_perkForm[i] && pc->HasPerk(g_perkForm[i])) {
@@ -221,16 +243,16 @@ void RecomputeCapacity(const char* a_why) {
     g_hasBenefactor.store((eff & (1u << PK_BENEFACTOR)) != 0);
     g_hasExperimenter.store((eff & (1u << PK_EXPERIMENTER)) != 0);
     g_hasVanguard.store((eff & (1u << PK_POISONER)) != 0);
-    // If the vanilla Alchemist chain isn't present (Requiem / missing masters),
+    // If MAO.esp's Kit Calibration chain didn't resolve (stale/missing ESP),
     // hold the co-saved counts rather than force the baseline and clamp away
     // charges the player legitimately earned. This applies EVEN in debug: the
     // override would otherwise write debug capacity into g_flaskCount here and,
     // once debug is turned back off, this same hold-path would "hold" those
     // debug values (and SaveCallback would persist them). Debug capacity only
-    // takes effect where we can cleanly revert to real perks (vanilla tree).
+    // takes effect where we can cleanly revert to real perks.
     if (!g_capacityPerksResolved) {
-        spdlog::info("[perks] {}: no vanilla capacity perks resolved — holding co-saved "
-                     "{} flasks / {} charges",
+        spdlog::info("[perks] {}: no capacity perks resolved (MAO.esp stale/missing?) — "
+                     "holding co-saved {} flasks / {} charges",
                      a_why, g_flaskCount, g_chargesPerFlask);
         return;
     }
@@ -253,7 +275,7 @@ void RecomputeCapacity(const char* a_why) {
             f.charges = std::min(f.charges, charges);
         }
     }
-    spdlog::info("[perks] {}{}: Alchemist rank {}, Capstone {}, Benefactor {}, Experimenter {} "
+    spdlog::info("[perks] {}{}: Calibration rank {}, Crucible {}, ApexStab {}, FieldExtract {} "
                  "-> {} flasks / {} charges",
                  a_why, debug ? " [DEBUG override]" : "", rank, capstone, g_hasBenefactor.load(),
                  g_hasExperimenter.load(), flasks, charges);
@@ -2213,31 +2235,25 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
                 nf += g_flaskForms[i] ? 1 : 0;
             }
             spdlog::info("[flask] {}/{} flask forms resolved", nf, g_flaskForms.size());
-            // P1e: resolve the vanilla alchemy perks that drive capacity + cost
-            // (and the rest, so the debug menu can toggle them individually).
+            // Resolve MAO's own flag perks (MEO vehicle: vanilla perks are no
+            // longer touched — no renames, no reads).
             int np = 0, na = 0;
             for (int i = 0; i < PK_COUNT; ++i) {
-                g_perkForm[i] = dh->LookupForm<RE::BGSPerk>(
-                    kPerkDefs[i].id, kPerkDefs[i].own ? kPluginName : "Skyrim.esm");
+                g_perkForm[i] = dh->LookupForm<RE::BGSPerk>(kPerkDefs[i].id, kPluginName);
                 if (g_perkForm[i]) {
                     ++np;
                     if (i >= PK_ALCH1 && i <= PK_ALCH5) ++na;
                 }
             }
             g_capacityPerksResolved = (na > 0);
-            // Rename the vanilla alchemy perks in-place to their MAO re-enlistment
-            // (skills menu shows MAO's perks by default). Names only for now;
-            // descriptions + effect neutralization arrive with the installer.
-            int renamed = 0;
-            for (int i = 0; i < PK_COUNT; ++i) {
-                if (g_perkForm[i] && !kPerkDefs[i].own && kPerkDefs[i].maoName[0]) {
-                    g_perkForm[i]->fullName = RE::BSFixedString(kPerkDefs[i].maoName);
-                    ++renamed;
-                }
-            }
-            spdlog::info("[perks] resolved {}/{} alchemy perks ({}/5 Alchemist ranks); renamed {}; "
-                         "capacity {} (0=missing -> holds co-saved)",
-                         np, static_cast<int>(PK_COUNT), na, renamed,
+            // Tree mode: the installer-written patch puts these perks into the
+            // AVAlchemy constellation (player buys them with perk points).
+            // Without it, RecomputeCapacity auto-grants them by skill threshold.
+            g_treeMode.store(dh->LookupModByName("MAO - Patch.esp") != nullptr);
+            spdlog::info("[perks] resolved {}/{} MAO flag perks ({}/5 calibration ranks); "
+                         "mode {}; capacity {} (0=missing -> holds co-saved)",
+                         np, static_cast<int>(PK_COUNT), na,
+                         g_treeMode.load() ? "TREE (MAO - Patch.esp)" : "auto-grant",
                          g_capacityPerksResolved ? "live" : "held");
         }
         spdlog::info("[power] Open Field Kit spell: {}", g_fieldKitSpell ? "found" : "MISSING (is MAO.esp enabled?)");
