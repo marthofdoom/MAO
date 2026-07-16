@@ -13,12 +13,28 @@ from these docs alone. Load documents on demand, not all at once.
    potion-pickup interception, the magnitude ceiling rules (standalone caps at
    Requiem max; over-cap is MRO-gated), and the automated-potion-mod
    compatibility contract. This is the spec.
-2. **P1_PLAN.md** (current phase) — the core build: milestone breakdown
+2. **ARCHITECTURE.md** (before touching `native/plugin.cpp`) — the subsystem
+   map with line refs: identity/data structures, the gathering ContainerSink
+   (the sole essence-credit point), the recipe-based essence economy, the
+   flask system (dedicated forms, DrinkPotion hook, coatings, refill), the
+   perk vehicle + capacity ladder, the Field Kit menu, the hook inventory +
+   thread/lock map, the co-save schema, and the generator/installer/release
+   contracts (frozen FormID bands).
+3. **INVARIANTS.md** (before ANY code change) — the load-bearing rules, each
+   an imperative + the concrete failure mode that produced it: MAO's own
+   incidents (furniture eject, co-save contamination hold guard, capacity-
+   before-sync, MCM Settings backfill, reset-then-parse, self-deadlock/TOCTOU)
+   plus the inherited MEO persistence/threading/release disciplines.
+4. **ANTI_PATTERNS.md** (the one-sitting audit list, before repeating
+   history) — the portable "never again" catalog adopted from MEO's
+   release-proven digest, trimmed to what has a MAO analog and extended with
+   MAO's own entries; one line per rule on how it bit MEO or MAO.
+5. **P1_PLAN.md** (current phase) — the core build: milestone breakdown
    (P1a–P1f), status, and the two design shifts (alchemy-station opener;
    flasks embody specific discovered variants). P1a–P1d + station takeover are
    done; P1e (perks) is next. `Docs/BUILD.md` tracks per-milestone CI/test
    status.
-3. **P0_PLAN.md** (done) — the gathering-loop prototype: the full hook
+6. **P0_PLAN.md** (done) — the gathering-loop prototype: the full hook
    inventory for the whole design, the P0 architecture (harvest +
    container-changed sinks, `'POCH'` co-save, double-credit guard,
    quest-ingredient exclusion) plus the read-only essence viewer.

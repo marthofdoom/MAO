@@ -10,7 +10,7 @@
 //   M0: skeleton — DLL loads, logs version. Zero hooks.
 //   M1: THE GATHERING LOOP. TESContainerChanged sink is the sole essence-
 //       credit point; TESHarvested tags harvests; pouch persists in 'POCH'.
-//   M2 (this build): THE FIELD KIT VIEWER. An ImGui overlay (D3D11 present
+//   M2: THE FIELD KIT VIEWER. An ImGui overlay (D3D11 present
 //       thunk + input dispatch thunk — the Wheeler pattern, ported verbatim
 //       from MEO's proven hook sites) shows the essence stores, read-only.
 //       Opened by a hotkey for now (Data/SKSE/Plugins/MAO.ini iOpenHotkey);
@@ -2026,7 +2026,8 @@ public:
 // warn the player on-screen once per load (kPostLoadGame consumes the flag).
 std::atomic<bool> g_newerCoSave{ false };
 
-// ── SKSE co-save: the 'POCH' record (schema v1). Three tier counters.
+// ── SKSE co-save (kSerVersion 3): POCH (pouch counters) + BLPT (discovered
+// variants, v3 potion-keyed) + FLSK (slots). Loader hardened per INVARIANTS.
 void SaveCallback(SKSE::SerializationInterface* a_intfc) {
     if (!a_intfc->OpenRecord(kRecPouch, kSerVersion)) {
         spdlog::error("[save] OpenRecord('POCH') failed");
