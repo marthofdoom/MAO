@@ -1,0 +1,64 @@
+name: installer
+
+on:
+  push:
+    paths:
+      - "installer/**"
+      - "MAO.sln"
+      - ".github/workflows/installer.yml"
+  workflow_dispatch:
+
+jobs:
+  # Guards the USER-FACING install path. Synthesis clones this repo, locates a
+  # SOLUTION, and builds the project named by assets/MAO.synth's SelectedProject.
+  # MEO shipped with this path dead on arrival for three versions because its CI
+  # only built the standalone exe — build it the way Synthesis does, so the
+  # patcher can never break unnoticed.
+  synthesis-patcher:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      # Synthesis needs a solution AND the project MAO.synth points at. Assert
+      # both explicitly so a rename/move fails here with a readable reason
+      # instead of silently breaking the patcher for users.
+      - name: Solution + selected project present
+        shell: pwsh
+        run: |
+          if (-not (Test-Path MAO.sln)) {
+            throw "MAO.sln missing at repo root — Synthesis would fail with 'could not locate solution to run'"
+          }
+          $sel = (Get-Content assets/MAO.synth | ConvertFrom-Json).AddGitPatcher.SelectedProject
+          if (-not (Test-Path $sel)) { throw "MAO.synth SelectedProject not found: $sel" }
+          if (-not (Select-String -Path MAO.sln -SimpleMatch $sel -Quiet)) {
+            throw "MAO.sln does not contain MAO.synth's SelectedProject: $sel"
+          }
+          Write-Host "OK: MAO.sln contains $sel"
+
+      - name: Build the patcher through the solution (as Synthesis does)
+        run: dotnet build MAO.sln -c Release
+
+  # The standalone installer still builds (dev tooling: write-tiers/write-patch/
+  # recon dumps run locally + on the Deck) even though users install via
+  # Synthesis.
+  installer-exe:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: installer/MAO.Installer
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Build
+        run: dotnet build -c Release
+
+      - name: Smoke test
+        run: dotnet run -c Release --no-build -- --help

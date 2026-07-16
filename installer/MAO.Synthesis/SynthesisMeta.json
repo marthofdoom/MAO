@@ -1,0 +1,11 @@
+{
+  "Nickname": "marth Alchemy Overhaul (MAO)",
+  "Visibility": "Visible",
+  "OneLineDescription": "Flask-based alchemy — perk tree and ingredient tiers calibrated to your load order.",
+  "LongDescription": "The load-order patcher for marth's Alchemy Overhaul (MAO). It rewrites the alchemy perk tree into MAO's field-kit perks (keeping non-crafting perks your list ships) and classifies every ingredient in your load order into rarity tiers for the essence economy. Requires the main MAO mod (SKSE plugin + MAO.esp). Run after installing MAO, and again after any load-order change.",
+  "PreferredAutoVersioning": "Default",
+  "RequiredMods": [
+    "MAO.esp"
+  ],
+  "TargetedReleases": []
+}

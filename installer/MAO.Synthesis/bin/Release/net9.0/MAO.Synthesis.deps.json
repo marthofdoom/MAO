@@ -1,0 +1,840 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v9.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v9.0": {
+      "MAO.Synthesis/1.0.0": {
+        "dependencies": {
+          "Mutagen.Bethesda.Skyrim": "0.54.2",
+          "Mutagen.Bethesda.Synthesis": "0.36.5"
+        },
+        "runtime": {
+          "MAO.Synthesis.dll": {}
+        }
+      },
+      "CommandLineParser/2.9.1": {
+        "runtime": {
+          "lib/netstandard2.0/CommandLine.dll": {
+            "assemblyVersion": "2.9.1.0",
+            "fileVersion": "2.9.1.0"
+          }
+        }
+      },
+      "DynamicData/9.4.31": {
+        "dependencies": {
+          "System.Reactive": "6.1.0"
+        },
+        "runtime": {
+          "lib/net9.0/DynamicData.dll": {
+            "assemblyVersion": "9.4.0.0",
+            "fileVersion": "9.4.31.36276"
+          }
+        }
+      },
+      "FluentResults/3.15.2": {
+        "dependencies": {
+          "Microsoft.Extensions.Logging.Abstractions": "9.0.4",
+          "System.Threading.Tasks.Extensions": "4.5.4"
+        },
+        "runtime": {
+          "lib/netstandard2.1/FluentResults.dll": {
+            "assemblyVersion": "3.15.2.0",
+            "fileVersion": "3.15.2.0"
+          }
+        }
+      },
+      "GameFinder.Common/4.9.0": {
+        "dependencies": {
+          "FluentResults": "3.15.2",
+          "Microsoft.Extensions.Logging.Abstractions": "9.0.4",
+          "NexusMods.Paths": "0.19.1",
+          "OneOf": "3.0.271"
+        },
+        "runtime": {
+          "lib/net9.0/GameFinder.Common.dll": {
+            "assemblyVersion": "4.9.0.0",
+            "fileVersion": "4.9.0.0"
+          }
+        }
+      },
+      "GameFinder.RegistryUtils/4.9.0": {
+        "dependencies": {
+          "Microsoft.Win32.Registry": "5.0.0"
+        },
+        "runtime": {
+          "lib/net9.0/GameFinder.RegistryUtils.dll": {
+            "assemblyVersion": "4.9.0.0",
+            "fileVersion": "4.9.0.0"
+          }
+        }
+      },
+      "GameFinder.StoreHandlers.GOG/4.9.0": {
+        "dependencies": {
+          "GameFinder.Common": "4.9.0",
+          "GameFinder.RegistryUtils": "4.9.0",
+          "TransparentValueObjects.Abstractions": "1.1.0"
+        },
+        "runtime": {
+          "lib/net9.0/GameFinder.StoreHandlers.GOG.dll": {
+            "assemblyVersion": "4.9.0.0",
+            "fileVersion": "4.9.0.0"
+          }
+        }
+      },
+      "GameFinder.StoreHandlers.Steam/4.9.0": {
+        "dependencies": {
+          "GameFinder.Common": "4.9.0",
+          "GameFinder.RegistryUtils": "4.9.0",
+          "GameFinder.Wine": "4.9.0",
+          "TransparentValueObjects.Abstractions": "1.1.0",
+          "ValveKeyValue": "0.13.1.398"
+        },
+        "runtime": {
+          "lib/net9.0/GameFinder.StoreHandlers.Steam.dll": {
+            "assemblyVersion": "4.9.0.0",
+            "fileVersion": "4.9.0.0"
+          }
+        }
+      },
+      "GameFinder.StoreHandlers.Xbox/4.9.0": {
+        "dependencies": {
+          "GameFinder.Common": "4.9.0",
+          "TransparentValueObjects.Abstractions": "1.1.0"
+        },
+        "runtime": {
+          "lib/net9.0/GameFinder.StoreHandlers.Xbox.dll": {
+            "assemblyVersion": "4.9.0.0",
+            "fileVersion": "4.9.0.0"
+          }
+        }
+      },
+      "GameFinder.Wine/4.9.0": {
+        "dependencies": {
+          "GameFinder.Common": "4.9.0",
+          "GameFinder.RegistryUtils": "4.9.0"
+        },
+        "runtime": {
+          "lib/net9.0/GameFinder.Wine.dll": {
+            "assemblyVersion": "4.9.0.0",
+            "fileVersion": "4.9.0.0"
+          }
+        }
+      },
+      "ini-parser-netstandard/2.5.3": {
+        "runtime": {
+          "lib/netstandard2.0/INIFileParser.dll": {
+            "assemblyVersion": "2.5.3.0",
+            "fileVersion": "2.5.3.0"
+          }
+        }
+      },
+      "K4os.Compression.LZ4/1.3.8": {
+        "runtime": {
+          "lib/net6.0/K4os.Compression.LZ4.dll": {
+            "assemblyVersion": "1.3.8.0",
+            "fileVersion": "1.3.8.0"
+          }
+        }
+      },
+      "K4os.Compression.LZ4.Streams/1.3.8": {
+        "dependencies": {
+          "K4os.Compression.LZ4": "1.3.8",
+          "K4os.Hash.xxHash": "1.0.8",
+          "System.IO.Pipelines": "6.0.3"
+        },
+        "runtime": {
+          "lib/net6.0/K4os.Compression.LZ4.Streams.dll": {
+            "assemblyVersion": "1.3.8.0",
+            "fileVersion": "1.3.8.0"
+          }
+        }
+      },
+      "K4os.Hash.xxHash/1.0.8": {
+        "runtime": {
+          "lib/net6.0/K4os.Hash.xxHash.dll": {
+            "assemblyVersion": "1.0.8.0",
+            "fileVersion": "1.0.8.0"
+          }
+        }
+      },
+      "Loqui/3.7.0": {
+        "dependencies": {
+          "Noggog.CSharpExt": "4.3.0"
+        },
+        "runtime": {
+          "lib/net9.0/Loqui.dll": {
+            "assemblyVersion": "3.7.0.0",
+            "fileVersion": "3.7.0.0"
+          }
+        }
+      },
+      "Microsoft.Extensions.DependencyInjection.Abstractions/9.0.4": {
+        "runtime": {
+          "lib/net9.0/Microsoft.Extensions.DependencyInjection.Abstractions.dll": {
+            "assemblyVersion": "9.0.0.0",
+            "fileVersion": "9.0.425.16305"
+          }
+        }
+      },
+      "Microsoft.Extensions.Logging.Abstractions/9.0.4": {
+        "dependencies": {
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "9.0.4"
+        },
+        "runtime": {
+          "lib/net9.0/Microsoft.Extensions.Logging.Abstractions.dll": {
+            "assemblyVersion": "9.0.0.0",
+            "fileVersion": "9.0.425.16305"
+          }
+        }
+      },
+      "Microsoft.NETCore.Platforms/5.0.0": {},
+      "Microsoft.Win32.Registry/5.0.0": {
+        "dependencies": {
+          "System.Security.AccessControl": "5.0.0",
+          "System.Security.Principal.Windows": "5.0.0"
+        }
+      },
+      "Mutagen.Bethesda.Core/0.54.2": {
+        "dependencies": {
+          "GameFinder.StoreHandlers.GOG": "4.9.0",
+          "GameFinder.StoreHandlers.Steam": "4.9.0",
+          "GameFinder.StoreHandlers.Xbox": "4.9.0",
+          "K4os.Compression.LZ4.Streams": "1.3.8",
+          "Loqui": "3.7.0",
+          "Mutagen.Bethesda.Kernel": "0.54.2",
+          "Noggog.CSharpExt": "4.3.0",
+          "SharpZipLib": "1.4.2",
+          "StrongInject": "1.4.4",
+          "System.Collections.Immutable": "10.0.9",
+          "System.Text.Encoding.CodePages": "10.0.9",
+          "ini-parser-netstandard": "2.5.3"
+        },
+        "runtime": {
+          "lib/net9.0/Mutagen.Bethesda.Core.dll": {
+            "assemblyVersion": "0.54.2.0",
+            "fileVersion": "0.54.2.0"
+          }
+        }
+      },
+      "Mutagen.Bethesda.Json/0.54.2": {
+        "dependencies": {
+          "Mutagen.Bethesda.Core": "0.54.2",
+          "Mutagen.Bethesda.Kernel": "0.54.2",
+          "Newtonsoft.Json": "13.0.4"
+        },
+        "runtime": {
+          "lib/net9.0/Mutagen.Bethesda.Json.dll": {
+            "assemblyVersion": "0.54.2.0",
+            "fileVersion": "0.54.2.0"
+          }
+        }
+      },
+      "Mutagen.Bethesda.Kernel/0.54.2": {
+        "dependencies": {
+          "Noggog.CSharpExt": "4.3.0"
+        },
+        "runtime": {
+          "lib/net9.0/Mutagen.Bethesda.Kernel.dll": {
+            "assemblyVersion": "0.54.2.0",
+            "fileVersion": "0.54.2.0"
+          }
+        }
+      },
+      "Mutagen.Bethesda.Skyrim/0.54.2": {
+        "dependencies": {
+          "Loqui": "3.7.0",
+          "Mutagen.Bethesda.Core": "0.54.2",
+          "Noggog.CSharpExt": "4.3.0"
+        },
+        "runtime": {
+          "lib/net9.0/Mutagen.Bethesda.Skyrim.dll": {
+            "assemblyVersion": "0.54.2.0",
+            "fileVersion": "0.54.2.0"
+          }
+        }
+      },
+      "Mutagen.Bethesda.Synthesis/0.36.5": {
+        "dependencies": {
+          "Mutagen.Bethesda.Core": "0.54.2",
+          "Mutagen.Bethesda.Json": "0.54.2",
+          "Newtonsoft.Json": "13.0.4",
+          "Noggog.CSharpExt": "4.3.0",
+          "Noggog.SourceGenerators": "4.3.0",
+          "Synthesis.Bethesda": "0.36.5"
+        },
+        "runtime": {
+          "lib/net9.0/Mutagen.Bethesda.Synthesis.dll": {
+            "assemblyVersion": "0.36.5.0",
+            "fileVersion": "0.36.5.0"
+          }
+        }
+      },
+      "Newtonsoft.Json/13.0.4": {
+        "runtime": {
+          "lib/net6.0/Newtonsoft.Json.dll": {
+            "assemblyVersion": "13.0.0.0",
+            "fileVersion": "13.0.4.30916"
+          }
+        }
+      },
+      "NexusMods.Paths/0.19.1": {
+        "dependencies": {
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "9.0.4",
+          "Reloaded.Memory": "9.4.2",
+          "TransparentValueObjects.Abstractions": "1.1.0"
+        },
+        "runtime": {
+          "lib/net9.0/NexusMods.Paths.dll": {
+            "assemblyVersion": "0.19.1.0",
+            "fileVersion": "0.19.1.0"
+          }
+        }
+      },
+      "Noggog.CSharpExt/4.3.0": {
+        "dependencies": {
+          "DynamicData": "9.4.31",
+          "System.IO.Abstractions": "22.1.1",
+          "System.Linq.Async": "7.0.1"
+        },
+        "runtime": {
+          "lib/net9.0/Noggog.CSharpExt.dll": {
+            "assemblyVersion": "4.3.0.0",
+            "fileVersion": "4.3.0.0"
+          }
+        }
+      },
+      "Noggog.SourceGenerators/4.3.0": {
+        "runtime": {
+          "lib/netstandard2.0/Noggog.SourceGenerators.dll": {
+            "assemblyVersion": "4.3.0.0",
+            "fileVersion": "4.3.0.0"
+          }
+        }
+      },
+      "OneOf/3.0.271": {
+        "runtime": {
+          "lib/netstandard2.0/OneOf.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
+      "Reloaded.Memory/9.4.2": {
+        "runtime": {
+          "lib/net8.0/Reloaded.Memory.dll": {
+            "assemblyVersion": "9.4.2.0",
+            "fileVersion": "9.4.2.0"
+          }
+        }
+      },
+      "SharpZipLib/1.4.2": {
+        "runtime": {
+          "lib/net6.0/ICSharpCode.SharpZipLib.dll": {
+            "assemblyVersion": "1.4.2.13",
+            "fileVersion": "1.4.2.13"
+          }
+        }
+      },
+      "StrongInject/1.4.4": {
+        "dependencies": {
+          "System.Collections.Immutable": "10.0.9"
+        },
+        "runtime": {
+          "lib/netstandard2.1/StrongInject.dll": {
+            "assemblyVersion": "1.4.4.0",
+            "fileVersion": "1.4.4.0"
+          }
+        }
+      },
+      "Synthesis.Bethesda/0.36.5": {
+        "dependencies": {
+          "CommandLineParser": "2.9.1",
+          "Mutagen.Bethesda.Kernel": "0.54.2",
+          "Noggog.CSharpExt": "4.3.0"
+        },
+        "runtime": {
+          "lib/net9.0/Synthesis.Bethesda.dll": {
+            "assemblyVersion": "0.36.5.0",
+            "fileVersion": "0.36.5.0"
+          }
+        }
+      },
+      "System.Collections.Immutable/10.0.9": {
+        "runtime": {
+          "lib/net9.0/System.Collections.Immutable.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.926.27113"
+          }
+        }
+      },
+      "System.Interactive.Async/7.0.1": {
+        "dependencies": {
+          "System.Linq.AsyncEnumerable": "10.0.6"
+        },
+        "runtime": {
+          "lib/net6.0/System.Interactive.Async.dll": {
+            "assemblyVersion": "7.0.0.0",
+            "fileVersion": "7.0.1.38638"
+          }
+        }
+      },
+      "System.IO.Abstractions/22.1.1": {
+        "dependencies": {
+          "TestableIO.System.IO.Abstractions": "22.1.1",
+          "TestableIO.System.IO.Abstractions.Wrappers": "22.1.1"
+        },
+        "runtime": {
+          "lib/net9.0/System.IO.Abstractions.dll": {
+            "assemblyVersion": "22.1.1.0",
+            "fileVersion": "22.1.1.0"
+          }
+        }
+      },
+      "System.IO.Pipelines/6.0.3": {},
+      "System.Linq.Async/7.0.1": {
+        "dependencies": {
+          "System.Interactive.Async": "7.0.1",
+          "System.Linq.AsyncEnumerable": "10.0.6"
+        },
+        "runtime": {
+          "lib/netstandard2.1/System.Linq.Async.dll": {
+            "assemblyVersion": "7.0.0.0",
+            "fileVersion": "7.0.1.38638"
+          }
+        }
+      },
+      "System.Linq.AsyncEnumerable/10.0.6": {
+        "runtime": {
+          "lib/net9.0/System.Linq.AsyncEnumerable.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.626.17701"
+          }
+        }
+      },
+      "System.Reactive/6.1.0": {
+        "runtime": {
+          "lib/net6.0/System.Reactive.dll": {
+            "assemblyVersion": "6.1.0.0",
+            "fileVersion": "6.1.0.62682"
+          }
+        }
+      },
+      "System.Security.AccessControl/5.0.0": {
+        "dependencies": {
+          "Microsoft.NETCore.Platforms": "5.0.0",
+          "System.Security.Principal.Windows": "5.0.0"
+        }
+      },
+      "System.Security.Principal.Windows/5.0.0": {},
+      "System.Text.Encoding.CodePages/10.0.9": {
+        "runtime": {
+          "lib/net9.0/System.Text.Encoding.CodePages.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.926.27113"
+          }
+        },
+        "runtimeTargets": {
+          "runtimes/win/lib/net9.0/System.Text.Encoding.CodePages.dll": {
+            "rid": "win",
+            "assetType": "runtime",
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.926.27113"
+          }
+        }
+      },
+      "System.Threading.Tasks.Extensions/4.5.4": {},
+      "TestableIO.System.IO.Abstractions/22.1.1": {
+        "dependencies": {
+          "Testably.Abstractions.FileSystem.Interface": "10.1.0"
+        },
+        "runtime": {
+          "lib/net9.0/TestableIO.System.IO.Abstractions.dll": {
+            "assemblyVersion": "22.1.1.0",
+            "fileVersion": "22.1.1.0"
+          }
+        }
+      },
+      "TestableIO.System.IO.Abstractions.Wrappers/22.1.1": {
+        "dependencies": {
+          "Testably.Abstractions.FileSystem.Interface": "10.1.0"
+        },
+        "runtime": {
+          "lib/net9.0/TestableIO.System.IO.Abstractions.Wrappers.dll": {
+            "assemblyVersion": "22.1.1.0",
+            "fileVersion": "22.1.1.0"
+          }
+        }
+      },
+      "Testably.Abstractions.FileSystem.Interface/10.1.0": {
+        "runtime": {
+          "lib/net9.0/Testably.Abstractions.FileSystem.Interface.dll": {
+            "assemblyVersion": "10.1.0.0",
+            "fileVersion": "10.1.0.0"
+          }
+        }
+      },
+      "TransparentValueObjects.Abstractions/1.1.0": {
+        "runtime": {
+          "lib/net9.0/TransparentValueObjects.Abstractions.dll": {
+            "assemblyVersion": "1.1.0.0",
+            "fileVersion": "1.1.0.0"
+          }
+        }
+      },
+      "ValveKeyValue/0.13.1.398": {
+        "runtime": {
+          "lib/netstandard2.1/ValveKeyValue.dll": {
+            "assemblyVersion": "0.13.1.0",
+            "fileVersion": "0.13.1.398"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "MAO.Synthesis/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "CommandLineParser/2.9.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-OE0sl1/sQ37bjVsPKKtwQlWDgqaxWgtme3xZz7JssWUzg5JpMIyHgCTY9MVMxOg48fJ1AgGT3tgdH5m/kQ5xhA==",
+      "path": "commandlineparser/2.9.1",
+      "hashPath": "commandlineparser.2.9.1.nupkg.sha512"
+    },
+    "DynamicData/9.4.31": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-w2bT92Z5ADtnmtKiC9mzk21h7MtXtZEQKWFyytuHqhPBo7rKPWnvFk/xy1M/VA6XQTbCjRWMNV795w+RizFn4g==",
+      "path": "dynamicdata/9.4.31",
+      "hashPath": "dynamicdata.9.4.31.nupkg.sha512"
+    },
+    "FluentResults/3.15.2": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-yR3PD1SWKirYNpQ/t9TjJrsp1adazMmozLDPeamvSIljLAIjS0EQyyGvoupWsbZEryqW9SHbKXVL8YaJwURk8w==",
+      "path": "fluentresults/3.15.2",
+      "hashPath": "fluentresults.3.15.2.nupkg.sha512"
+    },
+    "GameFinder.Common/4.9.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-bZsWx9VrMvsu5PtVLOTNAVAYrW3idOmWrbyZaZ7q2+htBafHEDtYtaBg6/roICLdrjT2VxffC4oSkSjdUFLvRw==",
+      "path": "gamefinder.common/4.9.0",
+      "hashPath": "gamefinder.common.4.9.0.nupkg.sha512"
+    },
+    "GameFinder.RegistryUtils/4.9.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-kNUPphnCie0Eqb4Ly045YocMAmfVDYtXI5Z6pODXV/lumRKmGnZOoEOn+oViNfY/k/DJnBNKg2N4oYsaXeWrEA==",
+      "path": "gamefinder.registryutils/4.9.0",
+      "hashPath": "gamefinder.registryutils.4.9.0.nupkg.sha512"
+    },
+    "GameFinder.StoreHandlers.GOG/4.9.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-J1nP4AkTjwsTgJhSLM5O9wV0T9bKt0BUqrMuoYlx1R+Cbco/I2/5pd9ijYOnVaGqxdih/iIHDDGnaI9OYBU6+A==",
+      "path": "gamefinder.storehandlers.gog/4.9.0",
+      "hashPath": "gamefinder.storehandlers.gog.4.9.0.nupkg.sha512"
+    },
+    "GameFinder.StoreHandlers.Steam/4.9.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-KTNII5mQsPHEVhqfIsvbG3t1AvCvmIgJQkFd2J3AP+84qZQAiPhl17DRDyt3kgJuesvK906jMzOpt6ypjRZECQ==",
+      "path": "gamefinder.storehandlers.steam/4.9.0",
+      "hashPath": "gamefinder.storehandlers.steam.4.9.0.nupkg.sha512"
+    },
+    "GameFinder.StoreHandlers.Xbox/4.9.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-OzDIT1r9xD2fxmyUMxww/Oz9Ex182UVQquq0gU90njzJy3OKfsLk8uPuXm6i2Tr7xhfoLzg4wozP8R1nyEFrNw==",
+      "path": "gamefinder.storehandlers.xbox/4.9.0",
+      "hashPath": "gamefinder.storehandlers.xbox.4.9.0.nupkg.sha512"
+    },
+    "GameFinder.Wine/4.9.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-LlqnxPuot8gi6ay0qUgBD9TeiRIY0P8BIVzOgxIP+Ti/Wbd4HHq22yieP2aLOUkugXeArGTOYp+1ykjNgtjqZw==",
+      "path": "gamefinder.wine/4.9.0",
+      "hashPath": "gamefinder.wine.4.9.0.nupkg.sha512"
+    },
+    "ini-parser-netstandard/2.5.3": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-Ht3UqRCqizBPbB5pvQ/yCNZIChY6Cy5nLn7TKIlJzWnf4pbqGKqDO+AY6MDTD+fXgEzzMb64Qzl4/Hy7vEqfLA==",
+      "path": "ini-parser-netstandard/2.5.3",
+      "hashPath": "ini-parser-netstandard.2.5.3.nupkg.sha512"
+    },
+    "K4os.Compression.LZ4/1.3.8": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-LhwlPa7c1zs1OV2XadMtAWdImjLIsqFJPoRcIWAadSRn0Ri1DepK65UbWLPmt4riLqx2d40xjXRk0ogpqNtK7g==",
+      "path": "k4os.compression.lz4/1.3.8",
+      "hashPath": "k4os.compression.lz4.1.3.8.nupkg.sha512"
+    },
+    "K4os.Compression.LZ4.Streams/1.3.8": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-P15qr8dZAeo9GvYbUIPEYFQ0MEJ0i5iqr37wsYeRC3la2uCldOoeCa6to0CZ1taiwxIV+Mk8NGuZi+4iWivK9w==",
+      "path": "k4os.compression.lz4.streams/1.3.8",
+      "hashPath": "k4os.compression.lz4.streams.1.3.8.nupkg.sha512"
+    },
+    "K4os.Hash.xxHash/1.0.8": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-Wp2F7BamQ2Q/7Hk834nV9vRQapgcr8kgv9Jvfm8J3D0IhDqZMMl+a2yxUq5ltJitvXvQfB8W6K4F4fCbw/P6YQ==",
+      "path": "k4os.hash.xxhash/1.0.8",
+      "hashPath": "k4os.hash.xxhash.1.0.8.nupkg.sha512"
+    },
+    "Loqui/3.7.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-QiMpja6PaTYKT7+mTOFKJrcOER6CsALjCtk4ZDcyfswskrVEGFifopnawPwwhEmb8xiufqnWrjc9wMemGDA17g==",
+      "path": "loqui/3.7.0",
+      "hashPath": "loqui.3.7.0.nupkg.sha512"
+    },
+    "Microsoft.Extensions.DependencyInjection.Abstractions/9.0.4": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-UI0TQPVkS78bFdjkTodmkH0Fe8lXv9LnhGFKgKrsgUJ5a5FVdFRcgjIkBVLbGgdRhxWirxH/8IXUtEyYJx6GQg==",
+      "path": "microsoft.extensions.dependencyinjection.abstractions/9.0.4",
+      "hashPath": "microsoft.extensions.dependencyinjection.abstractions.9.0.4.nupkg.sha512"
+    },
+    "Microsoft.Extensions.Logging.Abstractions/9.0.4": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-0MXlimU4Dud6t+iNi5NEz3dO2w1HXdhoOLaYFuLPCjAsvlPQGwOT6V2KZRMLEhCAm/stSZt1AUv0XmDdkjvtbw==",
+      "path": "microsoft.extensions.logging.abstractions/9.0.4",
+      "hashPath": "microsoft.extensions.logging.abstractions.9.0.4.nupkg.sha512"
+    },
+    "Microsoft.NETCore.Platforms/5.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-VyPlqzH2wavqquTcYpkIIAQ6WdenuKoFN0BdYBbCWsclXacSOHNQn66Gt4z5NBqEYW0FAPm5rlvki9ZiCij5xQ==",
+      "path": "microsoft.netcore.platforms/5.0.0",
+      "hashPath": "microsoft.netcore.platforms.5.0.0.nupkg.sha512"
+    },
+    "Microsoft.Win32.Registry/5.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-dDoKi0PnDz31yAyETfRntsLArTlVAVzUzCIvvEDsDsucrl33Dl8pIJG06ePTJTI3tGpeyHS9Cq7Foc/s4EeKcg==",
+      "path": "microsoft.win32.registry/5.0.0",
+      "hashPath": "microsoft.win32.registry.5.0.0.nupkg.sha512"
+    },
+    "Mutagen.Bethesda.Core/0.54.2": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-2NIs/FCIjGCnXw/zpiQZt01RLbbBJ0mk1wDQcEmj8N7OEO3Z3nPT+8OV37ZI7KkEImLyxfkxZq6XIKwfv2DHPA==",
+      "path": "mutagen.bethesda.core/0.54.2",
+      "hashPath": "mutagen.bethesda.core.0.54.2.nupkg.sha512"
+    },
+    "Mutagen.Bethesda.Json/0.54.2": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-GPvdm+FmmHZkEormGtMKCCSbOLqfy+xsWrNpJVwUwambcAxahHLtxp0YtflMRfIPbCkKWJ/afde+WxFQ6aa37g==",
+      "path": "mutagen.bethesda.json/0.54.2",
+      "hashPath": "mutagen.bethesda.json.0.54.2.nupkg.sha512"
+    },
+    "Mutagen.Bethesda.Kernel/0.54.2": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-6XRTFaU/euyAg15XRe07MhR8ENIGEZuWthPiSFnUDOIhr7zA4PYNWqomN+z4X5Xo++Vf7ZLjwzaYDgibHROeUw==",
+      "path": "mutagen.bethesda.kernel/0.54.2",
+      "hashPath": "mutagen.bethesda.kernel.0.54.2.nupkg.sha512"
+    },
+    "Mutagen.Bethesda.Skyrim/0.54.2": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-PVmrsavS4Nuhhz0B3Us6KQK/tbLVgYwOijbygXFtx8CHi3YGqj+zgQpos7vyUgMEt0P2N3DMOoHQrSd7Xjv3Tg==",
+      "path": "mutagen.bethesda.skyrim/0.54.2",
+      "hashPath": "mutagen.bethesda.skyrim.0.54.2.nupkg.sha512"
+    },
+    "Mutagen.Bethesda.Synthesis/0.36.5": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-XcWaeX9mS0hbuoy/yhm0EmUe9HXp3P3xEQg7k+haEPWCngcnc6HK3jgpJLsbW9vMmWYpNmICyjZS+4vLD3+xpg==",
+      "path": "mutagen.bethesda.synthesis/0.36.5",
+      "hashPath": "mutagen.bethesda.synthesis.0.36.5.nupkg.sha512"
+    },
+    "Newtonsoft.Json/13.0.4": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-pdgNNMai3zv51W5aq268sujXUyx7SNdE2bj1wZcWjAQrKMFZV260lbqYop1d2GM67JI1huLRwxo9ZqnfF/lC6A==",
+      "path": "newtonsoft.json/13.0.4",
+      "hashPath": "newtonsoft.json.13.0.4.nupkg.sha512"
+    },
+    "NexusMods.Paths/0.19.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-eXfgHMv9/UfeBgrzx1GovOUBtp4dsJVP39JhylngcQw4psJWGO1HeWycf5bo2g0BcRLiji3YTCOtVeYpty8Q3w==",
+      "path": "nexusmods.paths/0.19.1",
+      "hashPath": "nexusmods.paths.0.19.1.nupkg.sha512"
+    },
+    "Noggog.CSharpExt/4.3.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-HQ2i7d2/stRqvfUbLp5338oQgeNIetHBpTUqSMbvL6CVtuzVGxGF5Rc+zXhDC4cuxs1l0aNaaEtthML9bDkjWA==",
+      "path": "noggog.csharpext/4.3.0",
+      "hashPath": "noggog.csharpext.4.3.0.nupkg.sha512"
+    },
+    "Noggog.SourceGenerators/4.3.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-r8XVc8EyNhfwC158C1t9rQlTk3/LS7EBYtLk5f5QSbgSwH+L9mrf1D6FfIwBI/X2DZ++NKfV9dAAew7mymESOA==",
+      "path": "noggog.sourcegenerators/4.3.0",
+      "hashPath": "noggog.sourcegenerators.4.3.0.nupkg.sha512"
+    },
+    "OneOf/3.0.271": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-pqpqeK8xQGggExhr4tesVgJkjdn+9HQAO0QgrYV2hFjE3y90okzk1kQMntMiUOGfV7FrCUfKPaVvPBD4IANqKg==",
+      "path": "oneof/3.0.271",
+      "hashPath": "oneof.3.0.271.nupkg.sha512"
+    },
+    "Reloaded.Memory/9.4.2": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-yrjimngdXs7evlk/ZFbzP0uppTf0Og+LFFonITgpzZ94HmVOi8b+29YFfYdWTbf68qUzGP0D4s0VsMhaGerg5g==",
+      "path": "reloaded.memory/9.4.2",
+      "hashPath": "reloaded.memory.9.4.2.nupkg.sha512"
+    },
+    "SharpZipLib/1.4.2": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-yjj+3zgz8zgXpiiC3ZdF/iyTBbz2fFvMxZFEBPUcwZjIvXOf37Ylm+K58hqMfIBt5JgU/Z2uoUS67JmTLe973A==",
+      "path": "sharpziplib/1.4.2",
+      "hashPath": "sharpziplib.1.4.2.nupkg.sha512"
+    },
+    "StrongInject/1.4.4": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-apRGISKI+xWW0WYQJHXckQpE9fECP//X5PUaY7jA5R6+m59hTIcr0shySR9Bb7cInDG+0fAG6PLjd1SxlLqe6g==",
+      "path": "stronginject/1.4.4",
+      "hashPath": "stronginject.1.4.4.nupkg.sha512"
+    },
+    "Synthesis.Bethesda/0.36.5": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-XBlnBHJFxdgrw18qGuOpDiu/KQH306LaiIH5+n8zB3bQo7dUDIiD6e7gcV4D68J/QsowwFq+nam+ZUllDq4Ltg==",
+      "path": "synthesis.bethesda/0.36.5",
+      "hashPath": "synthesis.bethesda.0.36.5.nupkg.sha512"
+    },
+    "System.Collections.Immutable/10.0.9": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-ci6tokGOzXpemLiZeMrSlA8xKdU43cIO0spbHH+vLaoFMA+fI8CHI3Np3D78jC7EZZrC9jiHDj0VlVK962hzsw==",
+      "path": "system.collections.immutable/10.0.9",
+      "hashPath": "system.collections.immutable.10.0.9.nupkg.sha512"
+    },
+    "System.Interactive.Async/7.0.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-oL1iox7sAJL8i+muGzVMQjDB0axQgOoT5CkwYdap8cQJMkWDWMRErNqhOcZkn31+aKr/uCfgMEdhUARCU4G7gg==",
+      "path": "system.interactive.async/7.0.1",
+      "hashPath": "system.interactive.async.7.0.1.nupkg.sha512"
+    },
+    "System.IO.Abstractions/22.1.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-nm4sNhAoN1NyiIVT6MS3EEzNjnir3PC1HE0mKGGUFg6RBW1HmRvWKuRDPkij1etOoQkpyIFmjVGcM6TpBGF3qQ==",
+      "path": "system.io.abstractions/22.1.1",
+      "hashPath": "system.io.abstractions.22.1.1.nupkg.sha512"
+    },
+    "System.IO.Pipelines/6.0.3": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-ryTgF+iFkpGZY1vRQhfCzX0xTdlV3pyaTTqRu2ETbEv+HlV7O6y7hyQURnghNIXvctl5DuZ//Dpks6HdL/Txgw==",
+      "path": "system.io.pipelines/6.0.3",
+      "hashPath": "system.io.pipelines.6.0.3.nupkg.sha512"
+    },
+    "System.Linq.Async/7.0.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-gwQtBHVY/WgqWgAYSe4JspXR+f1FvMbVIW4ixsJpGV/Kj8Nun3zp1ajIdvCWfmac8ektJGVLiJ/OR8JU9nZnMg==",
+      "path": "system.linq.async/7.0.1",
+      "hashPath": "system.linq.async.7.0.1.nupkg.sha512"
+    },
+    "System.Linq.AsyncEnumerable/10.0.6": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-1Ttf7dyLoKXks2bVBVULmDPOSjxaMEE3JRTe/KGEJl3rfepCc4ipUEGMIKa/iBKLSN8rjEedF8Qv3UCtiwaDBw==",
+      "path": "system.linq.asyncenumerable/10.0.6",
+      "hashPath": "system.linq.asyncenumerable.10.0.6.nupkg.sha512"
+    },
+    "System.Reactive/6.1.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-M5cCC1ZMkZr9jbSQGTHnVkb5TDN67qWCV7AP8TAHdGkvDlu0puT5NzemESNn9+HkYIDpWpocP68/i+/ame2/2w==",
+      "path": "system.reactive/6.1.0",
+      "hashPath": "system.reactive.6.1.0.nupkg.sha512"
+    },
+    "System.Security.AccessControl/5.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-dagJ1mHZO3Ani8GH0PHpPEe/oYO+rVdbQjvjJkBRNQkX4t0r1iaeGn8+/ybkSLEan3/slM0t59SVdHzuHf2jmw==",
+      "path": "system.security.accesscontrol/5.0.0",
+      "hashPath": "system.security.accesscontrol.5.0.0.nupkg.sha512"
+    },
+    "System.Security.Principal.Windows/5.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-t0MGLukB5WAVU9bO3MGzvlGnyJPgUlcwerXn1kzBRjwLKixT96XV0Uza41W49gVd8zEMFu9vQEFlv0IOrytICA==",
+      "path": "system.security.principal.windows/5.0.0",
+      "hashPath": "system.security.principal.windows.5.0.0.nupkg.sha512"
+    },
+    "System.Text.Encoding.CodePages/10.0.9": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-F5U2mKPs5okLJbfIud5IMfkcGEe+73ye8/6MwWu84txhyUe7D7azXkFtMePUjirhYxOJ4boGCXpW5uZfgUA3Sw==",
+      "path": "system.text.encoding.codepages/10.0.9",
+      "hashPath": "system.text.encoding.codepages.10.0.9.nupkg.sha512"
+    },
+    "System.Threading.Tasks.Extensions/4.5.4": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-zteT+G8xuGu6mS+mzDzYXbzS7rd3K6Fjb9RiZlYlJPam2/hU7JCBZBVEcywNuR+oZ1ncTvc/cq0faRr3P01OVg==",
+      "path": "system.threading.tasks.extensions/4.5.4",
+      "hashPath": "system.threading.tasks.extensions.4.5.4.nupkg.sha512"
+    },
+    "TestableIO.System.IO.Abstractions/22.1.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-EJmXIKfwvJHvSHWP+NjA213avUdofV4SmBx2aWxc3SzPkrHHVKxUMC3fSa/epzk/SVITwuU2EAntgQTvobAqwQ==",
+      "path": "testableio.system.io.abstractions/22.1.1",
+      "hashPath": "testableio.system.io.abstractions.22.1.1.nupkg.sha512"
+    },
+    "TestableIO.System.IO.Abstractions.Wrappers/22.1.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-J91zmSwuMY75ybtkqAFMC3vDNMkLJ/kiDDLhORITEwTKNhEwEYfxAQGv+f0jGYZg/H0YbnGcx5Ky0FgFJwrrWQ==",
+      "path": "testableio.system.io.abstractions.wrappers/22.1.1",
+      "hashPath": "testableio.system.io.abstractions.wrappers.22.1.1.nupkg.sha512"
+    },
+    "Testably.Abstractions.FileSystem.Interface/10.1.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-0R+m7DvS2QuDcFOfDGtyGErRrgXOl4/z2tbNLX2RfvlYJjlVcKG+wMIBfZO8vxGtTNwNxffTG4ibFRwd0jkM7w==",
+      "path": "testably.abstractions.filesystem.interface/10.1.0",
+      "hashPath": "testably.abstractions.filesystem.interface.10.1.0.nupkg.sha512"
+    },
+    "TransparentValueObjects.Abstractions/1.1.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-t3aNn6UhA2NO9uLAfBafHklhgVEuh9AxtrGZp9AdUTeDea84LCvea9W6IhjSQVkUuhuDIZ482kKzuwyVSuf+Rw==",
+      "path": "transparentvalueobjects.abstractions/1.1.0",
+      "hashPath": "transparentvalueobjects.abstractions.1.1.0.nupkg.sha512"
+    },
+    "ValveKeyValue/0.13.1.398": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-Cm9fOJZ5Meb7uFON2XtvO2oiw/2hxAnkXI+5enms0AGNRZu5vPhw1PF5H1B2W8SbRZxqE/hkzMkWdIOO0MGPzg==",
+      "path": "valvekeyvalue/0.13.1.398",
+      "hashPath": "valvekeyvalue.0.13.1.398.nupkg.sha512"
+    }
+  }
+}
