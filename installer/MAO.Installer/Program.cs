@@ -21,11 +21,12 @@ using Mutagen.Bethesda.Plugins.Order;
 using Mutagen.Bethesda.Skyrim;
 
 const string Usage =
-    "usage: MAO.Installer <stats|tree|tree-effects|perk|write-tiers> <MO2-or-game root> <profile-or-plugins.txt|auto> [args]\n" +
+    "usage: MAO.Installer <stats|tree|tree-effects|perk|write-tiers|write-patch> <MO2-or-game root> <profile-or-plugins.txt|auto> [args]\n" +
     "       tree/tree-effects default the AVIF to AVAlchemy when no EditorID is given\n" +
     "       write-tiers [out.json] classifies every ingredient into a rarity tier\n" +
     "                   by availability and writes it (default data/mao_tiers.json)\n" +
-    "       (write-patch is not implemented yet — blocked on a design decision)";
+    "       write-patch [out.esp] replaces the winning AVAlchemy tree's craft perks\n" +
+    "                   with MAO's and writes the override patch (default MAO - Patch.esp)";
 if (args.Length == 0 || args[0] is "-h" or "--help" or "help")
 {
     Console.WriteLine(Usage);
@@ -114,6 +115,7 @@ try
         "tree-effects" => Commands.DumpTreeEffects(loadOrder, cache, positional.ElementAtOrDefault(0) ?? "AVAlchemy"),
         "perk" => Commands.DumpPerk(loadOrder, cache, positional[0]),
         "write-tiers" => Commands.WriteTiers(loadOrder, cache, positional.ElementAtOrDefault(0) ?? "data/mao_tiers.json"),
+        "write-patch" => Commands.WritePatch(loadOrder, cache, positional.ElementAtOrDefault(0) ?? "MAO - Patch.esp"),
         _ => Commands.Fail($"unknown command {cmd}"),
     };
 }
@@ -124,7 +126,7 @@ catch (Exception ex)
 }
 return rc;
 
-static class Commands
+static partial class Commands
 {
     public static int Fail(string msg)
     {
