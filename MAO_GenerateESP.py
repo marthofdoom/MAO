@@ -46,22 +46,33 @@ def stamp_mcm_version():
     """Stamp the DLL version into the committed MCM config's Debug page as a
     static text control (MRO/MEO-style build stamp). Idempotent: replaces any
     existing 'Version' control. Unlike MEO, MAO's config.json is hand-authored,
-    so this edits it in place rather than generating it."""
+    so this edits it in place rather than generating it.
+
+    MEO-shape rules (marth 2026-07-16 'MCM has formatting errors'): the page
+    OPENS with a header before the Version row (a bare text row at the top
+    renders mis-aligned), and the stamped value is the NUMERIC version only —
+    kPluginVersion's parenthetical description overflows the value column."""
     path = os.path.join(os.path.dirname(__file__), 'data', 'MCM', 'Config', 'MAO', 'config.json')
     with open(path, encoding='utf-8') as f:
         config = json.load(f)
-    ver = read_mao_version()
+    full = read_mao_version()
+    m = re.match(r'[0-9][0-9.]*', full)
+    ver = m.group(0) if m else full
+    header = {"text": "Debug", "type": "header"}
     control = {
         "text": "Version",
         "type": "text",
-        "help": "MAO version, stamped from the build. Matches the MAO.dll built from the same commit.",
+        "help": f"MAO version, stamped from the build ({full}). Matches the MAO.dll built from the same commit.",
         "valueOptions": {"value": f"v{ver}"},
     }
     for page in config.get("pages", []):
         if page.get("pageDisplayName") == "Debug":
             content = page.setdefault("content", [])
-            content[:] = [c for c in content if c.get("text") != "Version" or c.get("type") != "text"]
+            content[:] = [c for c in content
+                          if not (c.get("text") == "Version" and c.get("type") == "text")
+                          and not (c.get("text") == "Debug" and c.get("type") == "header")]
             content.insert(0, control)
+            content.insert(0, header)
             break
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent='\t', ensure_ascii=False)

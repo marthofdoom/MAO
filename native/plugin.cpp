@@ -70,7 +70,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.19.0 (MEO perk vehicle: own flag perks + auto-grant)";
+constexpr auto kPluginVersion = "0.20.0 (time-based coatings + MCM debug page fix)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -189,7 +189,8 @@ std::atomic<int>  g_alchemistRank{ 0 };
 std::atomic<bool> g_hasCapstone{ false };
 std::atomic<bool> g_hasBenefactor{ false };   // read in VariantCost (render + task)
 std::atomic<bool> g_hasExperimenter{ false };  // read in the gather credit (task)
-std::atomic<bool> g_hasVanguard{ false };  // Poisoner -> coatings unlocked (P2)
+std::atomic<bool> g_hasVanguard{ false };   // Vanguard Coating -> coatings unlocked (P2)
+std::atomic<bool> g_hasCorrosive{ false };  // Corrosive Retention -> 120s coating window
 
 // DESIGN: coatings unlock with the Vanguard Coating perk (Poisoner). Relaxed to
 // false during P2 testing (marth 2026-07-13) so coatings are craftable AND
@@ -243,6 +244,7 @@ void RecomputeCapacity(const char* a_why) {
     g_hasBenefactor.store((eff & (1u << PK_BENEFACTOR)) != 0);
     g_hasExperimenter.store((eff & (1u << PK_EXPERIMENTER)) != 0);
     g_hasVanguard.store((eff & (1u << PK_POISONER)) != 0);
+    g_hasCorrosive.store((eff & (1u << PK_CONCPOISON)) != 0);
     // If MAO.esp's Kit Calibration chain didn't resolve (stale/missing ESP),
     // hold the co-saved counts rather than force the baseline and clamp away
     // charges the player legitimately earned. This applies EVEN in debug: the
@@ -997,16 +999,123 @@ public:
     }
 };
 
+// ── Coating duration (P2, DESIGN §5.2). A coating is TIME-based: 45s baseline
+// (Vanguard Coating), 120s with Corrosive Retention. The hit count on the
+// ExtraPoison is a big budget so time, not hits, is the limit; the 1s timer
+// tick below strips OUR poison when the window closes. State is runtime-only:
+// stale coatings surviving a save/load are stripped at kPostLoadGame instead.
+constexpr std::uint32_t kCoatingSeconds          = 45;   // Vanguard baseline
+constexpr std::uint32_t kCoatingSecondsCorrosive = 120;  // Corrosive Retention
+constexpr std::int32_t  kCoatingHitBudget        = 999;  // never the limiting factor
+std::atomic<std::uint64_t> g_coatingExpiryMs{ 0 };  // steady-clock ms; 0 = no live coating
+std::atomic<RE::FormID>    g_coatingPoison{ 0 };    // the variant WE applied (never strip others)
+
+std::uint64_t NowMs() {
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+// Strip MAO's coating from the player's equipped weapon(s) once the window
+// closes. Task thread. Only removes an ExtraPoison whose poison form matches
+// what we applied — a manually-applied vanilla poison is not ours to touch.
+void ExpireCoating() {
+    const RE::FormID ours = g_coatingPoison.exchange(0);
+    if (!ours) {
+        return;
+    }
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) {
+        return;
+    }
+    int stripped = 0;
+    for (bool left : { false, true }) {
+        auto* entry = player->GetEquippedEntryData(left);
+        if (!entry || !entry->extraLists || entry->extraLists->empty()) {
+            continue;
+        }
+        auto* xList = entry->extraLists->front();
+        if (!xList) {
+            continue;
+        }
+        auto* xp = xList->GetByType<RE::ExtraPoison>();
+        if (xp && xp->poison && xp->poison->GetFormID() == ours) {
+            xList->RemoveByType(RE::ExtraDataType::kPoison);
+            ++stripped;
+        }
+    }
+    spdlog::info("[coat] coating window closed — stripped {} weapon(s)", stripped);
+    if (stripped && g_notify.load()) {
+        RE::DebugNotification("Weapon coating has worn off.");
+    }
+}
+
+// A save can carry a coating whose window died with the process (the expiry is
+// deliberately runtime-only, not co-saved). At load, strip any equipped
+// ExtraPoison whose poison is a DISCOVERED detrimental variant — only MAO's
+// coating path puts those on a weapon (loose poisons convert on pickup), so a
+// reload can never hand back a time-based coating with the clock erased.
+void StripStaleCoatings() {
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) {
+        return;
+    }
+    int stripped = 0;
+    for (bool left : { false, true }) {
+        auto* entry = player->GetEquippedEntryData(left);
+        if (!entry || !entry->extraLists || entry->extraLists->empty()) {
+            continue;
+        }
+        auto* xList = entry->extraLists->front();
+        if (!xList) {
+            continue;
+        }
+        auto* xp = xList->GetByType<RE::ExtraPoison>();
+        if (!xp || !xp->poison) {
+            continue;
+        }
+        bool discovered = false;
+        {
+            std::scoped_lock lk(g_discoveredLock);
+            discovered = g_discovered.contains(xp->poison->GetFormID());
+        }
+        if (!discovered) {
+            continue;  // a manually-applied vanilla poison — not ours to touch
+        }
+        const auto* eff = !xp->poison->effects.empty() && xp->poison->effects[0]
+                              ? xp->poison->effects[0]->baseEffect
+                              : nullptr;
+        if (eff && (eff->IsHostile() || eff->IsDetrimental())) {
+            xList->RemoveByType(RE::ExtraDataType::kPoison);
+            ++stripped;
+        }
+    }
+    if (stripped) {
+        spdlog::info("[coat] load: stripped {} stale coating(s) — expiry is runtime-only",
+                     stripped);
+    }
+}
+
 void StartRefillTimer() {
     static std::atomic<bool> started{ false };
     if (started.exchange(true)) {
         return;  // once
     }
+    // 1-second tick: coating expiry needs fine granularity; refills keep their
+    // g_refillSeconds cadence by accumulating ticks (behavior unchanged).
     std::thread([]() {
+        std::uint32_t acc = 0;
         for (;;) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            const auto exp = g_coatingExpiryMs.load();
+            if (exp && NowMs() >= exp) {
+                g_coatingExpiryMs.store(0);
+                SKSE::GetTaskInterface()->AddTask([]() { ExpireCoating(); });
+            }
             const std::uint32_t secs = g_refillSeconds.load() ? g_refillSeconds.load() : 300u;
-            std::this_thread::sleep_for(std::chrono::seconds(secs));
-            SKSE::GetTaskInterface()->AddTask([]() { RefillFlasks("timer"); });
+            if (++acc >= secs) {
+                acc = 0;
+                SKSE::GetTaskInterface()->AddTask([]() { RefillFlasks("timer"); });
+            }
         }
     }).detach();
 }
@@ -1097,8 +1206,9 @@ struct DrinkPotionHook {
                 }
                 if (remaining >= 0 && coating) {
                     // Coating: apply to the equipped weapon(s) instead of drinking.
-                    constexpr std::int32_t kCoatingHits = 10;  // interim; time-based next slice
-                    const int coated = ApplyCoating(a_this, vAlch, kCoatingHits);
+                    // TIME-based (DESIGN §5.2): 45s baseline, 120s with Corrosive
+                    // Retention; the hit count is a budget so time is the limit.
+                    const int coated = ApplyCoating(a_this, vAlch, kCoatingHitBudget);
                     if (coated == 0) {  // nothing to coat — refund the charge
                         std::scoped_lock lk(g_flasksLock);
                         if (g_flasks[slot].repPotion == variant) {
@@ -1112,10 +1222,16 @@ struct DrinkPotionHook {
                         return true;
                     }
                     PlayDrinkSound(a_this, vAlch);
-                    spdlog::info("[coat] flask slot {} -> {} weapon(s); {} charge(s) left", slot,
-                                 coated, remaining);
+                    const std::uint32_t dur =
+                        g_hasCorrosive.load() ? kCoatingSecondsCorrosive : kCoatingSeconds;
+                    g_coatingPoison.store(variant);
+                    g_coatingExpiryMs.store(NowMs() + dur * 1000ull);
+                    spdlog::info("[coat] flask slot {} -> {} weapon(s) for {}s{}; {} charge(s) left",
+                                 slot, coated, dur, g_hasCorrosive.load() ? " (Corrosive)" : "",
+                                 remaining);
                     if (g_notify.load()) {
-                        RE::DebugNotification("Weapon coated.");
+                        RE::DebugNotification(
+                            std::format("Weapon coated ({} seconds).", dur).c_str());
                     }
                 } else if (remaining >= 0) {
                     if (auto* caster =
@@ -2202,6 +2318,8 @@ void LoadCallback(SKSE::SerializationInterface* a_intfc) {
 
 void RevertCallback(SKSE::SerializationInterface*) {
     g_newerCoSave.store(false);  // re-armed per load; LoadCallback may set it again
+    g_coatingExpiryMs.store(0);  // coating clock is runtime-only; never crosses loads
+    g_coatingPoison.store(0);
     g_pouch = Pouch{};
     {
         std::scoped_lock lk(g_discoveredLock);
@@ -2279,6 +2397,7 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
             GrantFieldKitPower();
             RecomputeCapacity("load");  // authoritative capacity BEFORE we sync items,
             SyncFlaskItems();           // so a shrunk kit doesn't grant now-dead slots
+            StripStaleCoatings();       // time-based coatings never cross a reload
             // Downgrade warning: skipped newer-MAO records are NOT round-tripped
             // by SKSE — saving now destroys them. Say so where the player can
             // see it, not just the log (MEO release lesson).

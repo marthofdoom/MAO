@@ -138,11 +138,15 @@
 			"cursorFillMode": "topToBottom",
 			"content": [
 				{
+					"text": "Debug",
+					"type": "header"
+				},
+				{
 					"text": "Version",
 					"type": "text",
-					"help": "MAO version, stamped from the build. Matches the MAO.dll built from the same commit.",
+					"help": "MAO version, stamped from the build (0.20.0 (time-based coatings + MCM debug page fix)). Matches the MAO.dll built from the same commit.",
 					"valueOptions": {
-						"value": "v0.19.0 (MEO perk vehicle: own flag perks + auto-grant)"
+						"value": "v0.20.0"
 					}
 				},
 				{
@@ -165,7 +169,7 @@
 				},
 				{
 					"id": "bPerkAlch1:Debug",
-					"text": "Kit Calibration I  (+1 charge)",
+					"text": "Kit Calibration I (+1 charge)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -174,7 +178,7 @@
 				},
 				{
 					"id": "bPerkAlch2:Debug",
-					"text": "Kit Calibration II  (+1 flask)",
+					"text": "Kit Calibration II (+1 flask)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -183,7 +187,7 @@
 				},
 				{
 					"id": "bPerkAlch3:Debug",
-					"text": "Kit Calibration III  (refill eff, P2)",
+					"text": "Kit Calibration III (refill eff, P2)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -192,7 +196,7 @@
 				},
 				{
 					"id": "bPerkAlch4:Debug",
-					"text": "Field Deployment  (+1 flask +2 charge)",
+					"text": "Field Deployment (+1 flask +2 charge)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -201,7 +205,7 @@
 				},
 				{
 					"id": "bPerkAlch5:Debug",
-					"text": "Kit Calibration V  (rest refill, P2)",
+					"text": "Kit Calibration V (rest refill, P2)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -210,7 +214,7 @@
 				},
 				{
 					"id": "bPerkCapstone:Debug",
-					"text": "Master's Crucible  (+2 flask +4 charge)",
+					"text": "Master's Crucible (+2 flask +4 charge)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -223,7 +227,7 @@
 				},
 				{
 					"id": "bPerkBenefactor:Debug",
-					"text": "Apex Stabilization  (Apex cost -35%)",
+					"text": "Apex Stabilization (Apex cost -35%)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -232,7 +236,7 @@
 				},
 				{
 					"id": "bPerkExperimenter:Debug",
-					"text": "Field Extraction  (+10% gather)",
+					"text": "Field Extraction (+10% gather)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -245,7 +249,7 @@
 				},
 				{
 					"id": "bPerkPhysician:Debug",
-					"text": "Fluid Motion  (P2)",
+					"text": "Fluid Motion (P2)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -254,7 +258,7 @@
 				},
 				{
 					"id": "bPerkPoisoner:Debug",
-					"text": "Vanguard Coating  (coatings)",
+					"text": "Vanguard Coating (coatings)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -263,7 +267,7 @@
 				},
 				{
 					"id": "bPerkGreenThumb:Debug",
-					"text": "Pouch Expansion  (P2)",
+					"text": "Pouch Expansion (P2)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -272,7 +276,7 @@
 				},
 				{
 					"id": "bPerkSnakeblood:Debug",
-					"text": "Extended Synthesis  (P2)",
+					"text": "Extended Synthesis (P2)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -281,7 +285,7 @@
 				},
 				{
 					"id": "bPerkConcPoison:Debug",
-					"text": "Corrosive Retention  (P2)",
+					"text": "Corrosive Retention (P2)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
