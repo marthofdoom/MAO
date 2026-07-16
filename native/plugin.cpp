@@ -1007,42 +1007,74 @@ public:
 constexpr std::uint32_t kCoatingSeconds          = 45;   // Vanguard baseline
 constexpr std::uint32_t kCoatingSecondsCorrosive = 120;  // Corrosive Retention
 constexpr std::int32_t  kCoatingHitBudget        = 999;  // never the limiting factor
-std::atomic<std::uint64_t> g_coatingExpiryMs{ 0 };  // steady-clock ms; 0 = no live coating
-std::atomic<RE::FormID>    g_coatingPoison{ 0 };    // the variant WE applied (never strip others)
+// Coating clock. GUARDED BY g_coatingLock, not lock-free: the tick thread's
+// check-then-clear vs a same-instant re-coat is a genuine check-then-act race
+// (Fable review of 8a548d7, finding 1 — the tick could wipe a fresh coating's
+// clock or schedule a strip against the NEW variant). These paths are cold
+// (1 Hz tick + explicit player actions); a mutex is airtight where the atomics
+// were not.
+std::mutex    g_coatingLock;
+std::uint64_t g_coatingExpiryMs = 0;  // steady-clock ms; 0 = no live coating
+RE::FormID    g_coatingPoison   = 0;  // the variant WE applied (never strip others)
 
 std::uint64_t NowMs() {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
-// Strip MAO's coating from the player's equipped weapon(s) once the window
-// closes. Task thread. Only removes an ExtraPoison whose poison form matches
-// what we applied — a manually-applied vanilla poison is not ours to touch.
-void ExpireCoating() {
-    const RE::FormID ours = g_coatingPoison.exchange(0);
-    if (!ours) {
+// Strip an ExtraPoison from every WEAPON in the player's inventory whose
+// poison satisfies a_shouldStrip. The whole inventory, not just equipped
+// hands: unequipping a coated weapon must not bank the hit budget past the
+// window (Fable review of 8a548d7, finding 2 — a stowed 999-hit coating was a
+// permanent free poison). Equipped weapons are inventory entries too, so one
+// sweep covers both. Task thread.
+template <class F>
+int StripCoatings(RE::PlayerCharacter* a_player, F&& a_shouldStrip) {
+    int stripped = 0;
+    for (auto& [obj, data] : a_player->GetInventory()) {
+        if (!obj || !obj->Is(RE::FormType::Weapon)) {
+            continue;
+        }
+        auto& entry = data.second;
+        if (!entry || !entry->extraLists) {
+            continue;
+        }
+        for (auto* xList : *entry->extraLists) {
+            if (!xList) {
+                continue;
+            }
+            auto* xp = xList->GetByType<RE::ExtraPoison>();
+            if (xp && xp->poison && a_shouldStrip(xp->poison)) {
+                xList->RemoveByType(RE::ExtraDataType::kPoison);
+                ++stripped;
+            }
+        }
+    }
+    return stripped;
+}
+
+// Strip MAO's coating once the window closes. Task thread. a_form is the
+// variant captured UNDER THE LOCK when the expiry was consumed — only that
+// exact poison form is removed; a manually-applied poison is not ours to touch.
+void ExpireCoating(RE::FormID a_form) {
+    if (!a_form) {
         return;
+    }
+    {
+        // A re-coat between the tick and this task re-arms the clock; if it
+        // re-armed for the SAME variant, this strip would eat the fresh
+        // coating — the live clock owns it now, stand down.
+        std::scoped_lock lk(g_coatingLock);
+        if (g_coatingExpiryMs != 0 && g_coatingPoison == a_form) {
+            return;
+        }
     }
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (!player) {
         return;
     }
-    int stripped = 0;
-    for (bool left : { false, true }) {
-        auto* entry = player->GetEquippedEntryData(left);
-        if (!entry || !entry->extraLists || entry->extraLists->empty()) {
-            continue;
-        }
-        auto* xList = entry->extraLists->front();
-        if (!xList) {
-            continue;
-        }
-        auto* xp = xList->GetByType<RE::ExtraPoison>();
-        if (xp && xp->poison && xp->poison->GetFormID() == ours) {
-            xList->RemoveByType(RE::ExtraDataType::kPoison);
-            ++stripped;
-        }
-    }
+    const int stripped =
+        StripCoatings(player, [&](RE::AlchemyItem* p) { return p->GetFormID() == a_form; });
     spdlog::info("[coat] coating window closed — stripped {} weapon(s)", stripped);
     if (stripped && g_notify.load()) {
         RE::DebugNotification("Weapon coating has worn off.");
@@ -1059,36 +1091,22 @@ void StripStaleCoatings() {
     if (!player) {
         return;
     }
-    int stripped = 0;
-    for (bool left : { false, true }) {
-        auto* entry = player->GetEquippedEntryData(left);
-        if (!entry || !entry->extraLists || entry->extraLists->empty()) {
-            continue;
-        }
-        auto* xList = entry->extraLists->front();
-        if (!xList) {
-            continue;
-        }
-        auto* xp = xList->GetByType<RE::ExtraPoison>();
-        if (!xp || !xp->poison) {
-            continue;
-        }
-        bool discovered = false;
+    // Whole-inventory sweep (not just hands): a coated weapon stowed before
+    // its window closed still carries the hit budget. Known soft spot: a
+    // pre-install stock poison the player applies manually shares its base
+    // FormID with a later-discovered variant and gets eaten here — accepted
+    // (conversion makes loose poisons rare; see Fable 8a548d7 finding 3).
+    const int stripped = StripCoatings(player, [](RE::AlchemyItem* p) {
         {
             std::scoped_lock lk(g_discoveredLock);
-            discovered = g_discovered.contains(xp->poison->GetFormID());
+            if (!g_discovered.contains(p->GetFormID())) {
+                return false;  // a manual vanilla poison — not ours to touch
+            }
         }
-        if (!discovered) {
-            continue;  // a manually-applied vanilla poison — not ours to touch
-        }
-        const auto* eff = !xp->poison->effects.empty() && xp->poison->effects[0]
-                              ? xp->poison->effects[0]->baseEffect
-                              : nullptr;
-        if (eff && (eff->IsHostile() || eff->IsDetrimental())) {
-            xList->RemoveByType(RE::ExtraDataType::kPoison);
-            ++stripped;
-        }
-    }
+        const auto* eff = !p->effects.empty() && p->effects[0] ? p->effects[0]->baseEffect
+                                                               : nullptr;
+        return eff && (eff->IsHostile() || eff->IsDetrimental());
+    });
     if (stripped) {
         spdlog::info("[coat] load: stripped {} stale coating(s) — expiry is runtime-only",
                      stripped);
@@ -1106,10 +1124,21 @@ void StartRefillTimer() {
         std::uint32_t acc = 0;
         for (;;) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
-            const auto exp = g_coatingExpiryMs.load();
-            if (exp && NowMs() >= exp) {
-                g_coatingExpiryMs.store(0);
-                SKSE::GetTaskInterface()->AddTask([]() { ExpireCoating(); });
+            // Consume the expiry and capture WHICH variant it belonged to in
+            // one critical section — a same-instant re-coat either finishes
+            // before (new clock survives untouched) or after (it re-arms the
+            // clock; this strip targets only the old form).
+            RE::FormID expired = 0;
+            {
+                std::scoped_lock lk(g_coatingLock);
+                if (g_coatingExpiryMs && NowMs() >= g_coatingExpiryMs) {
+                    expired           = g_coatingPoison;
+                    g_coatingExpiryMs = 0;
+                    g_coatingPoison   = 0;
+                }
+            }
+            if (expired) {
+                SKSE::GetTaskInterface()->AddTask([expired]() { ExpireCoating(expired); });
             }
             const std::uint32_t secs = g_refillSeconds.load() ? g_refillSeconds.load() : 300u;
             if (++acc >= secs) {
@@ -1224,8 +1253,11 @@ struct DrinkPotionHook {
                     PlayDrinkSound(a_this, vAlch);
                     const std::uint32_t dur =
                         g_hasCorrosive.load() ? kCoatingSecondsCorrosive : kCoatingSeconds;
-                    g_coatingPoison.store(variant);
-                    g_coatingExpiryMs.store(NowMs() + dur * 1000ull);
+                    {
+                        std::scoped_lock lk(g_coatingLock);
+                        g_coatingPoison   = variant;
+                        g_coatingExpiryMs = NowMs() + dur * 1000ull;
+                    }
                     spdlog::info("[coat] flask slot {} -> {} weapon(s) for {}s{}; {} charge(s) left",
                                  slot, coated, dur, g_hasCorrosive.load() ? " (Corrosive)" : "",
                                  remaining);
@@ -2318,8 +2350,11 @@ void LoadCallback(SKSE::SerializationInterface* a_intfc) {
 
 void RevertCallback(SKSE::SerializationInterface*) {
     g_newerCoSave.store(false);  // re-armed per load; LoadCallback may set it again
-    g_coatingExpiryMs.store(0);  // coating clock is runtime-only; never crosses loads
-    g_coatingPoison.store(0);
+    {
+        std::scoped_lock lk(g_coatingLock);  // coating clock is runtime-only
+        g_coatingExpiryMs = 0;
+        g_coatingPoison   = 0;
+    }
     g_pouch = Pouch{};
     {
         std::scoped_lock lk(g_discoveredLock);
