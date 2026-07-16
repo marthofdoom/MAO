@@ -43,20 +43,25 @@ obsoletes** if any rank has:
 Everything else survives and goes through the keep/drop curation pass
 (Synthesis = keep-all, same as MEO).
 
-## Open design questions (decide at the patch slice)
+## Design decisions (marth, 2026-07-16)
 
-- **Green Thumb keep/remove**: keeping it means a vanilla node survives in the
-  MAO tree; removing it means MAO should ship its own harvest-yield flag perk
-  (Field Extraction already exists in the §5.2 set as +10% gather).
+Rule: **a vanilla survivor and its §5.2 re-enlistment BOTH get kept when their
+effects aren't duplicative.** The §5.2 "re-enlistment" table dissolves under
+the new vehicle: vanilla survivors stay vanilla (untouched names/effects), and
+the §5.2 names ship as MAO's OWN flag perks.
+
+- **Snakeblood — KEEP, plus Extended Synthesis as a MAO flag perk.** Vanilla =
+  50% poison resist (defensive passive); Extended Synthesis = +30s on drinkable
+  flask buff durations. Not duplicative.
+- **Green Thumb — KEEP, plus Pouch Expansion as a MAO flag perk.** Vanilla =
+  2× harvested ingredients (≈2× base essence under conversion); Pouch
+  Expansion = 15% chance of a bonus Tier II Catalyst essence per harvest.
+  Different mechanics/tiers; they stack on harvest income — that's a tuning
+  knob, not duplication.
 - **1.0 ingredient-mode interaction**: when the (future) full ingredient-mode
   toggle turns conversion off, Herbalist-style eat-ingredient perks would work
   again — but the tree patch is static. Accepted: the patch targets the flask
   playstyle; documented limitation.
-- **Snakeblood**: survives as a passive under this classifier. MAO's §5.2
-  design re-enlists it as "Extended Synthesis" — if that re-enlistment stays,
-  MAO's own flag perk replaces it and vanilla Snakeblood gets removed by an
-  explicit exception, not by the behavior classifier. Revisit with the flag-perk
-  set.
 
 Raw dumps: regenerate anytime with
 `dotnet run -- tree-effects <root> <plugins|profile>` (defaults to AVAlchemy).
