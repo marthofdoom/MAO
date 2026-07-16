@@ -18,10 +18,55 @@ Forms are only ever ADDED here, never renumbered or deleted.
 
 Usage: python3 MAO_GenerateESP.py [out_dir]   (default: out/)
 """
+import json
 import os
+import re
 import struct
 import sys
 from io import BytesIO
+
+
+def read_mao_version(default="0.0.0"):
+    """The single source of truth for the version is kPluginVersion in
+    native/plugin.cpp; read it so the build-stamped MCM readout can never drift
+    from the DLL/log/console string. Falls back to a placeholder if unreadable.
+    (Ported from MEO's read_meo_version — the live-Papyrus version display
+    renders blank; the stamp is the proven shape.)"""
+    try:
+        src = open(os.path.join(os.path.dirname(__file__), 'native', 'plugin.cpp')).read()
+        m = re.search(r'kPluginVersion\s*=\s*"([^"]+)"', src)
+        if m:
+            return m.group(1)
+    except OSError:
+        pass
+    return default
+
+
+def stamp_mcm_version():
+    """Stamp the DLL version into the committed MCM config's Debug page as a
+    static text control (MRO/MEO-style build stamp). Idempotent: replaces any
+    existing 'Version' control. Unlike MEO, MAO's config.json is hand-authored,
+    so this edits it in place rather than generating it."""
+    path = os.path.join(os.path.dirname(__file__), 'data', 'MCM', 'Config', 'MAO', 'config.json')
+    with open(path, encoding='utf-8') as f:
+        config = json.load(f)
+    ver = read_mao_version()
+    control = {
+        "text": "Version",
+        "type": "text",
+        "help": "MAO version, stamped from the build. Matches the MAO.dll built from the same commit.",
+        "valueOptions": {"value": f"v{ver}"},
+    }
+    for page in config.get("pages", []):
+        if page.get("pageDisplayName") == "Debug":
+            content = page.setdefault("content", [])
+            content[:] = [c for c in content if c.get("text") != "Version" or c.get("type") != "text"]
+            content.insert(0, control)
+            break
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent='\t', ensure_ascii=False)
+        f.write('\n')
+    print(f"Stamped MCM version v{ver} -> {path}")
 
 # ── FormIDs (single master Skyrim.esm -> own file index 0x01) ──
 OWN = 0x01000000
@@ -205,6 +250,7 @@ def main():
     path = os.path.join(out_dir, "MAO.esp")
     with open(path, 'wb') as f:
         f.write(data)
+    stamp_mcm_version()
     print(f"Written: {path} ({len(data):,} bytes)")
     print(f"  MGEF x1 (inert)   ALCH x{NUM_FLASKS} (flasks 0x{FID_FLASK_BASE & 0xFFFFFF:03X}.."
           f"0x{(FID_FLASK_BASE + NUM_FLASKS - 1) & 0xFFFFFF:03X})   SPEL x1 (dormant)"

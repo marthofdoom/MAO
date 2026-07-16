@@ -70,7 +70,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.18.1 (coatings unlocked for test + field diag)";
+constexpr auto kPluginVersion = "0.18.2 (co-save hardening + MCM version stamp)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -1999,6 +1999,11 @@ public:
     }
 };
 
+// Set when LoadCallback skips a record from a NEWER MAO. SKSE does NOT
+// round-trip unread co-save records, so the next save silently destroys them —
+// warn the player on-screen once per load (kPostLoadGame consumes the flag).
+std::atomic<bool> g_newerCoSave{ false };
+
 // ── SKSE co-save: the 'POCH' record (schema v1). Three tier counters.
 void SaveCallback(SKSE::SerializationInterface* a_intfc) {
     if (!a_intfc->OpenRecord(kRecPouch, kSerVersion)) {
@@ -2044,33 +2049,62 @@ void LoadCallback(SKSE::SerializationInterface* a_intfc) {
         g_discovered.clear();
     }
     std::uint32_t type = 0, version = 0, length = 0;
+    // Short-read helper: every count-driven read must be verified — a truncated
+    // record must bail, never fabricate state (MEO INVARIANTS: bound counts,
+    // bail on short read, clamp at ingestion).
+    auto readOk = [&](auto& a_val) { return a_intfc->ReadRecordData(a_val) == sizeof(a_val); };
     while (a_intfc->GetNextRecordInfo(type, version, length)) {
         if (version > kSerVersion) {
-            spdlog::error("[load] a co-save record (v{}) is from a NEWER MAO — skipped", version);
+            spdlog::error("[load] a co-save record (v{}) is from a NEWER MAO — skipped; "
+                          "SAVING NOW WILL DESTROY IT",
+                          version);
+            g_newerCoSave.store(true);
             continue;
         }
         if (type == kRecPouch) {
-            a_intfc->ReadRecordData(g_pouch.base);
-            a_intfc->ReadRecordData(g_pouch.catalyst);
-            a_intfc->ReadRecordData(g_pouch.apex);
+            if (!readOk(g_pouch.base) || !readOk(g_pouch.catalyst) || !readOk(g_pouch.apex)) {
+                spdlog::error("[load] POCH: short read — pouch reset");
+                g_pouch = Pouch{};
+            }
         } else if (type == kRecBlueprints) {
             std::uint32_t n = 0;
-            a_intfc->ReadRecordData(n);
+            if (!readOk(n)) {
+                spdlog::error("[load] BLPT: short read on count — record dropped");
+                continue;
+            }
+            // Bound before looping: a corrupt count would otherwise drive up to
+            // 2^32 iterations. Real saves hold hundreds of variants at most.
+            constexpr std::uint32_t kMaxBlueprints = 65536;
+            if (n > kMaxBlueprints) {
+                spdlog::error("[load] BLPT: count {} is implausible — clamped to {} "
+                              "(corrupt record?)",
+                              n, kMaxBlueprints);
+                n = kMaxBlueprints;
+            }
             std::scoped_lock lk(g_discoveredLock);
             for (std::uint32_t i = 0; i < n; ++i) {
                 if (version >= 3) {  // v3: a discovered potion form
                     RE::FormID pid = 0, res = 0;
-                    a_intfc->ReadRecordData(pid);
+                    if (!readOk(pid)) {
+                        spdlog::error("[load] BLPT: short read at entry {}/{} — rest dropped", i, n);
+                        break;
+                    }
                     if (pid && a_intfc->ResolveFormID(pid, res) && res) {
                         g_discovered.insert(res);
                     }
                 } else {  // v1/v2 were effect-keyed — migrate to a variant
                     RE::FormID    mgef = 0, rep = 0, mRes = 0, rRes = 0;
                     std::uint32_t repValue = 0;
-                    a_intfc->ReadRecordData(mgef);
+                    if (!readOk(mgef)) {
+                        spdlog::error("[load] BLPT: short read at entry {}/{} — rest dropped", i, n);
+                        break;
+                    }
                     if (version >= 2) {
-                        a_intfc->ReadRecordData(rep);
-                        a_intfc->ReadRecordData(repValue);
+                        if (!readOk(rep) || !readOk(repValue)) {
+                            spdlog::error("[load] BLPT: short read at entry {}/{} — rest dropped",
+                                          i, n);
+                            break;
+                        }
                     }
                     // v2 kept the found rep potion; v1 only the effect — fall
                     // back to the load-order rep so the known effect stays usable.
@@ -2089,8 +2123,12 @@ void LoadCallback(SKSE::SerializationInterface* a_intfc) {
             }
         } else if (type == kRecFlasks) {
             std::scoped_lock lk(g_flasksLock);
-            a_intfc->ReadRecordData(g_flaskCount);
-            a_intfc->ReadRecordData(g_chargesPerFlask);
+            if (!readOk(g_flaskCount) || !readOk(g_chargesPerFlask)) {
+                spdlog::error("[load] FLSK: short read on header — record dropped");
+                g_flaskCount      = 2;  // revert baseline (RevertCallback values)
+                g_chargesPerFlask = 2;
+                continue;
+            }
             // Clamp against a corrupt/edited record — g_flaskCount bounds hot
             // loops (FindFlaskSlot on every container event + drink); an OOB
             // value would read/write past g_flasks[kMaxFlaskSlots].
@@ -2098,11 +2136,18 @@ void LoadCallback(SKSE::SerializationInterface* a_intfc) {
             g_chargesPerFlask = std::clamp(g_chargesPerFlask, 1u, 99u);
             for (auto& f : g_flasks) {
                 RE::FormID bpId = 0, repId = 0, bpRes = 0, repRes = 0;
-                a_intfc->ReadRecordData(bpId);
-                if (version >= 2) {  // v2: rep potion form per slot
-                    a_intfc->ReadRecordData(repId);
+                bool       ok   = readOk(bpId);
+                if (ok && version >= 2) {  // v2: rep potion form per slot
+                    ok = readOk(repId);
                 }
-                a_intfc->ReadRecordData(f.charges);
+                if (ok) {
+                    ok = readOk(f.charges);
+                }
+                if (!ok) {
+                    spdlog::error("[load] FLSK: short read mid-slots — rest left empty");
+                    f = Flask{};
+                    break;
+                }
                 f.blueprint = (bpId && a_intfc->ResolveFormID(bpId, bpRes)) ? bpRes : 0;
                 f.repPotion = (repId && a_intfc->ResolveFormID(repId, repRes)) ? repRes : 0;
             }
@@ -2133,6 +2178,7 @@ void LoadCallback(SKSE::SerializationInterface* a_intfc) {
 }
 
 void RevertCallback(SKSE::SerializationInterface*) {
+    g_newerCoSave.store(false);  // re-armed per load; LoadCallback may set it again
     g_pouch = Pouch{};
     {
         std::scoped_lock lk(g_discoveredLock);
@@ -2216,6 +2262,15 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
             GrantFieldKitPower();
             RecomputeCapacity("load");  // authoritative capacity BEFORE we sync items,
             SyncFlaskItems();           // so a shrunk kit doesn't grant now-dead slots
+            // Downgrade warning: skipped newer-MAO records are NOT round-tripped
+            // by SKSE — saving now destroys them. Say so where the player can
+            // see it, not just the log (MEO release lesson).
+            if (g_newerCoSave.exchange(false)) {
+                RE::DebugMessageBox(
+                    "MAO: this save contains data from a NEWER version of MAO, which "
+                    "this older build cannot read. That data was NOT loaded — if you "
+                    "save now, it will be PERMANENTLY LOST. Update MAO before saving.");
+            }
         });
         break;
     default:

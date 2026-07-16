@@ -51,11 +51,17 @@ ssh -o BatchMode=yes "$HOST" "mkdir -p '$PLUGINS/MAO/fonts'"
 scp -q data/SKSE/Plugins/MAO/fonts/body.ttf data/SKSE/Plugins/MAO/fonts/head.ttf \
        data/SKSE/Plugins/MAO/fonts/sans.ttf "$HOST:$PLUGINS/MAO/fonts/"
 
+# Regenerate the ESP + stamp the MCM version BEFORE anything below ships:
+# the generator also writes the build-stamped Version control into
+# data/MCM/Config/MAO/config.json, so the config scp must come after it.
+python3 MAO_GenerateESP.py "$STAGE/esp" >/dev/null
+[[ -f "$STAGE/esp/MAO.esp" ]] || { echo "ERROR: MAO_GenerateESP.py produced no MAO.esp" >&2; exit 1; }
+
 # MCM Helper page definition (read-only; MCM Helper writes user choices to
 # Data/MCM/Settings/MAO.ini, which the DLL reads last). Always refresh.
 ssh -o BatchMode=yes "$HOST" "mkdir -p '$GAME/Data/MCM/Config/MAO'"
 scp -q data/MCM/Config/MAO/config.json "$HOST:$GAME/Data/MCM/Config/MAO/config.json"
-echo "MCM config deployed"
+echo "MCM config deployed (version-stamped)"
 
 # MCM registration script: SkyUI/MCM Helper only surface a page for a mod whose
 # start-game quest carries an MCM_ConfigBase-derived script. MAO.esp ships that
@@ -101,9 +107,7 @@ fi
 # ── ESP (P1a+): regenerate locally (pure Python, no CI), deploy flat into
 # Data/, and enable it in the load order. The ESP is deterministic and never
 # hand-edited, so it is always freshly generated here.
-python3 MAO_GenerateESP.py "$STAGE/esp" >/dev/null
-[[ -f "$STAGE/esp/MAO.esp" ]] || { echo "ERROR: MAO_GenerateESP.py produced no MAO.esp" >&2; exit 1; }
-scp -q "$STAGE/esp/MAO.esp" "$HOST:$GAME/Data/MAO.esp"
+scp -q "$STAGE/esp/MAO.esp" "$HOST:$GAME/Data/MAO.esp"  # generated above, pre-config
 echo "ESP: $(stat -c '%s bytes' "$STAGE/esp/MAO.esp")"
 
 # Enable *MAO.esp in Plugins.txt if not already listed (flat install = manual
