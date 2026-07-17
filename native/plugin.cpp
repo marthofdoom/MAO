@@ -72,7 +72,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.22.2 (flask item card shows real effect)";
+constexpr auto kPluginVersion = "0.22.2 (flask item card shows real effect; coatings stay benign)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -94,6 +94,13 @@ RE::SpellItem*        g_fieldKitSpell  = nullptr;
 // the ESP placeholder effect — correct-tooltip/auto-mod effect mutation is a
 // later, clone-based refinement.)
 std::array<RE::AlchemyItem*, 6> g_flaskForms{};
+// The flask's BAKED placeholder effect (Restore Health 5/0 from the ESP),
+// snapshotted at kDataLoaded before any variant mirror. Restored when a slot is
+// reset OR configured with a COATING — a hostile mirrored effect would flip the
+// engine's IsPoison() true and reroute the flask off the DrinkPotion hook,
+// destroying the permanent item (Fable v0.22.2 review).
+struct FlaskPlaceholder { RE::EffectSetting* eff = nullptr; RE::EffectItem item{}; bool ok = false; };
+std::array<FlaskPlaceholder, 6> g_flaskPlaceholder{};
 
 // ── Essence pouch: the abstracted store. Three tier counters, nothing more.
 // This is the entire P0 persisted state; it lives here and serializes to the
@@ -367,6 +374,7 @@ std::mutex                            g_effectPotionLock;
 int  FindFlaskSlot(RE::FormID a_form);
 bool IsFlaskForm(RE::FormID a_form);
 void RenameFlask(std::size_t a_slot, RE::AlchemyItem* a_variant);
+void RestoreFlaskPlaceholder(std::size_t a_slot);
 
 // ── Field Kit viewer state (M2). open/close is driven by the input hook and
 // read by the present hook — both run off the game's render/input threads, so
@@ -1231,11 +1239,14 @@ void SyncFlaskItems() {
             player->AddObjectToContainer(item, nullptr, 1, nullptr);
         }
     }
-    // Reset the name of any flask form NOT configured this save (global form
-    // state could carry a stale "Flask: X" from another save this session).
+    // Reset the name AND displayed effect of any flask form NOT configured this
+    // save (global form state could carry a stale "Flask: X" name + a mirrored
+    // variant effect from another save this session — Fable v0.22.2: a stale
+    // COATING effect would even leave an unconfigured flask reading as a poison).
     for (std::size_t i = 0; i < g_flaskForms.size(); ++i) {
         if (!synced[i] && g_flaskForms[i]) {
             g_flaskForms[i]->fullName = RE::BSFixedString("Field Flask");
+            RestoreFlaskPlaceholder(i);
         }
     }
 }
@@ -1837,6 +1848,20 @@ int FindFlaskSlot(RE::FormID a_form) {
 
 // Rename a slot's flask item to its configured variant so the player can tell
 // flasks apart in the inventory / on Wheeler. Runs on the main (task) thread.
+// Restore a flask form's displayed effect to its baked benign placeholder
+// (Restore Health 5/0). Keeps the flask NON-hostile so the engine never
+// classifies it as a poison (which would reroute it off the DrinkPotion hook).
+void RestoreFlaskPlaceholder(std::size_t a_slot) {
+    if (a_slot >= g_flaskForms.size() || !g_flaskForms[a_slot] || !g_flaskPlaceholder[a_slot].ok) {
+        return;
+    }
+    auto* flask = g_flaskForms[a_slot];
+    if (!flask->effects.empty() && flask->effects[0]) {
+        flask->effects[0]->baseEffect = g_flaskPlaceholder[a_slot].eff;
+        flask->effects[0]->effectItem = g_flaskPlaceholder[a_slot].item;
+    }
+}
+
 void RenameFlask(std::size_t a_slot, RE::AlchemyItem* a_variant) {
     if (a_slot >= g_flaskForms.size() || !g_flaskForms[a_slot] || !a_variant) {
         return;
@@ -1848,14 +1873,21 @@ void RenameFlask(std::size_t a_slot, RE::AlchemyItem* a_variant) {
 
     // Mirror the variant's PRIMARY effect onto the flask's displayed effect so
     // the item card reads the real magnitude/duration instead of the baked
-    // placeholder (marth soak: "effects read as zero seconds"). Cosmetic only —
-    // the drink hook casts the VARIANT, so the flask's own effect is never
-    // applied; this is runtime-only and re-derived each load via SyncFlaskItems.
-    // In-place field writes (no allocation / no BSTArray lifetime concerns);
-    // multi-effect variants show their primary, matching MAO's primary-effect-
-    // is-the-blueprint model.
-    if (!flask->effects.empty() && flask->effects[0] && !a_variant->effects.empty() &&
-        a_variant->effects[0] && a_variant->effects[0]->baseEffect) {
+    // placeholder (marth soak: "effects read as zero seconds"). The drink hook
+    // casts the VARIANT, so the flask's own effect is never applied on the drink
+    // path — BUT a HOSTILE mirrored effect makes the engine classify the flask
+    // as a poison (IsPoison keys off the primary MGEF's Hostile+Detrimental
+    // flags), which reroutes activation to the vanilla apply-poison flow,
+    // bypassing the hook and consuming the permanent item (Fable v0.22.2). So
+    // coatings KEEP the benign placeholder; only beneficial variants mirror.
+    const bool hostile = !a_variant->effects.empty() && a_variant->effects[0] &&
+                         a_variant->effects[0]->baseEffect &&
+                         (a_variant->effects[0]->baseEffect->IsHostile() ||
+                          a_variant->effects[0]->baseEffect->IsDetrimental());
+    if (hostile) {
+        RestoreFlaskPlaceholder(a_slot);  // coating: never let the flask read as a poison
+    } else if (!flask->effects.empty() && flask->effects[0] && !a_variant->effects.empty() &&
+               a_variant->effects[0] && a_variant->effects[0]->baseEffect) {
         flask->effects[0]->baseEffect = a_variant->effects[0]->baseEffect;
         flask->effects[0]->effectItem = a_variant->effects[0]->effectItem;
     }
@@ -2935,6 +2967,11 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
                 g_flaskForms[i] =
                     dh->LookupForm<RE::AlchemyItem>(kFlaskBaseID + i, kPluginName);
                 nf += g_flaskForms[i] ? 1 : 0;
+                // Snapshot the baked placeholder effect for later restore.
+                if (auto* f = g_flaskForms[i]; f && !f->effects.empty() && f->effects[0]) {
+                    g_flaskPlaceholder[i] = { f->effects[0]->baseEffect, f->effects[0]->effectItem,
+                                              true };
+                }
             }
             spdlog::info("[flask] {}/{} flask forms resolved", nf, g_flaskForms.size());
             // Resolve MAO's own flag perks (MEO vehicle: vanilla perks are no
