@@ -144,9 +144,9 @@
 				{
 					"text": "Version",
 					"type": "text",
-					"help": "MAO version, stamped from the build (0.22.1 (rank-chain HasPerk prerequisites)). Matches the MAO.dll built from the same commit.",
+					"help": "MAO version, stamped from the build (0.22.2 (flask item card shows real effect)). Matches the MAO.dll built from the same commit.",
 					"valueOptions": {
-						"value": "v0.22.1"
+						"value": "v0.22.2"
 					}
 				},
 				{

@@ -72,7 +72,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.22.1 (rank-chain HasPerk prerequisites)";
+constexpr auto kPluginVersion = "0.22.2 (flask item card shows real effect)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -1841,9 +1841,24 @@ void RenameFlask(std::size_t a_slot, RE::AlchemyItem* a_variant) {
     if (a_slot >= g_flaskForms.size() || !g_flaskForms[a_slot] || !a_variant) {
         return;
     }
-    const char* vn = a_variant->GetName();
-    g_flaskForms[a_slot]->fullName =
+    auto*       flask = g_flaskForms[a_slot];
+    const char* vn    = a_variant->GetName();
+    flask->fullName =
         RE::BSFixedString(std::format("Flask: {}", (vn && *vn) ? vn : "Alchemy").c_str());
+
+    // Mirror the variant's PRIMARY effect onto the flask's displayed effect so
+    // the item card reads the real magnitude/duration instead of the baked
+    // placeholder (marth soak: "effects read as zero seconds"). Cosmetic only —
+    // the drink hook casts the VARIANT, so the flask's own effect is never
+    // applied; this is runtime-only and re-derived each load via SyncFlaskItems.
+    // In-place field writes (no allocation / no BSTArray lifetime concerns);
+    // multi-effect variants show their primary, matching MAO's primary-effect-
+    // is-the-blueprint model.
+    if (!flask->effects.empty() && flask->effects[0] && !a_variant->effects.empty() &&
+        a_variant->effects[0] && a_variant->effects[0]->baseEffect) {
+        flask->effects[0]->baseEffect = a_variant->effects[0]->baseEffect;
+        flask->effects[0]->effectItem = a_variant->effects[0]->effectItem;
+    }
 }
 
 // ── The gathering sink: the SOLE essence-credit point. Anything an ingredient
