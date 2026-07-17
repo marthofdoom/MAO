@@ -224,7 +224,7 @@ the DLL today; **P2** = designed, effect pending.
 | *Kit Calibration III* (0x81A) | Alchemist 3 | 40 | — | Tier I/II essences 15% more efficient in automated refills | live |
 | *Field Deployment* (0x81B) | Alchemist 4 | 60 | **+1 Flask, +2 Charges** | mid-game burst to 4/5 | live |
 | *Kit Calibration V* (0x81C) | Alchemist 5 | 80 | — | Tier I/II maintenance halved during resting checkouts | live |
-| *Fluid Motion* (0x81D) | Physician | 20 | — | drink-animation movement penalty halved | P2 |
+| *Fluid Motion* (0x81D) | Physician | 20 | — | drink-animation movement penalty halved; **checks for a drink-animation mod and disables itself if none is found** (no auto-grant, no tree node) | detect live; halving pends a target mod |
 | *Vanguard Coating* (0x81E) | Poisoner | 30 | — | unlocks weapon coatings (45s); without it offensive blueprints cannot be prepared | live |
 | *Apex Stabilization* (0x81F) | Benefactor | 30 | — | Tier III Apex costs −35% | live |
 | *Field Extraction* (0x820) | Experimenter | 50 | — | +10% essence from gathering/looting | live |

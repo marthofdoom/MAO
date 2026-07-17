@@ -284,12 +284,12 @@
 					}
 				},
 				{
-					"text": "Deferred to P2 (no effect yet)",
+					"text": "Self-disabling",
 					"type": "header"
 				},
 				{
 					"id": "bPerkPhysician:Debug",
-					"text": "Fluid Motion (P2)",
+					"text": "Fluid Motion (needs drink-anim mod)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",

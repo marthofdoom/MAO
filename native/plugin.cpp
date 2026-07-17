@@ -50,6 +50,7 @@
 
 #include <algorithm>
 #include <array>
+#include <filesystem>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -206,6 +207,21 @@ std::atomic<bool> g_hasCal5{ false };       // Kit Calibration V -> T1/T2 sleep-
 std::atomic<bool> g_hasPouchExp{ false };   // Pouch Expansion -> 15% bonus Catalyst per harvest
 std::atomic<bool> g_hasExtSynth{ false };   // Extended Synthesis -> +30s drinkable buff durations
 
+// Fluid Motion only means something when a drink-animation mod imposes a
+// movement penalty — MAO's own drinks are instant (§Why Native). The perk
+// CHECKS FOR ANIMATION MODS AND DISABLES ITSELF IF NONE IS FOUND (marth
+// 2026-07-16): no auto-grant, no cached flag, and the tree patcher skips its
+// node. Known mods, by plugin and by SKSE dll (extend as they surface):
+constexpr std::array<const char*, 4> kDrinkAnimPlugins{
+    "Animated Potions.esp", "Animated Poisons.esp",
+    "zxlice ultimate potion animation.esp", "ZUPA.esp"
+};
+constexpr std::array<const char*, 2> kDrinkAnimDlls{
+    "Data/SKSE/Plugins/AnimatedPotions.dll", "Data/SKSE/Plugins/AnimatedPoisons.dll"
+};
+std::atomic<bool> g_drinkAnimMod{ false };  // set at kDataLoaded
+std::atomic<bool> g_hasFluidMotion{ false };  // perk held AND an anim mod present
+
 // DESIGN: coatings unlock with the Vanguard Coating perk. The v0.18.1 testing
 // relaxation is over (marth 2026-07-16: "coatings are active without the perk
 // — wrong"): the gate is LIVE. Without the perk, detrimental blueprints can be
@@ -238,6 +254,9 @@ void RecomputeCapacity(const char* a_why) {
     if (!g_treeMode.load() && g_capacityPerksResolved && avo) {
         const float skill = avo->GetBaseActorValue(RE::ActorValue::kAlchemy);
         for (int i = 0; i < PK_COUNT; ++i) {
+            if (i == PK_PHYSICIAN && !g_drinkAnimMod.load()) {
+                continue;  // Fluid Motion self-disables without a drink-anim mod
+            }
             if (g_perkForm[i] && skill >= kPerkDefs[i].req && !pc->HasPerk(g_perkForm[i])) {
                 pc->AddPerk(g_perkForm[i], 1);
                 spdlog::info("[perks] auto-grant '{}' (Alchemy {} >= {})", kPerkDefs[i].label,
@@ -262,6 +281,8 @@ void RecomputeCapacity(const char* a_why) {
     g_hasCal5.store((eff & (1u << PK_ALCH5)) != 0);
     g_hasPouchExp.store((eff & (1u << PK_GREENTHUMB)) != 0);
     g_hasExtSynth.store((eff & (1u << PK_SNAKEBLOOD)) != 0);
+    // Fluid Motion self-disables without a drink-animation mod to modify.
+    g_hasFluidMotion.store(((eff & (1u << PK_PHYSICIAN)) != 0) && g_drinkAnimMod.load());
     // If MAO.esp's Kit Calibration chain didn't resolve (stale/missing ESP),
     // hold the co-saved counts rather than force the baseline and clamp away
     // charges the player legitimately earned. This applies EVEN in debug: the
@@ -1245,6 +1266,16 @@ void RefillFlasks(const char* a_trigger, std::uint32_t a_maxPerFlask = 0) {
             if (!valch) {
                 continue;  // unresolved variant — inert flask, nothing to refill
             }
+            // A coating flask the player can't use (gate armed, no Vanguard —
+            // e.g. configured during the v0.18.1-0.21.1 relaxation) must not
+            // drain essence/ingredients into charges the drink hook refuses
+            // (Fable v0.22.0 finding 2).
+            if (kCoatingsRequireVanguard && !g_hasVanguard.load()) {
+                if (auto* bpEff = RE::TESForm::LookupByID<RE::EffectSetting>(f.blueprint);
+                    bpEff && (bpEff->IsHostile() || bpEff->IsDetrimental())) {
+                    continue;
+                }
+            }
             // Kit Calibration III: T1/T2 essences 15% more efficient in automated
             // refills. Kit Calibration V: T1/T2 maintenance halved during resting
             // checkouts (sleep). Multiplicative when both; Apex untouched (the
@@ -1627,7 +1658,11 @@ struct DrinkPotionHook {
                     std::vector<std::pair<RE::Effect*, std::uint32_t>> bumped;
                     if (g_hasExtSynth.load()) {
                         for (auto* e : vAlch->effects) {
-                            if (e && e->effectItem.duration > 0) {
+                            // BUFFS only: a hostile rider (Requiem's Damage-Regen
+                            // drawbacks) must not run longer too (Fable v0.22.0
+                            // finding 1 — mirrors VariantCost's polarity rule).
+                            if (e && e->effectItem.duration > 0 && e->baseEffect &&
+                                !e->baseEffect->IsHostile() && !e->baseEffect->IsDetrimental()) {
                                 bumped.emplace_back(
                                     e, static_cast<std::uint32_t>(e->effectItem.duration));
                                 e->effectItem.duration += 30;
@@ -1832,7 +1867,36 @@ public:
                 a_event->itemCount > 0) {
                 if (auto* f = RE::TESForm::LookupByID(a_event->baseObj)) {
                     if (f->Is(RE::FormType::Ingredient)) {
-                        SKSE::GetTaskInterface()->AddTask([]() { RefreshHeldIngredients(); });
+                        // Pouch Expansion, ingredient-mode analog (Fable v0.22.0
+                        // finding 3): items are this mode's currency, so a flora
+                        // harvest sifts out +1 EXTRA of the harvested ingredient
+                        // (15%). Safe from echo-procs: the tag is consumed on
+                        // match, so the granted copy's own event finds no tag.
+                        RE::FormID expectTag = a_event->baseObj;
+                        const bool fromFlora =
+                            NowMs() - g_lastHarvestMs.load() < 2000 &&
+                            g_lastHarvestForm.compare_exchange_strong(expectTag, 0);
+                        if (fromFlora && g_hasPouchExp.load() && RollPercent(15)) {
+                            auto* ingr2 = f->As<RE::IngredientItem>();
+                            SKSE::GetTaskInterface()->AddTask([ingr2]() {
+                                auto* player = RE::PlayerCharacter::GetSingleton();
+                                if (!player || !ingr2) {
+                                    return;
+                                }
+                                player->AddObjectToContainer(ingr2, nullptr, 1, nullptr);
+                                const char* n = ingr2->GetName();
+                                spdlog::info("[gather] Pouch Expansion (ingredient mode): +1 '{}'",
+                                             n ? n : "?");
+                                if (g_notify.load()) {
+                                    RE::DebugNotification(
+                                        std::format("+1 {} (Pouch Expansion)", n ? n : "ingredient")
+                                            .c_str());
+                                }
+                                RefreshHeldIngredients();
+                            });
+                        } else {
+                            SKSE::GetTaskInterface()->AddTask([]() { RefreshHeldIngredients(); });
+                        }
                     } else if (auto* alch = f->As<RE::AlchemyItem>();
                                alch && !alch->IsFood() && !IsFlaskForm(a_event->baseObj) &&
                                !alch->effects.empty() && alch->effects[0] &&
@@ -1894,10 +1958,13 @@ public:
                 total = std::max(1u, static_cast<std::uint32_t>(std::lround(total * 1.10)));
             }
             // Pouch Expansion procs on FLORA harvests only — the harvest tag
-            // must match this form and be fresh (the two events land within
-            // the same frame; 2s is generous).
-            const bool fromFlora = g_lastHarvestForm.load() == a_event->baseObj &&
-                                   NowMs() - g_lastHarvestMs.load() < 2000;
+            // must match this form, be fresh (same-frame in practice; 2s is
+            // generous), and is CONSUMED on match so one harvest pays out once
+            // (Fable v0.22.0 finding 4: an unconsumed tag let a same-form loot
+            // or vendor stack within 2s roll too).
+            RE::FormID expectTag  = a_event->baseObj;
+            const bool fromFlora = NowMs() - g_lastHarvestMs.load() < 2000 &&
+                                   g_lastHarvestForm.compare_exchange_strong(expectTag, 0);
             const std::string nameStr(name);
             SKSE::GetTaskInterface()->AddTask([ingr, count, tier, total, value, nameStr,
                                                fromFlora]() {
@@ -2870,6 +2937,27 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
             // AVAlchemy constellation (player buys them with perk points).
             // Without it, RecomputeCapacity auto-grants them by skill threshold.
             g_treeMode.store(dh->LookupModByName("MAO - Patch.esp") != nullptr);
+            // Fluid Motion: detect a drink-animation mod (plugin or SKSE dll);
+            // absent -> the perk disables itself (marth 2026-07-16).
+            const char* animHit = nullptr;
+            for (const char* pl : kDrinkAnimPlugins) {
+                if (dh->LookupModByName(pl)) {
+                    animHit = pl;
+                    break;
+                }
+            }
+            if (!animHit) {
+                for (const char* dl : kDrinkAnimDlls) {
+                    if (std::filesystem::exists(dl)) {
+                        animHit = dl;
+                        break;
+                    }
+                }
+            }
+            g_drinkAnimMod.store(animHit != nullptr);
+            spdlog::info("[perks] Fluid Motion: {}",
+                         animHit ? std::format("drink-animation mod detected ({})", animHit)
+                                 : "no drink-animation mod found — perk disables itself");
             spdlog::info("[perks] resolved {}/{} MAO flag perks ({}/5 calibration ranks); "
                          "mode {}; capacity {} (0=missing -> holds co-saved)",
                          np, static_cast<int>(PK_COUNT), na,

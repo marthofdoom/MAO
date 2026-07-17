@@ -260,12 +260,31 @@ static partial class Commands
             return n;
         }
 
+        // Fluid Motion only matters when a drink-animation mod imposes a
+        // movement penalty (MAO drinks are instant): the perk checks for
+        // animation mods and disables itself if none is found (marth
+        // 2026-07-16) — here that means its NODE is not placed at all.
+        // Keep this list in sync with the DLL's kDrinkAnimPlugins.
+        string[] drinkAnimPlugins = ["Animated Potions.esp", "Animated Poisons.esp",
+                                     "zxlice ultimate potion animation.esp", "ZUPA.esp"];
+        var hasDrinkAnim = lo.ListedOrder.Any(l =>
+            drinkAnimPlugins.Any(p => l.ModKey.FileName.String.Equals(
+                p, StringComparison.OrdinalIgnoreCase)));
+        Console.WriteLine(hasDrinkAnim
+            ? "Fluid Motion: drink-animation mod present — node placed"
+            : "Fluid Motion: no drink-animation mod — node omitted (perk self-disables)");
+
         uint iCal = nextIdx, iFlu = nextIdx + 1, iVan = nextIdx + 2, iCor = nextIdx + 3,
              iApx = nextIdx + 4, iFld = nextIdx + 5, iPch = nextIdx + 6,
              iSyn = nextIdx + 7, iCap = nextIdx + 8;
-        over.PerkTree.Add(Node(iCal, calHead, xBase, 0,
-                               iFlu, iVan, iApx, iFld, iSyn, iCap));  // hub fans to the choices
-        over.PerkTree.Add(Node(iFlu, fluid,     xBase - 3, 1));           // choice
+        var hubFan = hasDrinkAnim
+            ? new[] { iFlu, iVan, iApx, iFld, iSyn, iCap }
+            : new[] { iVan, iApx, iFld, iSyn, iCap };
+        over.PerkTree.Add(Node(iCal, calHead, xBase, 0, hubFan));  // hub fans to the choices
+        if (hasDrinkAnim)
+        {
+            over.PerkTree.Add(Node(iFlu, fluid, xBase - 3, 1));           // choice
+        }
         over.PerkTree.Add(Node(iVan, vanguard,  xBase - 2, 1, iCor));     // coating line:
         over.PerkTree.Add(Node(iCor, corrosive, xBase - 2, 2));           // Vanguard -> Corrosive
         over.PerkTree.Add(Node(iApx, apexStab,  xBase - 1, 1));           // choice
@@ -276,7 +295,7 @@ static partial class Commands
         root.ConnectionLineToIndices.Add(iCal);
 
         Console.WriteLine($"tree: {removedIdx.Count} craft node(s) replaced, " +
-                          $"{over.PerkTree.Count - 10} kept, MAO at x={xBase}, " +
+                          $"{keptPerkHeads.Count} kept, {(hasDrinkAnim ? 9 : 8)} MAO node(s) at x={xBase}, " +
                           $"{orphans.Count} kept orphan(s) reparented to root");
         return 0;
     }
