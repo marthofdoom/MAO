@@ -99,7 +99,14 @@ std::array<RE::AlchemyItem*, 6> g_flaskForms{};
 // reset OR configured with a COATING — a hostile mirrored effect would flip the
 // engine's IsPoison() true and reroute the flask off the DrinkPotion hook,
 // destroying the permanent item (Fable v0.22.2 review).
-struct FlaskPlaceholder { RE::EffectSetting* eff = nullptr; RE::EffectItem item{}; bool ok = false; };
+// Primitive fields (not RE::EffectItem by value — it's an incomplete type this
+// early in the TU). magnitude/area/duration are what the item card reads.
+struct FlaskPlaceholder {
+    RE::EffectSetting* eff = nullptr;
+    float              mag = 0.0f;
+    std::uint32_t      area = 0, dur = 0;
+    bool               ok = false;
+};
 std::array<FlaskPlaceholder, 6> g_flaskPlaceholder{};
 
 // ── Essence pouch: the abstracted store. Three tier counters, nothing more.
@@ -1857,8 +1864,11 @@ void RestoreFlaskPlaceholder(std::size_t a_slot) {
     }
     auto* flask = g_flaskForms[a_slot];
     if (!flask->effects.empty() && flask->effects[0]) {
+        auto& ei         = flask->effects[0]->effectItem;
         flask->effects[0]->baseEffect = g_flaskPlaceholder[a_slot].eff;
-        flask->effects[0]->effectItem = g_flaskPlaceholder[a_slot].item;
+        ei.magnitude     = g_flaskPlaceholder[a_slot].mag;
+        ei.area          = g_flaskPlaceholder[a_slot].area;
+        ei.duration      = g_flaskPlaceholder[a_slot].dur;
     }
 }
 
@@ -2969,8 +2979,9 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
                 nf += g_flaskForms[i] ? 1 : 0;
                 // Snapshot the baked placeholder effect for later restore.
                 if (auto* f = g_flaskForms[i]; f && !f->effects.empty() && f->effects[0]) {
-                    g_flaskPlaceholder[i] = { f->effects[0]->baseEffect, f->effects[0]->effectItem,
-                                              true };
+                    const auto& ei       = f->effects[0]->effectItem;
+                    g_flaskPlaceholder[i] = { f->effects[0]->baseEffect, ei.magnitude, ei.area,
+                                              ei.duration, true };
                 }
             }
             spdlog::info("[flask] {}/{} flask forms resolved", nf, g_flaskForms.size());
