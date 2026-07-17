@@ -25,6 +25,22 @@ Flask-style alchemy preparation for Skyrim SE. All single-use potions are remove
 
 To eliminate inventory paralysis and endless ingredient sorting, harvesting flora or looting creatures bypasses standard inventory items. The native layer intercepts the harvest event and increments a flat currency counter stored in the player's abstracted **Alchemical Pouch**.
 
+**The two economies (the conversion toggle, shipped v0.18–v0.21).** The MCM
+toggle `bConversionEnabled` selects the kit's entire currency, live:
+
+* **ON — essence mode (default, everything above):** pickups convert to pouch
+  essence; flask fills and refills spend essence per the §2 cost model.
+* **OFF — ingredient mode:** nothing converts; ingredients and potions stay
+  as items. A flask charge instead costs its variant's **recipe ingredients**
+  (the cheapest source pair the essence model prices from), consumed from the
+  player's bags — pairs scale by concentration on the same thresholds as the
+  essence surcharges, so the two economies are mirror images. The pouch
+  persists untouched while OFF. Blueprint learning (§4) is mode-independent:
+  in ingredient mode a picked-up potion is *studied* (learned, +XP) but kept.
+
+A second planned toggle selects the **learning mode** (finding vs recipe
+items, §4 + 1.0 roadmap); discovery code keeps that trigger pluggable.
+
 ### The Three Essence Tiers
 
 * **Tier I: Base Essence**
@@ -172,7 +188,16 @@ Standard consumable potions are stripped from merchant stocks and vendor tables,
 
 ## 5. Perk Tree Rework & Bulk Capacity Milestones
 
-Vanilla node positions are preserved, overriding the 13 vanilla/Requiem perk records in-place. The progression steps cleanly from an unperked baseline of **2 Flasks / 2 Charges** up to a master ceiling of **6 Flasks / 9 Charges**.
+> **Vehicle (shipped v0.19.0, replacing this section's original in-place
+> override design):** MAO ships its OWN 13 effect-less flag PERK records in
+> MAO.esp (frozen band: capstone `0x816`, flags `0x818–0x823`), skill-gated by
+> `GetBaseActorValue(Alchemy)` CTDAs, with the Kit Calibration ranks NNAM-
+> chained — the MEO perk vehicle, ported verbatim. **Vanilla perk records are
+> never overridden or renamed.** The install-time patch (§5.3) rewires the
+> tree; without it the DLL auto-grants by skill. All perk effects live in DLL
+> code via cached `HasPerk` flags.
+
+The progression steps cleanly from an unperked baseline of **2 Flasks / 2 Charges** up to a master ceiling of **6 Flasks / 9 Charges**.
 
 ### 5.1 The Capacity Blueprint
 
@@ -184,27 +209,50 @@ Vanilla node positions are preserved, overriding the 13 vanilla/Requiem perk rec
 
 ---
 
-### 5.2 In-Place Perk Override Matrix
+### 5.2 The MAO Perk Set (own flag records, MAO.esp)
 
-| Vanilla Perk | MAO Re-enlistment | Capacity Package | Tactical & Efficiency Effect |
-| --- | --- | --- | --- |
-| **Alchemist 1** | *Kit Calibration I* | **+1 Max Charge** | **The First Step:** Sets baseline hardware to 2 Flasks / 3 Charges. Unlocks fundamental Tier I blueprint extraction. |
-| **Alchemist 2** | *Kit Calibration II* | **+1 Max Flask** | **The Second Step:** Sets baseline hardware to 3 Flasks / 3 Charges. Unlocks Tier II blueprint extraction. |
-| **Alchemist 3** | *Kit Calibration III* | *None* | **Resource Efficiency:** Tier I and Tier II material essences are 15% more efficient during automated refill windows. |
-| **Alchemist 4** | *Field Deployment* | **+1 Max Flask** <br>
+All 13 are MAO's own records; the "vanilla analog" column shows which vanilla
+craft perk each conceptually replaces (those vanilla perks get REMOVED from
+the tree by the §5.3 patch — their records are untouched). Skill req = the
+record's CTDA gate = the auto-grant threshold. Status: **live** = effect in
+the DLL today; **P2** = designed, effect pending.
 
-<br>**+2 Max Charges** | **The Mid-Game Milestone:** Bulk capacity burst. Automatically scales your operational kit layout to **4 Flasks and 5 Charges**. |
-| **Alchemist 5** | *Kit Calibration V* | *None* | **Refill Optimization:** Tier I and Tier II essence maintenance costs are cut cleanly in half during resting checkouts. |
-| **Physician** | *Fluid Motion* | *None* | **Manual Mobility:** Reduces the severe movement speed reduction penalty during the manual flask-drinking animation by 50%. |
-| **Poisoner** | *Vanguard Coating* | *None* | **The Weapon Treatment:** Converts offensive blueprints into applied weapon coatings instead of drinkable items. Non-drinkable form state. Lasts **45 seconds**. Uses vanilla poison application visual overlays instantly without custom drinking animations. |
-| **Benefactor** | *Apex Stabilization* | *None* | **Endgame Efficiency:** Reduces the exorbitant baseline material cost of utilizing rare Tier III Apex Essences by 35%, making boss-tier mixtures sustainable. |
-| **Experimenter** | *Field Extraction* | *None* | **Precision Yield:** Highly optimized collection routines. Extracting wild flora or looting slain creatures yields a guaranteed flat **10% more** material essence currency to your pouch. |
-| **Concentrated Poison** | *Corrosive Retention* | *None* | **Coating Longevity:** Greatly extends weapon treatment durations. Active blade and arrow coatings now persist for **120 seconds**, allowing them to comfortably last through multi-stage engagements. |
-| **Green Thumb** | *Pouch Expansion* | *None* | **Sifting Pouch:** Harvesting wild flora grants a flat 15% chance to automatically generate a matching Tier II Catalyst Essence alongside the base tier drop. |
-| **Snakeblood** | *Extended Synthesis* | *None* | **Sustained Metabolization:** Deepens the efficacy of your field prep. All drinkable utility and restorative flask buff durations are extended by a flat **30 seconds**. |
-| **Purity** | *Master Alchemist's Crucible* | **+2 Max Flasks** <br>
+| MAO Perk (FormID) | Vanilla analog | Req | Capacity | Effect | Status |
+| --- | --- | --- | --- | --- | --- |
+| *Kit Calibration I* (0x818) | Alchemist 1 | 0 | **+1 Charge** | 2/3 baseline hardware | live |
+| *Kit Calibration II* (0x819) | Alchemist 2 | 20 | **+1 Flask** | 3/3 | live |
+| *Kit Calibration III* (0x81A) | Alchemist 3 | 40 | — | Tier I/II essences 15% more efficient in automated refills | P2 |
+| *Field Deployment* (0x81B) | Alchemist 4 | 60 | **+1 Flask, +2 Charges** | mid-game burst to 4/5 | live |
+| *Kit Calibration V* (0x81C) | Alchemist 5 | 80 | — | Tier I/II maintenance halved during resting checkouts | P2 |
+| *Fluid Motion* (0x81D) | Physician | 20 | — | drink-animation movement penalty halved | P2 |
+| *Vanguard Coating* (0x81E) | Poisoner | 30 | — | offensive blueprints become 45s weapon coatings | live |
+| *Apex Stabilization* (0x81F) | Benefactor | 30 | — | Tier III Apex costs −35% | live |
+| *Field Extraction* (0x820) | Experimenter | 50 | — | +10% essence from gathering/looting | live |
+| *Corrosive Retention* (0x821) | Concentrated Poison | 60 | — | coatings persist 120s | live |
+| *Pouch Expansion* (0x822) | Green Thumb | 70 | — | 15% chance of a bonus Tier II Catalyst per harvest | P2 |
+| *Extended Synthesis* (0x823) | Snakeblood | 80 | — | drinkable flask buff durations +30s | P2 |
+| *Master Alchemist's Crucible* (0x816) | Purity | 100 | **+2 Flasks, +4 Charges** | the 6/9 master ceiling | live |
 
-<br>**+4 Max Charges** | **The Master Milestone:** Bulk capacity burst. Hits the absolute mechanical ceiling of **6 Flasks and 9 Charges**. |
+**Vanilla survivors (marth's not-duplicative rule):** perks with no crafting
+behavior stay in the tree AS VANILLA and stack with MAO's — **Snakeblood**
+(50% poison resist) alongside *Extended Synthesis*, **Green Thumb** (2×
+harvest) alongside *Pouch Expansion*. Third-party non-craft perks survive the
+same way (behavior classification, `Docs/PERK_TREE_RECON.md`).
+
+### 5.3 Deployment: the tree patch + the auto-grant fallback
+
+* **`MAO - Patch.esp`** (generated per-user by the **Synthesis patcher** or
+  the standalone installer's `write-patch`): overrides the load order's
+  WINNING `AVAlchemy` record — removes craft perks **by behavior** (entry
+  points, never names), keeps and rewires survivors (orphans reparent to the
+  root; dangling `HasPerk` prerequisites dropped), and inserts MAO's 9 nodes
+  (Kit Calibration spine; Vanguard→Corrosive and Field Extraction→Pouch
+  Expansion sequential; the rest a parallel choice fan). ESL, pure override;
+  loads after anything that edits the alchemy tree; regenerate after
+  load-order changes. The Synthesis run also writes `mao_tiers.json` (§1).
+* **Without the patch** the DLL detects its absence and **auto-grants** the
+  flag perks at their skill thresholds — patch-less installs stay fully
+  playable, they just don't spend perk points on alchemy.
 
 ---
 
