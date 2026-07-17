@@ -70,7 +70,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.20.2 (flasks unsellable + pouch atomics)";
+constexpr auto kPluginVersion = "0.21.0 (ingredient mode + flasks unsellable + pouch atomics)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -305,7 +305,7 @@ void RecomputeCapacity(const char* a_why) {
 // base cost splits per ingredient IN ITS OWN TIER (a Base flower + a Catalyst
 // plant → part Base + part Catalyst). Base cost = each ingredient's value ×
 // concentration × tax, added to that ingredient's tier pool.
-struct RecipeIng { std::uint32_t value = 5; Tier tier = Tier::Base; };
+struct RecipeIng { std::uint32_t value = 5; Tier tier = Tier::Base; RE::FormID form = 0; };
 struct Recipe { RecipeIng a, b; };
 std::unordered_map<RE::FormID, Recipe> g_effectRecipe;
 std::uint32_t g_catalystUnit = 40;   // representative Catalyst ingredient value (surcharge unit)
@@ -362,6 +362,10 @@ std::atomic<int> g_fieldChanges{ 0 };  // reconfigurations used this field sessi
 // perks) is unaffected. Read live from the MCM.
 std::atomic<bool> g_conversionEnabled{ true };
 
+// Defined with the ingredient-mode machinery below; the kit opener refreshes
+// the menu's ingredient-count snapshot.
+void RefreshHeldIngredients();
+
 // Open/close the Field Kit. When opened from a station, closing forces the
 // player up out of the furniture (the vanilla crafting menu was hidden).
 void OpenFieldKit(bool a_station) {
@@ -382,8 +386,12 @@ void OpenFieldKit(bool a_station) {
         }
         spdlog::info("[field] open ({}): {}", a_station ? "station" : "field", dump);
     }
-    // Refresh perk-scaled capacity in case a perk was taken since the last load.
-    SKSE::GetTaskInterface()->AddTask([]() { RecomputeCapacity("open"); });
+    // Refresh perk-scaled capacity in case a perk was taken since the last load,
+    // and the ingredient-count snapshot the menu's affordability reads.
+    SKSE::GetTaskInterface()->AddTask([]() {
+        RecomputeCapacity("open");
+        RefreshHeldIngredients();
+    });
 }
 void CloseFieldKit() {
     const bool wasStation = g_menu.station.exchange(false);
@@ -571,9 +579,10 @@ void BuildRecipeTable() {
     if (!dh) {
         return;
     }
-    // Per effect, the (value, tier) of every ingredient carrying it; plus the
-    // pool of Catalyst / Apex ingredient values for the surcharge units.
-    std::unordered_map<RE::FormID, std::vector<std::pair<std::uint32_t, Tier>>> byEffect;
+    // Per effect, the (value, tier, form) of every ingredient carrying it; plus
+    // the pool of Catalyst / Apex ingredient values for the surcharge units.
+    struct Src { std::uint32_t value; Tier tier; RE::FormID form; };
+    std::unordered_map<RE::FormID, std::vector<Src>> byEffect;
     std::vector<std::uint32_t> catVals, apexVals;
     std::uint32_t              ingredients = 0;
     for (auto* ingr : dh->GetFormArray<RE::IngredientItem>()) {
@@ -581,7 +590,6 @@ void BuildRecipeTable() {
             continue;
         }
         ++ingredients;
-        const char*         nm = ingr->GetName();
         const Tier          it = TierOfForm(ingr);
         const std::uint32_t v  = static_cast<std::uint32_t>(ingr->value);
         if (it == Tier::Catalyst) {
@@ -591,7 +599,7 @@ void BuildRecipeTable() {
         }
         for (auto* eff : ingr->effects) {
             if (eff && eff->baseEffect) {
-                byEffect[eff->baseEffect->GetFormID()].push_back({ v, it });
+                byEffect[eff->baseEffect->GetFormID()].push_back({ v, it, ingr->GetFormID() });
             }
         }
     }
@@ -604,13 +612,14 @@ void BuildRecipeTable() {
     g_effectRecipe.clear();
     for (auto& [id, vec] : byEffect) {
         std::sort(vec.begin(), vec.end(),
-                  [](const auto& a, const auto& b) { return a.first < b.first; });
+                  [](const auto& a, const auto& b) { return a.value < b.value; });
         // Cheapest 2 ingredients sharing the effect = the vanilla recipe. Keep
-        // both so the base cost can split across their (possibly different) tiers.
+        // both so the base cost can split across their (possibly different)
+        // tiers — and their FORMS, so ingredient mode can consume the real items.
         const auto& i0 = vec[0];
         const auto& i1 = vec.size() > 1 ? vec[1] : vec[0];
-        g_effectRecipe[id] = { { std::max(1u, i0.first), i0.second },
-                               { std::max(1u, i1.first), i1.second } };
+        g_effectRecipe[id] = { { std::max(1u, i0.value), i0.tier, i0.form },
+                               { std::max(1u, i1.value), i1.tier, i1.form } };
     }
     g_catalystUnit = median(catVals, 40);
     g_apexUnit     = median(apexVals, 120);
@@ -727,6 +736,186 @@ std::string CostString(const FlaskCost& c) {
     if (c.catalyst) s += std::format("{}C ", c.catalyst);
     if (c.apex) s += std::format("{}A ", c.apex);
     return s.empty() ? std::string("free") : s;
+}
+
+// ── Ingredient mode (marth 2026-07-16: "the toggle should change the WHOLE
+// system"). Conversion OFF flips the kit's currency: a flask charge costs its
+// variant's RECIPE INGREDIENTS — the same cheapest-pair the essence economy
+// prices from — consumed from the player's bags. Pairs per charge scale by
+// concentration on the SAME thresholds the essence surcharges use, +1 for
+// multi-effect, so the two economies stay mirror images. The essence pouch
+// persists untouched while OFF and resumes when toggled back on.
+bool IngredientMode() { return !g_conversionEnabled.load(); }
+
+struct IngrCharge { RE::FormID a = 0, b = 0; std::uint32_t pairs = 0; };
+
+IngrCharge IngrCostPerCharge(RE::AlchemyItem* a_alch) {
+    IngrCharge ic{};
+    if (!a_alch || a_alch->effects.empty() || !a_alch->effects[0] ||
+        !a_alch->effects[0]->baseEffect) {
+        return ic;
+    }
+    auto*       eff = a_alch->effects[0]->baseEffect;
+    const float mag = a_alch->effects[0]->effectItem.magnitude > 0.0f
+                          ? a_alch->effects[0]->effectItem.magnitude
+                          : 1.0f;
+    Recipe rec{};
+    {
+        std::scoped_lock lk(g_effectCostLock);
+        auto             it = g_effectRecipe.find(eff->GetFormID());
+        if (it == g_effectRecipe.end()) {
+            return ic;  // no known recipe — unpriceable in ingredient mode
+        }
+        rec = it->second;
+    }
+    if (!rec.a.form || !rec.b.form) {
+        return ic;
+    }
+    float minMag = 0.0f;
+    {
+        std::scoped_lock lk(g_effectPotionLock);
+        auto             it = g_effectMinMag.find(eff->GetFormID());
+        if (it != g_effectMinMag.end()) {
+            minMag = it->second;
+        }
+    }
+    const float conc = (minMag > 0.01f) ? std::max(1.0f, mag / minMag) : 1.0f;
+    ic.a     = rec.a.form;
+    ic.b     = rec.b.form;
+    ic.pairs = 1u + (conc >= g_catalystLevel ? 1u : 0u) + (conc >= g_apexLevel ? 1u : 0u) +
+               (a_alch->effects.size() > 1 ? 1u : 0u);
+    return ic;
+}
+
+// Per-form needs for a_charges charges. A single-source recipe (a == b) needs
+// DOUBLE of the one form — a pair is still two ingredients.
+void IngrNeeds(const IngrCharge& ic, std::uint32_t a_charges, RE::FormID& a_formA,
+               std::uint32_t& a_needA, RE::FormID& a_formB, std::uint32_t& a_needB) {
+    a_formA               = ic.a;
+    a_formB               = ic.b;
+    const std::uint32_t n = ic.pairs * a_charges;
+    if (ic.a == ic.b) {
+        a_needA = 2 * n;
+        a_formB = 0;
+        a_needB = 0;
+    } else {
+        a_needA = n;
+        a_needB = n;
+    }
+}
+
+std::uint32_t HeldCount(RE::TESObjectREFR* a_ref, RE::TESBoundObject* a_obj) {
+    if (!a_ref || !a_obj) {
+        return 0;
+    }
+    std::uint32_t total = 0;
+    for (const auto& [obj, cnt] : a_ref->GetInventoryCounts(
+             [&](RE::TESBoundObject& o) { return &o == a_obj; })) {
+        if (cnt > 0) {
+            total += static_cast<std::uint32_t>(cnt);
+        }
+    }
+    return total;
+}
+
+// Render-readable snapshot of the player's ingredient counts — the menu must
+// not walk the inventory from the render thread. Refreshed on the task thread:
+// field-kit open, after every ingredient spend, and on ingredient pickups
+// while conversion is OFF.
+std::mutex                                    g_heldLock;
+std::unordered_map<RE::FormID, std::uint32_t> g_heldIngr;
+
+void RefreshHeldIngredients() {
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) {
+        return;
+    }
+    std::unordered_map<RE::FormID, std::uint32_t> fresh;
+    for (const auto& [obj, cnt] : player->GetInventoryCounts(
+             [](RE::TESBoundObject& o) { return o.Is(RE::FormType::Ingredient); })) {
+        if (obj && cnt > 0) {
+            fresh[obj->GetFormID()] = static_cast<std::uint32_t>(cnt);
+        }
+    }
+    std::scoped_lock lk(g_heldLock);
+    g_heldIngr.swap(fresh);
+}
+
+std::uint32_t HeldSnapshot(RE::FormID a_form) {
+    std::scoped_lock lk(g_heldLock);
+    auto             it = g_heldIngr.find(a_form);
+    return it == g_heldIngr.end() ? 0u : it->second;
+}
+
+// Render-side affordability from the snapshot (never touches the inventory).
+bool CanAffordIngrSnapshot(const IngrCharge& ic, std::uint32_t a_charges) {
+    if (!ic.pairs) {
+        return false;
+    }
+    RE::FormID    fa, fb;
+    std::uint32_t na, nb;
+    IngrNeeds(ic, a_charges, fa, na, fb, nb);
+    if (HeldSnapshot(fa) < na) {
+        return false;
+    }
+    return !fb || HeldSnapshot(fb) >= nb;
+}
+
+// Menu cost text: "3x Wheat, 3x Blue Mountain Flower" for a_charges charges.
+std::string IngrCostString(const IngrCharge& ic, std::uint32_t a_charges) {
+    if (!ic.pairs) {
+        return "(no recipe known)";
+    }
+    RE::FormID    fa, fb;
+    std::uint32_t na, nb;
+    IngrNeeds(ic, a_charges, fa, na, fb, nb);
+    auto name = [](RE::FormID f) -> std::string {
+        auto*       i = RE::TESForm::LookupByID<RE::IngredientItem>(f);
+        const char* n = i ? i->GetName() : nullptr;
+        return (n && *n) ? n : "?";
+    };
+    std::string s = std::format("{}x {}", na, name(fa));
+    if (fb && nb) {
+        s += std::format(", {}x {}", nb, name(fb));
+    }
+    return s;
+}
+
+// Task-thread spend against the REAL inventory. Consumes the recipe items and
+// awards the essence-equivalent XP (parity with SpendCost's brewing XP).
+bool SpendIngredients(RE::AlchemyItem* a_variant, std::uint32_t a_charges) {
+    auto*            player = RE::PlayerCharacter::GetSingleton();
+    const IngrCharge ic     = IngrCostPerCharge(a_variant);
+    if (!player || !ic.pairs) {
+        return false;
+    }
+    RE::FormID    fa, fb;
+    std::uint32_t na, nb;
+    IngrNeeds(ic, a_charges, fa, na, fb, nb);
+    auto* ia = RE::TESForm::LookupByID<RE::IngredientItem>(fa);
+    auto* ib = fb ? RE::TESForm::LookupByID<RE::IngredientItem>(fb) : nullptr;
+    if (!ia || (fb && !ib)) {
+        return false;
+    }
+    if (HeldCount(player, ia) < na || (ib && HeldCount(player, ib) < nb)) {
+        return false;
+    }
+    player->RemoveItem(ia, static_cast<std::int32_t>(na), RE::ITEM_REMOVE_REASON::kRemove,
+                       nullptr, nullptr);
+    if (ib && nb) {
+        player->RemoveItem(ib, static_cast<std::int32_t>(nb), RE::ITEM_REMOVE_REASON::kRemove,
+                           nullptr, nullptr);
+    }
+    const FlaskCost eq = VariantCost(a_variant) * a_charges;
+    AwardAlchemyXP(static_cast<float>(eq.base + eq.catalyst + eq.apex) * kAlchemyXpPerEssence);
+    RefreshHeldIngredients();
+    return true;
+}
+
+// Mode-aware per-charge spend for refills: essence mode spends the pouch (XP
+// inside SpendCost), ingredient mode consumes one charge's recipe pairs.
+bool SpendChargeFor(RE::AlchemyItem* a_variant, const FlaskCost& a_fc) {
+    return IngredientMode() ? SpendIngredients(a_variant, 1) : SpendCost(a_fc);
 }
 
 RE::FormID RepPotionFor(RE::FormID a_effect) {
@@ -858,12 +1047,22 @@ void ConfigureFlask(std::size_t a_slot, RE::FormID a_potion, bool a_field = fals
         return;
     }
     const FlaskCost cost = VariantCost(alch) * g_chargesPerFlask;
-    if (a_field) {  // limited kit: cap changes per trip; no upfront essence
+    if (a_field) {  // limited kit: cap changes per trip; no upfront cost either mode
         if (g_fieldChanges.load() >= kFieldChangeLimit) {
             spdlog::info("[flask] slot {} field-configure DENIED — {} change(s)/trip used", a_slot,
                          kFieldChangeLimit);
             if (g_notify.load()) {
                 RE::DebugNotification("Field kit: only one flask change per trip.");
+            }
+            return;
+        }
+    } else if (IngredientMode()) {  // conversion OFF: the fill costs recipe ingredients
+        if (!SpendIngredients(alch, g_chargesPerFlask)) {
+            const std::string need = IngrCostString(IngrCostPerCharge(alch), g_chargesPerFlask);
+            spdlog::info("[flask] slot {} configure DENIED — need {}", a_slot, need);
+            if (g_notify.load()) {
+                RE::DebugNotification(
+                    std::format("Not enough ingredients — need {}.", need).c_str());
             }
             return;
         }
@@ -899,7 +1098,11 @@ void ConfigureFlask(std::size_t a_slot, RE::FormID a_potion, bool a_field = fals
     spdlog::info("[flask] slot {} <- '{}' (variant {:08X}, {} charges); {}; (was {} charges); "
                  "pouch B={} C={} A={}",
                  a_slot, vName ? vName : "?", rep, startCharges,
-                 a_field ? std::string("field (empty, no cost)") : ("spent " + CostString(cost)),
+                 a_field ? std::string("field (empty, no cost)")
+                         : ("spent " + (IngredientMode()
+                                            ? IngrCostString(IngrCostPerCharge(alch),
+                                                             g_chargesPerFlask)
+                                            : CostString(cost))),
                  hadCharges, g_pouch.base.load(), g_pouch.catalyst.load(), g_pouch.apex.load());
     if (g_notify.load()) {
         RE::DebugNotification(
@@ -976,7 +1179,9 @@ void RefillFlasks(const char* a_trigger) {
             auto*           valch = RE::TESForm::LookupByID<RE::AlchemyItem>(f.repPotion);
             const FlaskCost fc    = valch ? VariantCost(valch) : FlaskCost{};
             std::uint32_t   added = 0;
-            while (f.charges < g_chargesPerFlask && SpendCost(fc)) {  // one charge's worth
+            // one charge's worth per iteration — essence, or recipe pairs when
+            // conversion is OFF (ingredient mode)
+            while (f.charges < g_chargesPerFlask && valch && SpendChargeFor(valch, fc)) {
                 ++f.charges;
                 ++added;
             }
@@ -1459,7 +1664,17 @@ public:
     RE::BSEventNotifyControl ProcessEvent(const RE::TESContainerChangedEvent* a_event,
                                           RE::BSTEventSource<RE::TESContainerChangedEvent>*) override {
         if (!g_conversionEnabled.load()) {
-            return RE::BSEventNotifyControl::kContinue;  // OFF: ingredients/potions stay as items
+            // OFF: ingredients/potions stay as items (ingredient mode) — but a
+            // picked-up ingredient should still freshen the menu's affordability
+            // snapshot.
+            if (a_event && a_event->baseObj && a_event->newContainer == kPlayerID &&
+                a_event->itemCount > 0) {
+                if (auto* f = RE::TESForm::LookupByID(a_event->baseObj);
+                    f && f->Is(RE::FormType::Ingredient)) {
+                    SKSE::GetTaskInterface()->AddTask([]() { RefreshHeldIngredients(); });
+                }
+            }
+            return RE::BSEventNotifyControl::kContinue;
         }
         // Only credit items ENTERING the player. Removals (our own included)
         // have newContainer != player and are ignored — so RemoveItem below
@@ -1780,8 +1995,12 @@ namespace menuhook {
             }
         }
         ImGui::Separator();
-        ImGui::Text("Essence   Base %u    Catalyst %u    Apex %u", g_pouch.base.load(), g_pouch.catalyst.load(),
-                    g_pouch.apex.load());
+        if (IngredientMode()) {
+            ImGui::Text("INGREDIENT MODE — flasks consume recipe ingredients");
+        } else {
+            ImGui::Text("Essence   Base %u    Catalyst %u    Apex %u", g_pouch.base.load(),
+                        g_pouch.catalyst.load(), g_pouch.apex.load());
+        }
         ImGui::Spacing();
 
         // ── Flasks ──
@@ -1843,18 +2062,29 @@ namespace menuhook {
                     auto*           eff  = alch->effects[0]->baseEffect;
                     const char*     pn   = alch->GetName();
                     const bool      coat = eff->IsHostile() || eff->IsDetrimental();
-                    const FlaskCost cost = VariantCost(alch) * chargesCap;
-                    char            label[224];
+                    const bool      ingrMode = IngredientMode();
+                    const FlaskCost cost     = VariantCost(alch) * chargesCap;
+                    IngrCharge      ic{};
+                    std::string     costStr;
+                    if (ingrMode) {  // recipe items, from the render-safe snapshot
+                        ic      = IngrCostPerCharge(alch);
+                        costStr = IngrCostString(ic, chargesCap);
+                    } else {
+                        costStr = CostString(cost);
+                    }
+                    char label[224];
                     std::snprintf(label, sizeof(label), "%-26.80s %s %s##v%08X",
                                   (pn && *pn) ? pn : "(unknown)", coat ? "[coating]" : "        ",
-                                  CostString(cost).c_str(), pid);
+                                  costStr.c_str(), pid);
                     // Coatings are selectable only once Vanguard is held (P2);
                     // relaxed for testing via kCoatingsRequireVanguard.
                     const bool coatOk = !coat || !kCoatingsRequireVanguard || g_hasVanguard.load();
                     // Field mode is free up front (fills over time) but capped per
-                    // trip; station mode pays essence now.
-                    const bool canChange = field ? (g_fieldChanges.load() < kFieldChangeLimit)
-                                                  : CanAfford(cost);
+                    // trip; station mode pays essence — or ingredients when OFF.
+                    const bool canChange =
+                        field ? (g_fieldChanges.load() < kFieldChangeLimit)
+                              : (ingrMode ? CanAffordIngrSnapshot(ic, chargesCap)
+                                          : CanAfford(cost));
                     const bool enabled   = g_selectedSlot >= 0 && coatOk && canChange;
                     if (!enabled) {
                         ImGui::BeginDisabled();

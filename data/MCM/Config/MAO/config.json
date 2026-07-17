@@ -144,9 +144,9 @@
 				{
 					"text": "Version",
 					"type": "text",
-					"help": "MAO version, stamped from the build (0.20.2 (flasks unsellable + pouch atomics)). Matches the MAO.dll built from the same commit.",
+					"help": "MAO version, stamped from the build (0.21.0 (ingredient mode + flasks unsellable + pouch atomics)). Matches the MAO.dll built from the same commit.",
 					"valueOptions": {
-						"value": "v0.20.2"
+						"value": "v0.21.0"
 					}
 				},
 				{
