@@ -70,7 +70,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.20.1 (tier-matched analysis essence, 1 refill per potion)";
+constexpr auto kPluginVersion = "0.20.2 (flasks unsellable + pouch atomics)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -98,10 +98,19 @@ std::array<RE::AlchemyItem*, 6> g_flaskForms{};
 // co-save, never as an inventory item.
 enum class Tier : std::uint8_t { Base = 0, Catalyst = 1, Apex = 2 };
 
+// Atomic counters: written on the task thread (credits/spends/load), read
+// every frame by the render thread (the field-kit essence line) — the last
+// non-atomic shared globals from the 5525ab5 pass (doc-audit follow-up).
 struct Pouch {
-    std::uint32_t base     = 0;
-    std::uint32_t catalyst = 0;
-    std::uint32_t apex     = 0;
+    std::atomic<std::uint32_t> base{ 0 };
+    std::atomic<std::uint32_t> catalyst{ 0 };
+    std::atomic<std::uint32_t> apex{ 0 };
+
+    void Reset() {
+        base.store(0);
+        catalyst.store(0);
+        apex.store(0);
+    }
 };
 Pouch g_pouch;
 
@@ -860,7 +869,7 @@ void ConfigureFlask(std::size_t a_slot, RE::FormID a_potion, bool a_field = fals
         }
     } else if (!SpendCost(cost)) {
         spdlog::info("[flask] slot {} configure DENIED — need {} (have B={} C={} A={})", a_slot,
-                     CostString(cost), g_pouch.base, g_pouch.catalyst, g_pouch.apex);
+                     CostString(cost), g_pouch.base.load(), g_pouch.catalyst.load(), g_pouch.apex.load());
         if (g_notify.load()) {
             RE::DebugNotification(std::format("Not enough essence — need {}.", CostString(cost)).c_str());
         }
@@ -891,7 +900,7 @@ void ConfigureFlask(std::size_t a_slot, RE::FormID a_potion, bool a_field = fals
                  "pouch B={} C={} A={}",
                  a_slot, vName ? vName : "?", rep, startCharges,
                  a_field ? std::string("field (empty, no cost)") : ("spent " + CostString(cost)),
-                 hadCharges, g_pouch.base, g_pouch.catalyst, g_pouch.apex);
+                 hadCharges, g_pouch.base.load(), g_pouch.catalyst.load(), g_pouch.apex.load());
     if (g_notify.load()) {
         RE::DebugNotification(
             std::format("Flask {} set: {}{}", a_slot + 1, vName ? vName : "potion",
@@ -979,7 +988,7 @@ void RefillFlasks(const char* a_trigger) {
     }
     if (refilled) {
         spdlog::info("[refill] {}: +{} charge(s) across {} flask(s); pouch B={}", a_trigger,
-                     refilled, slots, g_pouch.base);
+                     refilled, slots, g_pouch.base.load());
         if (g_notify) {
             RE::DebugNotification(std::format("Field Kit replenished (+{} charges).", refilled).c_str());
         }
@@ -1490,7 +1499,7 @@ public:
                 CreditPouch(tier, total);
                 spdlog::info("[gather] +{} {} essence <- {}x '{}' (value {}); pouch B={} C={} A={}",
                              total, TierName(tier), count, nameStr, value,
-                             g_pouch.base, g_pouch.catalyst, g_pouch.apex);
+                             g_pouch.base.load(), g_pouch.catalyst.load(), g_pouch.apex.load());
                 if (g_notify) {
                     RE::DebugNotification(
                         std::format("+{} {} Essence ({})", total, TierName(tier), nameStr).c_str());
@@ -1558,8 +1567,8 @@ public:
                 spdlog::info("[discover] '{}' analyzed ({}); effect '{}'; +{} (1 refill charge); "
                              "pouch B={} C={} A={}",
                              potName, bpKey ? (learned ? "NEW variant" : "known") : "no-effect",
-                             bpName.empty() ? "?" : bpName, CostString(fc), g_pouch.base,
-                             g_pouch.catalyst, g_pouch.apex);
+                             bpName.empty() ? "?" : bpName, CostString(fc), g_pouch.base.load(),
+                             g_pouch.catalyst.load(), g_pouch.apex.load());
                 if (g_notify) {
                     if (learned) {
                         RE::DebugNotification(std::format("Discovered: {}", potName).c_str());
@@ -1771,8 +1780,8 @@ namespace menuhook {
             }
         }
         ImGui::Separator();
-        ImGui::Text("Essence   Base %u    Catalyst %u    Apex %u", g_pouch.base, g_pouch.catalyst,
-                    g_pouch.apex);
+        ImGui::Text("Essence   Base %u    Catalyst %u    Apex %u", g_pouch.base.load(), g_pouch.catalyst.load(),
+                    g_pouch.apex.load());
         ImGui::Spacing();
 
         // ── Flasks ──
@@ -2187,10 +2196,12 @@ void SaveCallback(SKSE::SerializationInterface* a_intfc) {
         spdlog::error("[save] OpenRecord('POCH') failed");
         return;
     }
-    a_intfc->WriteRecordData(g_pouch.base);
-    a_intfc->WriteRecordData(g_pouch.catalyst);
-    a_intfc->WriteRecordData(g_pouch.apex);
-    spdlog::info("[save] pouch B={} C={} A={}", g_pouch.base, g_pouch.catalyst, g_pouch.apex);
+    const std::uint32_t pb = g_pouch.base.load(), pc = g_pouch.catalyst.load(),
+                        pa = g_pouch.apex.load();
+    a_intfc->WriteRecordData(pb);  // plain u32s — never serialize the atomic object
+    a_intfc->WriteRecordData(pc);
+    a_intfc->WriteRecordData(pa);
+    spdlog::info("[save] pouch B={} C={} A={}", pb, pc, pa);
 
     if (a_intfc->OpenRecord(kRecBlueprints, kSerVersion)) {  // v3: discovered potion forms
         std::scoped_lock lk(g_discoveredLock);
@@ -2220,7 +2231,7 @@ void SaveCallback(SKSE::SerializationInterface* a_intfc) {
 }
 
 void LoadCallback(SKSE::SerializationInterface* a_intfc) {
-    g_pouch = Pouch{};
+    g_pouch.Reset();
     {
         std::scoped_lock lk(g_discoveredLock);
         g_discovered.clear();
@@ -2239,9 +2250,14 @@ void LoadCallback(SKSE::SerializationInterface* a_intfc) {
             continue;
         }
         if (type == kRecPouch) {
-            if (!readOk(g_pouch.base) || !readOk(g_pouch.catalyst) || !readOk(g_pouch.apex)) {
+            std::uint32_t pb = 0, pc = 0, pa = 0;
+            if (readOk(pb) && readOk(pc) && readOk(pa)) {
+                g_pouch.base.store(pb);
+                g_pouch.catalyst.store(pc);
+                g_pouch.apex.store(pa);
+            } else {
                 spdlog::error("[load] POCH: short read — pouch reset");
-                g_pouch = Pouch{};
+                g_pouch.Reset();
             }
         } else if (type == kRecBlueprints) {
             std::uint32_t n = 0;
@@ -2350,8 +2366,8 @@ void LoadCallback(SKSE::SerializationInterface* a_intfc) {
         }
         variants = g_discovered.size();
     }
-    spdlog::info("[load] pouch B={} C={} A={}; {} discovered variant(s)", g_pouch.base,
-                 g_pouch.catalyst, g_pouch.apex, variants);
+    spdlog::info("[load] pouch B={} C={} A={}; {} discovered variant(s)", g_pouch.base.load(),
+                 g_pouch.catalyst.load(), g_pouch.apex.load(), variants);
 }
 
 void RevertCallback(SKSE::SerializationInterface*) {
@@ -2361,7 +2377,7 @@ void RevertCallback(SKSE::SerializationInterface*) {
         g_coatingExpiryMs = 0;
         g_coatingPoison   = 0;
     }
-    g_pouch = Pouch{};
+    g_pouch.Reset();
     {
         std::scoped_lock lk(g_discoveredLock);
         g_discovered.clear();

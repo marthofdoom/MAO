@@ -97,6 +97,8 @@ VMAD_VERSION, OBJECT_FORMAT = 5, 2
 
 # Vanilla Skyrim.esm forms referenced by the flask records.
 KWD_VENDOR_POTION   = 0x0008CDEC  # KYWD VendorItemPotion (classifies it as a potion)
+KWD_VENDOR_NO_SALE  = 0x000FF9FB  # KYWD VendorNoSale — vendors refuse to trade it
+                                  # (the kit is permanent hardware, not merchandise)
 MGEF_RESTORE_HEALTH = 0x0003EB15  # placeholder effect (the DLL mutates it at runtime)
 FLASK_MODEL         = "Clutter\\Potions\\PotionFortifySkill01.nif"  # a generic potion mesh
 
@@ -219,8 +221,11 @@ def make_flask(fid, edid):
     body  = subrec('EDID', zstr(edid))
     body += subrec('OBND', b'\x00' * 12)
     body += subrec('FULL', zstr("Field Flask"))
-    body += subrec('KSIZ', struct.pack('<I', 1))
-    body += subrec('KWDA', struct.pack('<I', KWD_VENDOR_POTION))
+    # VendorItemPotion: auto-potion mods + UI treat the flask as a potion (the
+    # §6 compat contract). VendorNoSale: no vendor will buy the flask — selling
+    # your permanent kit hardware was possible until v0.20.2 (marth).
+    body += subrec('KSIZ', struct.pack('<I', 2))
+    body += subrec('KWDA', struct.pack('<II', KWD_VENDOR_POTION, KWD_VENDOR_NO_SALE))
     body += subrec('MODL', zstr(FLASK_MODEL))
     body += subrec('DATA', struct.pack('<f', 0.5))                       # weight
     body += subrec('ENIT', struct.pack('<iIIfI', 10, 0x00010000, 0, 0.0, 0))
