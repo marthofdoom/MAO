@@ -283,6 +283,20 @@ def ctda_skill_req(av_index, value):
                        0, 0, -1)    # runOn Subject, reference, param3
 
 
+def ctda_hasperk(perk_fid):
+    """CTDA: HasPerk(prev rank) == 1 — the vanilla rank-chain prerequisite
+    (dumped from Skyrim.esm Alchemist20/40: op 0x00 EqualTo, func 448, param1 =
+    previous rank's FormID). The skills menu uses this to order the rank walk;
+    without it the node displayed an already-held rank as the next upgrade
+    (marth 2026-07-16, v0.22.0 test)."""
+    return struct.pack('<B3xfH2xiiiii',
+                       0x00,        # operator EqualTo
+                       1.0,
+                       448,         # function index HasPerk
+                       perk_fid, 0,
+                       0, 0, -1)
+
+
 AV_ALCHEMY = 16  # GetBaseActorValue index (MEO used 23 = Enchanting)
 
 
@@ -310,6 +324,8 @@ def make_perks():
         body = subrec('EDID', zstr(edid)) + subrec('FULL', zstr(name)) + subrec('DESC', zstr(desc))
         if req > 0:
             body += subrec('CTDA', ctda_skill_req(AV_ALCHEMY, req))
+        if 0 < i < 5:  # chain ranks 2..5: vanilla adds HasPerk(previous rank)
+            body += subrec('CTDA', ctda_hasperk(FID_PERK_BASE + i - 1))
         body += subrec('DATA', data_chain if i < 5 else data)  # 0..4 = the 5-rank chain
         if nxt is not None:
             body += subrec('NNAM', struct.pack('<I', FID_PERK_BASE + nxt))

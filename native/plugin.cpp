@@ -72,7 +72,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.22.0 (coating gate live + P2 perk effects)";
+constexpr auto kPluginVersion = "0.22.1 (rank-chain HasPerk prerequisites)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';

@@ -144,9 +144,9 @@
 				{
 					"text": "Version",
 					"type": "text",
-					"help": "MAO version, stamped from the build (0.22.0 (coating gate live + P2 perk effects)). Matches the MAO.dll built from the same commit.",
+					"help": "MAO version, stamped from the build (0.22.1 (rank-chain HasPerk prerequisites)). Matches the MAO.dll built from the same commit.",
 					"valueOptions": {
-						"value": "v0.22.0"
+						"value": "v0.22.1"
 					}
 				},
 				{
