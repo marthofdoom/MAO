@@ -288,7 +288,15 @@ AV_ALCHEMY = 16  # GetBaseActorValue index (MEO used 23 = Enchanting)
 
 def make_perks():
     out = BytesIO()
-    data = struct.pack('<BBBBB', 0, 0, 1, 1, 0)  # trait0 level0 ranks1 playable1 hidden0
+    # DATA = trait, level, numRanks, playable, hidden. VANILLA CONVENTION for
+    # NNAM chains (dumped from Skyrim.esm Alchemist00/20: 00 00 05 01 00):
+    # every record in the chain declares the CHAIN LENGTH as numRanks — with
+    # numRanks=1 the skills UI treats each rank as a standalone perk and the
+    # next-rank description walk breaks (marth 2026-07-16: node advertised
+    # "3 flasks/3 charges" while already at 3/3). Standalones stay ranks=1.
+    # NOTE: MEO ships ranks=1 on its Attunement chain — same latent bug there.
+    data = struct.pack('<BBBBB', 0, 0, 1, 1, 0)        # standalone: ranks=1
+    data_chain = struct.pack('<BBBBB', 0, 0, 5, 1, 0)  # Kit Calibration chain: ranks=5
     # The capstone keeps its FROZEN pre-band FormID 0x816; it gains the same
     # skill gate as the rest (Alchemy 100) now that the vehicle is real perks.
     body = subrec('EDID', zstr("MAO_Perk_Capstone")) \
@@ -302,7 +310,7 @@ def make_perks():
         body = subrec('EDID', zstr(edid)) + subrec('FULL', zstr(name)) + subrec('DESC', zstr(desc))
         if req > 0:
             body += subrec('CTDA', ctda_skill_req(AV_ALCHEMY, req))
-        body += subrec('DATA', data)
+        body += subrec('DATA', data_chain if i < 5 else data)  # 0..4 = the 5-rank chain
         if nxt is not None:
             body += subrec('NNAM', struct.pack('<I', FID_PERK_BASE + nxt))
         out.write(record('PERK', FID_PERK_BASE + i, 0, body))
