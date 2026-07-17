@@ -1,0 +1,6 @@
+{
+  "AddGitPatcher": {
+    "Url": "https://github.com/marthofdoom/MAO",
+    "SelectedProject": "installer\\MAO.Synthesis\\MAO.Synthesis.csproj"
+  }
+}
