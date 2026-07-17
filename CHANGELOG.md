@@ -7,6 +7,24 @@ Point fixes fold into their feature's entry unless load-bearing on their own.
 Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
 (build-stamped into the MCM Debug page by `MAO_GenerateESP.py`).
 
+## v0.21.0 — ingredient mode (2026-07-16)
+
+- **The conversion toggle now flips the WHOLE system** (marth). OFF =
+  ingredient mode: a flask charge costs its variant's recipe ingredients (the
+  cheapest source pair), consumed from your bags; pairs scale by concentration
+  on the essence thresholds (+1 multi-effect) so the two economies mirror.
+  Menu shows INGREDIENT MODE + per-variant item costs with affordability
+  graying from a task-refreshed snapshot; refills batch per flask (Fable
+  finding). The essence pouch persists untouched while OFF.
+- **Discovery is mode-independent**: picking up a potion in ingredient mode
+  studies its blueprint (+XP) but keeps the item and credits nothing — before
+  this, ingredient mode could never learn a variant.
+- **Flasks are unsellable** (VendorNoSale keyword — kit hardware, not
+  merchandise) and the essence pouch counters are atomics (render-thread
+  read race, doc-audit follow-up).
+- Field mode grays no-recipe variants in ingredient mode (they could never
+  refill); unresolved variants no longer refill for free.
+
 ## v0.20.1 — tier-matched analysis essence (2026-07-16)
 
 - Analyzing a found/bought potion credits **exactly one refill charge of that
