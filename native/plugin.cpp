@@ -70,7 +70,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.21.0 (ingredient mode + flasks unsellable + pouch atomics)";
+constexpr auto kPluginVersion = "0.21.1 (refill trickle + Requiem multi-effect pricing)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -688,8 +688,54 @@ FlaskCost VariantCost(RE::AlchemyItem* a_alch) {
         const std::uint32_t unit = (su == Tier::Apex) ? apexUnit : catUnit;
         AddTier(fc, su, unit * (conc >= g_apexLevel ? 2u : 1u));
     }
-    if (a_alch->effects.size() > 1) {
-        fc.apex += apexUnit;
+    // Secondary effects that match the primary's polarity price like the
+    // primary: their own recipe pair at their own concentration, in their own
+    // tiers. A drawback (opposite polarity — Requiem's Damage-Regen side
+    // effects on every standard potion) adds NOTHING: it is a cost the drinker
+    // pays, not the brewer. (Replaces the flat +apexUnit for ANY multi-effect
+    // potion, which priced ordinary Requiem poultices like endgame combos —
+    // marth 2026-07-16: "42B and 165A. Thats not correct".)
+    const bool primaryHostile = eff->IsHostile() || eff->IsDetrimental();
+    for (std::size_t i = 1; i < a_alch->effects.size(); ++i) {
+        auto* e2 = a_alch->effects[i];
+        if (!e2 || !e2->baseEffect) {
+            continue;
+        }
+        auto*      m2       = e2->baseEffect;
+        const bool hostile2 = m2->IsHostile() || m2->IsDetrimental();
+        if (hostile2 != primaryHostile) {
+            continue;  // drawback / off-polarity rider: free
+        }
+        Recipe r2{};
+        bool   have2 = false;
+        {
+            std::scoped_lock lk(g_effectCostLock);
+            auto             it = g_effectRecipe.find(m2->GetFormID());
+            if (it != g_effectRecipe.end()) {
+                r2    = it->second;
+                have2 = true;
+            }
+        }
+        if (!have2) {
+            AddTier(fc, Tier::Catalyst, catUnit);  // no recipe known — mild fallback
+            continue;
+        }
+        float min2 = 0.0f;
+        {
+            std::scoped_lock lk(g_effectPotionLock);
+            auto             it = g_effectMinMag.find(m2->GetFormID());
+            if (it != g_effectMinMag.end()) {
+                min2 = it->second;
+            }
+        }
+        const float mag2 =
+            e2->effectItem.magnitude > 0.0f ? e2->effectItem.magnitude : 1.0f;
+        const float conc2  = (min2 > 0.01f) ? std::max(1.0f, mag2 / min2) : 1.0f;
+        const float basis2 = conc2 * g_costRate * g_essenceTax;
+        for (const RecipeIng& ing : { r2.a, r2.b }) {
+            AddTier(fc, ing.tier,
+                    std::max(1u, static_cast<std::uint32_t>(std::lround(ing.value * basis2))));
+        }
     }
     if (g_hasBenefactor.load() && fc.apex > 0) {  // Apex Stabilization: Tier III cost -35%
         fc.apex = std::max(1u, static_cast<std::uint32_t>(std::lround(fc.apex * 0.65)));
@@ -780,10 +826,21 @@ IngrCharge IngrCostPerCharge(RE::AlchemyItem* a_alch) {
         }
     }
     const float conc = (minMag > 0.01f) ? std::max(1.0f, mag / minMag) : 1.0f;
+    // Mirror of VariantCost's multi-effect rule: only secondaries matching the
+    // primary's polarity add a pair — drawbacks (Requiem side effects) are free.
+    const bool    primaryHostile = eff->IsHostile() || eff->IsDetrimental();
+    std::uint32_t extra          = 0;
+    for (std::size_t i = 1; i < a_alch->effects.size(); ++i) {
+        auto* e2 = a_alch->effects[i];
+        if (e2 && e2->baseEffect &&
+            ((e2->baseEffect->IsHostile() || e2->baseEffect->IsDetrimental()) ==
+             primaryHostile)) {
+            ++extra;
+        }
+    }
     ic.a     = rec.a.form;
     ic.b     = rec.b.form;
-    ic.pairs = 1u + (conc >= g_catalystLevel ? 1u : 0u) + (conc >= g_apexLevel ? 1u : 0u) +
-               (a_alch->effects.size() > 1 ? 1u : 0u);
+    ic.pairs = 1u + (conc >= g_catalystLevel ? 1u : 0u) + (conc >= g_apexLevel ? 1u : 0u) + extra;
     return ic;
 }
 
@@ -1158,7 +1215,11 @@ void SyncFlaskItems() {
 // on a real-time timer. Refilling costs essence per charge (a maintenance cost;
 // perks cut it in P1e). Charges are native, so refill never touches the
 // inventory item. Runs on the task thread.
-void RefillFlasks(const char* a_trigger) {
+// a_maxPerFlask: cap on charges restored per flask this pass (0 = fill to the
+// brim). The TIMER trickles 1 charge/flask per tick (marth: "field restores
+// are only supposed to be 1 every 300 seconds" — the old fill-to-cap predated
+// ingredient mode making it visible); SLEEP stays the §3.2 full kit check.
+void RefillFlasks(const char* a_trigger, std::uint32_t a_maxPerFlask = 0) {
     if (!RE::PlayerCharacter::GetSingleton()) {
         return;  // no game loaded (timer fires at the main menu too)
     }
@@ -1203,13 +1264,17 @@ void RefillFlasks(const char* a_trigger) {
                     can = std::min(can, HeldCount(player, ib) / nb);
                 }
                 can = std::min(can, g_chargesPerFlask - f.charges);
+                if (a_maxPerFlask) {
+                    can = std::min(can, a_maxPerFlask);
+                }
                 if (can && SpendIngredients(valch, can)) {
                     f.charges += can;
                     added = can;
                 }
             } else {
                 // one charge's worth of essence per iteration
-                while (f.charges < g_chargesPerFlask && SpendCost(fc)) {
+                while (f.charges < g_chargesPerFlask &&
+                       (!a_maxPerFlask || added < a_maxPerFlask) && SpendCost(fc)) {
                     ++f.charges;
                     ++added;
                 }
@@ -1386,7 +1451,7 @@ void StartRefillTimer() {
             const std::uint32_t secs = g_refillSeconds.load() ? g_refillSeconds.load() : 300u;
             if (++acc >= secs) {
                 acc = 0;
-                SKSE::GetTaskInterface()->AddTask([]() { RefillFlasks("timer"); });
+                SKSE::GetTaskInterface()->AddTask([]() { RefillFlasks("timer", 1); });
             }
         }
     }).detach();

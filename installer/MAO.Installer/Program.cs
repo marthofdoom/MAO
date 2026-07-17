@@ -114,6 +114,7 @@ try
         "tree" => Commands.DumpTree(loadOrder, cache, positional.ElementAtOrDefault(0) ?? "AVAlchemy"),
         "tree-effects" => Commands.DumpTreeEffects(loadOrder, cache, positional.ElementAtOrDefault(0) ?? "AVAlchemy"),
         "perk" => Commands.DumpPerk(loadOrder, cache, positional[0]),
+        "potion" => Commands.DumpPotion(loadOrder, cache, positional.ElementAtOrDefault(0) ?? ""),
         "write-tiers" => Commands.WriteTiers(loadOrder, cache, positional.ElementAtOrDefault(0) ?? "data/mao_tiers.json"),
         "write-patch" => Commands.WritePatch(loadOrder, cache, positional.ElementAtOrDefault(0) ?? "MAO - Patch.esp"),
         _ => Commands.Fail($"unknown command {cmd}"),
@@ -141,6 +142,29 @@ static partial class Commands
         }
         Console.WriteLine($"totals: ENCH={ench} PERK={perk} LVLI={lvli} AVIF={avif}");
         return 0;
+    }
+
+    // Diagnostic: every winning ALCH whose name/EDID matches, with its full
+    // effect list — evidence for the flask cost model (e.g. Requiem poultices).
+    public static int DumpPotion(
+        LoadOrder<IModListingGetter<ISkyrimModGetter>> lo, ILinkCache cache, string needle)
+    {
+        bool Match(string? s) => s?.Contains(needle, StringComparison.OrdinalIgnoreCase) ?? false;
+        int shown = 0;
+        foreach (var p in lo.PriorityOrder.Ingestible().WinningOverrides())
+        {
+            if (shown >= 10) break;
+            if (!Match(p.Name?.String) && !Match(p.EditorID)) continue;
+            shown++;
+            Console.WriteLine($"ALCH {p.EditorID} '{p.Name?.String}' [{p.FormKey}] value={p.Value}");
+            foreach (var e in p.Effects)
+            {
+                var mgef = e.BaseEffect.TryResolve(cache, out var m)
+                    ? $"{m.EditorID} '{m.Name?.String}'" : e.BaseEffect.FormKey.ToString();
+                Console.WriteLine($"  effect {mgef} mag={e.Data?.Magnitude} dur={e.Data?.Duration}");
+            }
+        }
+        return shown > 0 ? 0 : Fail($"no ALCH matching '{needle}'");
     }
 
     public static int DumpTree(
