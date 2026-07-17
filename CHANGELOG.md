@@ -7,6 +7,15 @@ Point fixes fold into their feature's entry unless load-bearing on their own.
 Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
 (build-stamped into the MCM Debug page by `MAO_GenerateESP.py`).
 
+## v0.22.1 — rank-chain prerequisites (2026-07-16)
+
+- Chain ranks 2–5 now carry vanilla's second record condition,
+  `HasPerk(previous rank)` (byte-dumped from Alchemist20/40) — the skills
+  menu orders the rank walk by it, so the node no longer describes an
+  already-held rank as the next upgrade. ESP-only; re-run Synthesis.
+  (Second latent issue inherited from MEO's perk recipe — both flagged
+  upstream.)
+
 ## v0.22.0 — coating gate + P2 perk effects (2026-07-16)
 
 - **Coating gate is LIVE** (testing relaxation over): without Vanguard Coating,
