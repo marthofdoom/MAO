@@ -1,0 +1,2 @@
+Rank-chain HasPerk prerequisites (vanilla CTDA shape) — fixes the Kit Calibration next-rank description
+built from native run 29555913424
