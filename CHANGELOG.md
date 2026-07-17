@@ -7,6 +7,18 @@ Point fixes fold into their feature's entry unless load-bearing on their own.
 Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
 (build-stamped into the MCM Debug page by `MAO_GenerateESP.py`).
 
+## v0.20.0 — time-based coatings + MCM fix (2026-07-16)
+
+- **Coatings are time-based** (DESIGN §5.2): 45 seconds baseline, 120 with
+  Corrosive Retention. Hits are a 999 budget so time is the limit; expiry
+  strips ONLY the poison MAO applied, sweeping every weapon in the inventory
+  (unequipping can't bank the budget), and stale coatings are stripped at load
+  (the clock is deliberately runtime-only). Fable-reviewed: an expiry-vs-recoat
+  race and the unequip leak were found and fixed before cutting.
+- **MCM Debug page rebuilt to MEO's shape** (formatting errors): the page opens
+  with a header, the version stamp is numeric-only (the full string moved to
+  the row's hover help), labels normalized.
+
 ## v0.19.0 — the MEO perk vehicle (2026-07-16)
 
 - **MAO flag perks**: MAO.esp ships 13 PERK records — the Alchemy-100-gated
