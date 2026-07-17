@@ -70,7 +70,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.20.0 (time-based coatings + MCM debug page fix)";
+constexpr auto kPluginVersion = "0.20.1 (tier-matched analysis essence, 1 refill per potion)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -1523,13 +1523,16 @@ public:
                 bpKey   = alch->effects[0]->baseEffect->GetFormID();
                 bpCName = alch->effects[0]->baseEffect->GetName();
             }
-            const int           value   = alch->GetGoldValue();
+            // Tier-matched 1:1 (marth 2026-07-16, DESIGN §4.1): analyzing a
+            // potion credits exactly ONE refill charge's worth of THAT variant
+            // — VariantCost is the per-charge cost, in the variant's own tier
+            // split. Finding or buying a potion always funds one refill of it.
             const RE::FormID    potForm = alch->GetFormID();
-            const std::uint32_t total   = YieldFor(value, Tier::Base) * static_cast<std::uint32_t>(count);
+            const FlaskCost     fc      = VariantCost(alch) * static_cast<std::uint32_t>(count);
             const char*         pcName  = alch->GetName();
             const std::string   potName(pcName ? pcName : "potion");
             const std::string   bpName(bpCName ? bpCName : "");
-            SKSE::GetTaskInterface()->AddTask([alch, count, bpKey, potForm, total, potName,
+            SKSE::GetTaskInterface()->AddTask([alch, count, bpKey, potForm, fc, potName,
                                                bpName]() {
                 auto* player = RE::PlayerCharacter::GetSingleton();
                 if (!player) {
@@ -1546,20 +1549,23 @@ public:
                     std::scoped_lock lk(g_discoveredLock);
                     learned = g_discovered.insert(potForm).second;  // this SPECIFIC variant
                 }
-                CreditPouch(Tier::Base, total);
+                if (fc.base)     CreditPouch(Tier::Base, fc.base);
+                if (fc.catalyst) CreditPouch(Tier::Catalyst, fc.catalyst);
+                if (fc.apex)     CreditPouch(Tier::Apex, fc.apex);
                 if (learned) {  // learning a new variant trains Alchemy (like eating an ingredient)
                     AwardAlchemyXP(kDiscoverXp);
                 }
-                spdlog::info("[discover] '{}' analyzed ({}); effect '{}'; +{} Base essence; "
+                spdlog::info("[discover] '{}' analyzed ({}); effect '{}'; +{} (1 refill charge); "
                              "pouch B={} C={} A={}",
                              potName, bpKey ? (learned ? "NEW variant" : "known") : "no-effect",
-                             bpName.empty() ? "?" : bpName, total, g_pouch.base, g_pouch.catalyst,
-                             g_pouch.apex);
+                             bpName.empty() ? "?" : bpName, CostString(fc), g_pouch.base,
+                             g_pouch.catalyst, g_pouch.apex);
                 if (g_notify) {
                     if (learned) {
                         RE::DebugNotification(std::format("Discovered: {}", potName).c_str());
                     }
-                    RE::DebugNotification(std::format("+{} Base Essence ({})", total, potName).c_str());
+                    RE::DebugNotification(
+                        std::format("+{} Essence ({})", CostString(fc), potName).c_str());
                 }
             });
             return RE::BSEventNotifyControl::kContinue;

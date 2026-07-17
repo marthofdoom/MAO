@@ -144,9 +144,9 @@
 				{
 					"text": "Version",
 					"type": "text",
-					"help": "MAO version, stamped from the build (0.20.0 (time-based coatings + MCM debug page fix)). Matches the MAO.dll built from the same commit.",
+					"help": "MAO version, stamped from the build (0.20.1 (tier-matched analysis essence, 1 refill per potion)). Matches the MAO.dll built from the same commit.",
 					"valueOptions": {
-						"value": "v0.20.0"
+						"value": "v0.20.1"
 					}
 				},
 				{
