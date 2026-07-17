@@ -221,16 +221,16 @@ the DLL today; **P2** = designed, effect pending.
 | --- | --- | --- | --- | --- | --- |
 | *Kit Calibration I* (0x818) | Alchemist 1 | 0 | **+1 Charge** | 2/3 baseline hardware | live |
 | *Kit Calibration II* (0x819) | Alchemist 2 | 20 | **+1 Flask** | 3/3 | live |
-| *Kit Calibration III* (0x81A) | Alchemist 3 | 40 | — | Tier I/II essences 15% more efficient in automated refills | P2 |
+| *Kit Calibration III* (0x81A) | Alchemist 3 | 40 | — | Tier I/II essences 15% more efficient in automated refills | live |
 | *Field Deployment* (0x81B) | Alchemist 4 | 60 | **+1 Flask, +2 Charges** | mid-game burst to 4/5 | live |
-| *Kit Calibration V* (0x81C) | Alchemist 5 | 80 | — | Tier I/II maintenance halved during resting checkouts | P2 |
+| *Kit Calibration V* (0x81C) | Alchemist 5 | 80 | — | Tier I/II maintenance halved during resting checkouts | live |
 | *Fluid Motion* (0x81D) | Physician | 20 | — | drink-animation movement penalty halved | P2 |
-| *Vanguard Coating* (0x81E) | Poisoner | 30 | — | offensive blueprints become 45s weapon coatings | live |
+| *Vanguard Coating* (0x81E) | Poisoner | 30 | — | unlocks weapon coatings (45s); without it offensive blueprints cannot be prepared | live |
 | *Apex Stabilization* (0x81F) | Benefactor | 30 | — | Tier III Apex costs −35% | live |
 | *Field Extraction* (0x820) | Experimenter | 50 | — | +10% essence from gathering/looting | live |
 | *Corrosive Retention* (0x821) | Concentrated Poison | 60 | — | coatings persist 120s | live |
-| *Pouch Expansion* (0x822) | Green Thumb | 70 | — | 15% chance of a bonus Tier II Catalyst per harvest | P2 |
-| *Extended Synthesis* (0x823) | Snakeblood | 80 | — | drinkable flask buff durations +30s | P2 |
+| *Pouch Expansion* (0x822) | Green Thumb | 70 | — | 15% chance of a bonus Tier II Catalyst per harvest | live |
+| *Extended Synthesis* (0x823) | Snakeblood | 80 | — | drinkable flask buff durations +30s | live |
 | *Master Alchemist's Crucible* (0x816) | Purity | 100 | **+2 Flasks, +4 Charges** | the 6/9 master ceiling | live |
 
 **Vanilla survivors (marth's not-duplicative rule):** perks with no crafting

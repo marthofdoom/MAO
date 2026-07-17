@@ -144,9 +144,9 @@
 				{
 					"text": "Version",
 					"type": "text",
-					"help": "MAO version, stamped from the build (0.21.1 (refill trickle + Requiem multi-effect pricing)). Matches the MAO.dll built from the same commit.",
+					"help": "MAO version, stamped from the build (0.22.0 (coating gate live + P2 perk effects)). Matches the MAO.dll built from the same commit.",
 					"valueOptions": {
-						"value": "v0.21.1"
+						"value": "v0.22.0"
 					}
 				},
 				{
@@ -187,7 +187,7 @@
 				},
 				{
 					"id": "bPerkAlch3:Debug",
-					"text": "Kit Calibration III (refill eff, P2)",
+					"text": "Kit Calibration III (refill -15%)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -205,7 +205,7 @@
 				},
 				{
 					"id": "bPerkAlch5:Debug",
-					"text": "Kit Calibration V (rest refill, P2)",
+					"text": "Kit Calibration V (rest refill -50%)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -244,21 +244,12 @@
 					}
 				},
 				{
-					"text": "Deferred to P2 (no effect yet)",
+					"text": "Coatings & Metabolics",
 					"type": "header"
 				},
 				{
-					"id": "bPerkPhysician:Debug",
-					"text": "Fluid Motion (P2)",
-					"type": "toggle",
-					"valueOptions": {
-						"sourceType": "ModSettingBool",
-						"defaultValue": false
-					}
-				},
-				{
 					"id": "bPerkPoisoner:Debug",
-					"text": "Vanguard Coating (coatings)",
+					"text": "Vanguard Coating (unlocks coatings)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -267,7 +258,7 @@
 				},
 				{
 					"id": "bPerkGreenThumb:Debug",
-					"text": "Pouch Expansion (P2)",
+					"text": "Pouch Expansion (15% Catalyst proc)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -276,7 +267,7 @@
 				},
 				{
 					"id": "bPerkSnakeblood:Debug",
-					"text": "Extended Synthesis (P2)",
+					"text": "Extended Synthesis (+30s buffs)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
@@ -285,7 +276,20 @@
 				},
 				{
 					"id": "bPerkConcPoison:Debug",
-					"text": "Corrosive Retention (P2)",
+					"text": "Corrosive Retention (120s coatings)",
+					"type": "toggle",
+					"valueOptions": {
+						"sourceType": "ModSettingBool",
+						"defaultValue": false
+					}
+				},
+				{
+					"text": "Deferred to P2 (no effect yet)",
+					"type": "header"
+				},
+				{
+					"id": "bPerkPhysician:Debug",
+					"text": "Fluid Motion (P2)",
 					"type": "toggle",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",

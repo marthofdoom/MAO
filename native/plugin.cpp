@@ -62,6 +62,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <random>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -70,7 +71,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.21.1 (refill trickle + Requiem multi-effect pricing)";
+constexpr auto kPluginVersion = "0.22.0 (coating gate live + P2 perk effects)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -169,17 +170,17 @@ struct PerkDef { const char* label; RE::FormID id; const char* iniKey; float req
 constexpr PerkDef kPerkDefs[PK_COUNT] = {
     { "Kit Calibration I  (+1 charge)",        0x818, "bPerkAlch1",        0.0f },
     { "Kit Calibration II  (+1 flask)",        0x819, "bPerkAlch2",        20.0f },
-    { "Kit Calibration III  (refill eff, P2)", 0x81A, "bPerkAlch3",        40.0f },
+    { "Kit Calibration III  (refill -15%)", 0x81A, "bPerkAlch3",        40.0f },
     { "Field Deployment  (+1 flask +2 chg)",   0x81B, "bPerkAlch4",        60.0f },
-    { "Kit Calibration V  (rest refill, P2)",  0x81C, "bPerkAlch5",        80.0f },
+    { "Kit Calibration V  (rest refill -50%)",  0x81C, "bPerkAlch5",        80.0f },
     { "Master's Crucible  (+2 flask +4 chg)",  0x816, "bPerkCapstone",     100.0f },
     { "Apex Stabilization  (Apex -35%)",       0x81F, "bPerkBenefactor",   30.0f },
     { "Field Extraction  (+10% gather)",       0x820, "bPerkExperimenter", 50.0f },
     { "Fluid Motion  (P2)",                    0x81D, "bPerkPhysician",    20.0f },
     { "Vanguard Coating  (coatings)",          0x81E, "bPerkPoisoner",     30.0f },
-    { "Pouch Expansion  (P2)",                 0x822, "bPerkGreenThumb",   70.0f },
-    { "Extended Synthesis  (P2)",              0x823, "bPerkSnakeblood",   80.0f },
-    { "Corrosive Retention  (P2)",             0x821, "bPerkConcPoison",   60.0f },
+    { "Pouch Expansion  (15% Catalyst proc)",                 0x822, "bPerkGreenThumb",   70.0f },
+    { "Extended Synthesis  (+30s buffs)",              0x823, "bPerkSnakeblood",   80.0f },
+    { "Corrosive Retention  (120s coatings)",             0x821, "bPerkConcPoison",   60.0f },
 };
 RE::BGSPerk*               g_perkForm[PK_COUNT] = {};
 // TREE mode = "MAO - Patch.esp" present (perks live in the AVAlchemy
@@ -198,15 +199,18 @@ std::atomic<int>  g_alchemistRank{ 0 };
 std::atomic<bool> g_hasCapstone{ false };
 std::atomic<bool> g_hasBenefactor{ false };   // read in VariantCost (render + task)
 std::atomic<bool> g_hasExperimenter{ false };  // read in the gather credit (task)
-std::atomic<bool> g_hasVanguard{ false };   // Vanguard Coating -> coatings unlocked (P2)
+std::atomic<bool> g_hasVanguard{ false };   // Vanguard Coating -> coatings unlocked
 std::atomic<bool> g_hasCorrosive{ false };  // Corrosive Retention -> 120s coating window
+std::atomic<bool> g_hasCal3{ false };       // Kit Calibration III -> T1/T2 refill cost -15%
+std::atomic<bool> g_hasCal5{ false };       // Kit Calibration V -> T1/T2 sleep-refill cost halved
+std::atomic<bool> g_hasPouchExp{ false };   // Pouch Expansion -> 15% bonus Catalyst per harvest
+std::atomic<bool> g_hasExtSynth{ false };   // Extended Synthesis -> +30s drinkable buff durations
 
-// DESIGN: coatings unlock with the Vanguard Coating perk (Poisoner). Relaxed to
-// false during P2 testing (marth 2026-07-13) so coatings are craftable AND
-// applicable without the perk until the perk tree is finalized via the
-// installer. Flip back to true to restore the gate (the g_hasVanguard checks
-// below all key off this).
-constexpr bool kCoatingsRequireVanguard = false;
+// DESIGN: coatings unlock with the Vanguard Coating perk. The v0.18.1 testing
+// relaxation is over (marth 2026-07-16: "coatings are active without the perk
+// — wrong"): the gate is LIVE. Without the perk, detrimental blueprints can be
+// discovered but not prepared or applied.
+constexpr bool kCoatingsRequireVanguard = true;
 
 int RankFromMask(std::uint32_t a_mask) {
     int r = 0;
@@ -254,6 +258,10 @@ void RecomputeCapacity(const char* a_why) {
     g_hasExperimenter.store((eff & (1u << PK_EXPERIMENTER)) != 0);
     g_hasVanguard.store((eff & (1u << PK_POISONER)) != 0);
     g_hasCorrosive.store((eff & (1u << PK_CONCPOISON)) != 0);
+    g_hasCal3.store((eff & (1u << PK_ALCH3)) != 0);
+    g_hasCal5.store((eff & (1u << PK_ALCH5)) != 0);
+    g_hasPouchExp.store((eff & (1u << PK_GREENTHUMB)) != 0);
+    g_hasExtSynth.store((eff & (1u << PK_SNAKEBLOOD)) != 0);
     // If MAO.esp's Kit Calibration chain didn't resolve (stale/missing ESP),
     // hold the co-saved counts rather than force the baseline and clamp away
     // charges the player legitimately earned. This applies EVEN in debug: the
@@ -1231,11 +1239,35 @@ void RefillFlasks(const char* a_trigger, std::uint32_t a_maxPerFlask = 0) {
             if (!f.blueprint || f.repPotion == 0 || f.charges >= g_chargesPerFlask) {
                 continue;
             }
-            auto*           valch = RE::TESForm::LookupByID<RE::AlchemyItem>(f.repPotion);
-            const FlaskCost fc    = valch ? VariantCost(valch) : FlaskCost{};
-            std::uint32_t   added = 0;
+            auto*         valch = RE::TESForm::LookupByID<RE::AlchemyItem>(f.repPotion);
+            FlaskCost     fc    = valch ? VariantCost(valch) : FlaskCost{};
+            std::uint32_t added = 0;
             if (!valch) {
                 continue;  // unresolved variant — inert flask, nothing to refill
+            }
+            // Kit Calibration III: T1/T2 essences 15% more efficient in automated
+            // refills. Kit Calibration V: T1/T2 maintenance halved during resting
+            // checkouts (sleep). Multiplicative when both; Apex untouched (the
+            // perks are explicitly Tier I/II). Essence mode only — the perk text
+            // prices essences, and ingredient pairs are integral.
+            if (!IngredientMode()) {
+                float mult = 1.0f;
+                if (g_hasCal3.load()) {
+                    mult *= 0.85f;
+                }
+                if (g_hasCal5.load() && std::strcmp(a_trigger, "sleep") == 0) {
+                    mult *= 0.5f;
+                }
+                if (mult < 1.0f) {
+                    if (fc.base) {
+                        fc.base = std::max(
+                            1u, static_cast<std::uint32_t>(std::lround(fc.base * mult)));
+                    }
+                    if (fc.catalyst) {
+                        fc.catalyst = std::max(
+                            1u, static_cast<std::uint32_t>(std::lround(fc.catalyst * mult)));
+                    }
+                }
             }
             if (IngredientMode()) {
                 // BATCH the whole flask (Fable 3f73d4b finding 2): compute how
@@ -1328,6 +1360,19 @@ RE::FormID    g_coatingPoison   = 0;  // the variant WE applied (never strip oth
 std::uint64_t NowMs() {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+// Harvest source-tag: TESHarvestedEvent fires around the container add for the
+// same base form; the gather credit checks the tag to know the ingredient came
+// from FLORA, not loot — Pouch Expansion procs on harvests only (DESIGN §5.2
+// "harvesting wild flora"). This is exactly what the tag-only HarvestSink was
+// built to prove out.
+std::atomic<RE::FormID>    g_lastHarvestForm{ 0 };
+std::atomic<std::uint64_t> g_lastHarvestMs{ 0 };
+
+bool RollPercent(std::uint32_t a_pct) {
+    static thread_local std::mt19937 rng{ std::random_device{}() };
+    return std::uniform_int_distribution<std::uint32_t>(0, 99)(rng) < a_pct;
 }
 
 // Strip an ExtraPoison from every WEAPON in the player's inventory whose
@@ -1574,12 +1619,31 @@ struct DrinkPotionHook {
                             std::format("Weapon coated ({} seconds).", dur).c_str());
                     }
                 } else if (remaining >= 0) {
+                    // Extended Synthesis: +30s on drinkable buff durations. The
+                    // variant form is SHARED (looted copies drink the same
+                    // record), so bump-cast-restore within this hook: the
+                    // ActiveEffect captures the extended duration at apply time
+                    // and the form never stays mutated.
+                    std::vector<std::pair<RE::Effect*, std::uint32_t>> bumped;
+                    if (g_hasExtSynth.load()) {
+                        for (auto* e : vAlch->effects) {
+                            if (e && e->effectItem.duration > 0) {
+                                bumped.emplace_back(
+                                    e, static_cast<std::uint32_t>(e->effectItem.duration));
+                                e->effectItem.duration += 30;
+                            }
+                        }
+                    }
                     if (auto* caster =
                             a_this->GetMagicCaster(RE::MagicSystem::CastingSource::kInstant)) {
                         caster->CastSpellImmediate(vAlch, false, a_this, 1.0f, false, 0.0f, a_this);
                     }
+                    for (auto& [e, d] : bumped) {
+                        e->effectItem.duration = static_cast<std::int32_t>(d);
+                    }
                     PlayDrinkSound(a_this, vAlch);
-                    spdlog::info("[drink] flask slot {} drunk; {} charge(s) left", slot, remaining);
+                    spdlog::info("[drink] flask slot {} drunk{}; {} charge(s) left", slot,
+                                 bumped.empty() ? "" : " (+30s Extended Synthesis)", remaining);
                 } else {
                     spdlog::info("[drink] flask slot {} is dry", slot);
                     if (g_notify) {
@@ -1829,8 +1893,14 @@ public:
             if (g_hasExperimenter.load()) {  // Field Extraction: +10% gather yield
                 total = std::max(1u, static_cast<std::uint32_t>(std::lround(total * 1.10)));
             }
+            // Pouch Expansion procs on FLORA harvests only — the harvest tag
+            // must match this form and be fresh (the two events land within
+            // the same frame; 2s is generous).
+            const bool fromFlora = g_lastHarvestForm.load() == a_event->baseObj &&
+                                   NowMs() - g_lastHarvestMs.load() < 2000;
             const std::string nameStr(name);
-            SKSE::GetTaskInterface()->AddTask([ingr, count, tier, total, value, nameStr]() {
+            SKSE::GetTaskInterface()->AddTask([ingr, count, tier, total, value, nameStr,
+                                               fromFlora]() {
                 auto* player = RE::PlayerCharacter::GetSingleton();
                 if (!player) {
                     return;
@@ -1843,6 +1913,18 @@ public:
                 if (g_notify) {
                     RE::DebugNotification(
                         std::format("+{} {} Essence ({})", total, TierName(tier), nameStr).c_str());
+                }
+                // Pouch Expansion (DESIGN §5.2): 15% chance a flora harvest also
+                // yields a matching Tier II Catalyst essence.
+                if (fromFlora && g_hasPouchExp.load() && RollPercent(15)) {
+                    const std::uint32_t bonus = YieldFor(value, Tier::Catalyst);
+                    CreditPouch(Tier::Catalyst, bonus);
+                    spdlog::info("[gather] Pouch Expansion proc: +{} Catalyst ({})", bonus,
+                                 nameStr);
+                    if (g_notify.load()) {
+                        RE::DebugNotification(
+                            std::format("+{} Catalyst Essence (Pouch Expansion)", bonus).c_str());
+                    }
                 }
             });
             return RE::BSEventNotifyControl::kContinue;
@@ -1939,8 +2021,11 @@ public:
         override {
         if (a_event && a_event->harvester && a_event->harvester->IsPlayerRef() &&
             a_event->produceItem) {
+            g_lastHarvestForm.store(a_event->produceItem->GetFormID());
+            g_lastHarvestMs.store(NowMs());
             const char* n = a_event->produceItem->GetName();
-            spdlog::info("[harvest] player harvested '{}' (tag only; credit via container sink)",
+            spdlog::info("[harvest] player harvested '{}' (tagged for Pouch Expansion; "
+                         "credit via container sink)",
                          n ? n : "?");
         }
         return RE::BSEventNotifyControl::kContinue;
