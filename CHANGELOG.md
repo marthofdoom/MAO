@@ -7,6 +7,25 @@ Point fixes fold into their feature's entry unless load-bearing on their own.
 Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
 (build-stamped into the MCM Debug page by `MAO_GenerateESP.py`).
 
+## v0.22.0 — coating gate + P2 perk effects (2026-07-16)
+
+- **Coating gate is LIVE** (testing relaxation over): without Vanguard Coating,
+  detrimental blueprints can be discovered but not prepared, selected, or
+  applied; refills skip unusable coating flasks from pre-gate saves. Vanguard's
+  description corrected (nothing implies poisons are drinkable pre-perk).
+- **P2 perk effects implemented** (Fable-reviewed, findings fixed): Kit
+  Calibration III (T1/T2 refill −15%), Kit Calibration V (T1/T2 sleep refill
+  halved), Pouch Expansion (15% flora-harvest proc — bonus Catalyst in essence
+  mode, +1 extra ingredient in ingredient mode; one proc per harvest),
+  Extended Synthesis (+30s on drinkable BUFFS — never hostile riders).
+- **Fluid Motion self-disables** without a drink-animation mod: no auto-grant,
+  no effect flag, and the tree patcher omits its node entirely (marth's
+  design). Penalty-halving lands when a target mod is identified.
+- **Kit Calibration display fix**: chain records now declare numRanks=5
+  (vanilla convention, byte-dumped from Alchemist00) — with ranks=1 the skills
+  UI advertised an already-held rank ("3/3" at 3/3). Re-run Synthesis after
+  installing (ESP changed).
+
 ## v0.21.1 — refill trickle + Requiem pricing (2026-07-16)
 
 - **Timer refills trickle**: 1 charge per flask per pass (was fill-to-cap —
