@@ -7,6 +7,13 @@ Point fixes fold into their feature's entry unless load-bearing on their own.
 Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
 (build-stamped into the MCM Debug page by `MAO_GenerateESP.py`).
 
+## v0.20.1 — tier-matched analysis essence (2026-07-16)
+
+- Analyzing a found/bought potion credits **exactly one refill charge of that
+  potion's own variant** — `VariantCost` in the variant's own tier split,
+  replacing the flat Base-tier yield. Same function refills spend, so credit
+  and cost are 1:1 by construction and can never drift. DLL-only change.
+
 ## v0.20.0 — time-based coatings + MCM fix (2026-07-16)
 
 - **Coatings are time-based** (DESIGN §5.2): 45 seconds baseline, 120 with
