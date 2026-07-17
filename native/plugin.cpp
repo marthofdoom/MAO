@@ -1664,14 +1664,45 @@ public:
     RE::BSEventNotifyControl ProcessEvent(const RE::TESContainerChangedEvent* a_event,
                                           RE::BSTEventSource<RE::TESContainerChangedEvent>*) override {
         if (!g_conversionEnabled.load()) {
-            // OFF: ingredients/potions stay as items (ingredient mode) — but a
-            // picked-up ingredient should still freshen the menu's affordability
-            // snapshot.
+            // OFF (ingredient mode): ingredients/potions stay as items. Two
+            // side effects remain: an ingredient pickup freshens the menu's
+            // affordability snapshot, and a potion pickup still LEARNS its
+            // blueprint ("finding" — you studied it) without consuming it or
+            // crediting essence. Discovery must not depend on the economy mode
+            // or ingredient mode could never learn a new variant.
             if (a_event && a_event->baseObj && a_event->newContainer == kPlayerID &&
                 a_event->itemCount > 0) {
-                if (auto* f = RE::TESForm::LookupByID(a_event->baseObj);
-                    f && f->Is(RE::FormType::Ingredient)) {
-                    SKSE::GetTaskInterface()->AddTask([]() { RefreshHeldIngredients(); });
+                if (auto* f = RE::TESForm::LookupByID(a_event->baseObj)) {
+                    if (f->Is(RE::FormType::Ingredient)) {
+                        SKSE::GetTaskInterface()->AddTask([]() { RefreshHeldIngredients(); });
+                    } else if (auto* alch = f->As<RE::AlchemyItem>();
+                               alch && !alch->IsFood() && !IsFlaskForm(a_event->baseObj) &&
+                               !alch->effects.empty() && alch->effects[0] &&
+                               alch->effects[0]->baseEffect) {
+                        const RE::FormID potForm   = alch->GetFormID();
+                        const bool       ephemeral = (potForm & 0xFF000000) == 0xFF000000;
+                        if (!ephemeral) {
+                            const char*       nm = alch->GetName();
+                            const std::string potName(nm ? nm : "potion");
+                            SKSE::GetTaskInterface()->AddTask([potForm, potName]() {
+                                bool learned = false;
+                                {
+                                    std::scoped_lock lk(g_discoveredLock);
+                                    learned = g_discovered.insert(potForm).second;
+                                }
+                                if (learned) {
+                                    AwardAlchemyXP(kDiscoverXp);
+                                    spdlog::info("[discover] '{}' studied (ingredient mode — "
+                                                 "item kept, no essence)",
+                                                 potName);
+                                    if (g_notify.load()) {
+                                        RE::DebugNotification(
+                                            std::format("Discovered: {}", potName).c_str());
+                                    }
+                                }
+                            });
+                        }
+                    }
                 }
             }
             return RE::BSEventNotifyControl::kContinue;
