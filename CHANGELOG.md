@@ -7,6 +7,18 @@ Point fixes fold into their feature's entry unless load-bearing on their own.
 Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
 (build-stamped into the MCM Debug page by `MAO_GenerateESP.py`).
 
+## v0.21.1 — refill trickle + Requiem pricing (2026-07-16)
+
+- **Timer refills trickle**: 1 charge per flask per pass (was fill-to-cap —
+  pre-existing in essence mode, made visible by ingredient consumption).
+  Sleep keeps the full kit check.
+- **Polarity-aware multi-effect pricing**: each secondary effect matching the
+  primary's polarity costs its own recipe pair at its own concentration;
+  opposite-polarity riders (Requiem's Damage-Regen side effects) are FREE.
+  Replaces the flat +Apex-unit for any multi-effect potion, which priced
+  ordinary Requiem poultices like endgame combos (42B+165A). Ingredient mode
+  mirrors. New installer `potion` dump command (diagnosis tooling).
+
 ## v0.21.0 — ingredient mode (2026-07-16)
 
 - **The conversion toggle now flips the WHOLE system** (marth). OFF =
