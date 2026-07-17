@@ -1,0 +1,2 @@
+Ingredient mode (conversion OFF = recipe-ingredient economy), discovery in both modes, unsellable flasks, pouch atomics
+built from native run 29548471315
