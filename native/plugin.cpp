@@ -912,12 +912,6 @@ bool SpendIngredients(RE::AlchemyItem* a_variant, std::uint32_t a_charges) {
     return true;
 }
 
-// Mode-aware per-charge spend for refills: essence mode spends the pouch (XP
-// inside SpendCost), ingredient mode consumes one charge's recipe pairs.
-bool SpendChargeFor(RE::AlchemyItem* a_variant, const FlaskCost& a_fc) {
-    return IngredientMode() ? SpendIngredients(a_variant, 1) : SpendCost(a_fc);
-}
-
 RE::FormID RepPotionFor(RE::FormID a_effect) {
     std::scoped_lock lk(g_effectPotionLock);
     auto it = g_effectPotion.find(a_effect);
@@ -1179,11 +1173,46 @@ void RefillFlasks(const char* a_trigger) {
             auto*           valch = RE::TESForm::LookupByID<RE::AlchemyItem>(f.repPotion);
             const FlaskCost fc    = valch ? VariantCost(valch) : FlaskCost{};
             std::uint32_t   added = 0;
-            // one charge's worth per iteration — essence, or recipe pairs when
-            // conversion is OFF (ingredient mode)
-            while (f.charges < g_chargesPerFlask && valch && SpendChargeFor(valch, fc)) {
-                ++f.charges;
-                ++added;
+            if (!valch) {
+                continue;  // unresolved variant — inert flask, nothing to refill
+            }
+            if (IngredientMode()) {
+                // BATCH the whole flask (Fable 3f73d4b finding 2): compute how
+                // many charges the held ingredients afford, spend them in ONE
+                // SpendIngredients call — one RemoveItem per form and one
+                // snapshot refresh per flask instead of ~4 inventory walks and
+                // 2 event dispatches per charge, all under g_flasksLock.
+                const IngrCharge ic = IngrCostPerCharge(valch);
+                if (!ic.pairs) {
+                    spdlog::info("[refill] {}: slot unpriceable in ingredient mode "
+                                 "(no recipe for its effect) — skipped",
+                                 a_trigger);
+                    continue;
+                }
+                RE::FormID    fa, fb;
+                std::uint32_t na, nb;
+                IngrNeeds(ic, 1, fa, na, fb, nb);  // per-charge needs
+                auto* player = RE::PlayerCharacter::GetSingleton();
+                auto* ia     = RE::TESForm::LookupByID<RE::IngredientItem>(fa);
+                auto* ib     = fb ? RE::TESForm::LookupByID<RE::IngredientItem>(fb) : nullptr;
+                if (!player || !ia || (fb && !ib)) {
+                    continue;
+                }
+                std::uint32_t can = na ? HeldCount(player, ia) / na : 0u;
+                if (ib && nb) {
+                    can = std::min(can, HeldCount(player, ib) / nb);
+                }
+                can = std::min(can, g_chargesPerFlask - f.charges);
+                if (can && SpendIngredients(valch, can)) {
+                    f.charges += can;
+                    added = can;
+                }
+            } else {
+                // one charge's worth of essence per iteration
+                while (f.charges < g_chargesPerFlask && SpendCost(fc)) {
+                    ++f.charges;
+                    ++added;
+                }
             }
             if (added) {
                 refilled += added;
@@ -2112,8 +2141,12 @@ namespace menuhook {
                     const bool coatOk = !coat || !kCoatingsRequireVanguard || g_hasVanguard.load();
                     // Field mode is free up front (fills over time) but capped per
                     // trip; station mode pays essence — or ingredients when OFF.
+                    // A no-recipe variant (pairs == 0) is unpriceable in
+                    // ingredient mode and could NEVER refill — gray it in field
+                    // mode too (Fable 3f73d4b finding 1).
                     const bool canChange =
-                        field ? (g_fieldChanges.load() < kFieldChangeLimit)
+                        field ? (g_fieldChanges.load() < kFieldChangeLimit &&
+                                 (!ingrMode || ic.pairs > 0))
                               : (ingrMode ? CanAffordIngrSnapshot(ic, chargesCap)
                                           : CanAfford(cost));
                     const bool enabled   = g_selectedSlot >= 0 && coatOk && canChange;
