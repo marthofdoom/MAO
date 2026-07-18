@@ -1,0 +1,2 @@
+Field-kit variant list sorted by type (Restoratives > Fortify > Resist/Cure > Other > Coatings), common types up top
+built from native run 29631336221
