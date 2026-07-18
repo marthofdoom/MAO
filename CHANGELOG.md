@@ -7,6 +7,13 @@ Point fixes fold into their feature's entry unless load-bearing on their own.
 Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
 (build-stamped into the MCM Debug page by `MAO_GenerateESP.py`).
 
+## v0.23.0 — field-kit variants sorted by type (2026-07-17)
+
+- The field-kit variant list is grouped by effect type with commonly-used
+  categories on top — Restoratives > Fortify > Resist/Cure > Other > Coatings —
+  with category headers, clustered by effect then name within each group
+  (was g_discovered hash order). Pure render-side change, Fable-reviewed clean.
+
 ## v0.22.2 — flask item card shows real effect (2026-07-17)
 
 - Soak fix (marth: flask effects read "0 seconds"): the flask item ships a baked
