@@ -144,9 +144,9 @@
 				{
 					"text": "Version",
 					"type": "text",
-					"help": "MAO version, stamped from the build (0.22.2 (flask item card shows real effect; coatings stay benign)). Matches the MAO.dll built from the same commit.",
+					"help": "MAO version, stamped from the build (0.23.0 (field kit variants sorted by type)). Matches the MAO.dll built from the same commit.",
 					"valueOptions": {
-						"value": "v0.22.2"
+						"value": "v0.23.0"
 					}
 				},
 				{

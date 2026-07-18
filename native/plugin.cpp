@@ -72,7 +72,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.22.2 (flask item card shows real effect; coatings stay benign)";
+constexpr auto kPluginVersion = "0.23.0 (field kit variants sorted by type)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -2387,16 +2387,63 @@ namespace menuhook {
                     ImGui::TextDisabled("Select a flask above first.");
                 }
                 ImGui::BeginChild("variants", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 2.2f));
+                // Sort by TYPE with commonly-used categories up top (marth),
+                // instead of g_discovered's hash order. Category from the
+                // primary effect's name; within a category, cluster by effect
+                // then potion name. Category headers make the grouping visible.
+                struct VEntry {
+                    RE::FormID         pid;
+                    RE::AlchemyItem*   alch;
+                    RE::EffectSetting* eff;
+                    bool               coat;
+                    int                cat;
+                    const char*        effName;
+                    const char*        potName;
+                };
+                static const char* kCatLabels[] = { "Restoratives", "Fortify",
+                                                    "Resist / Cure", "Other", "Coatings" };
+                std::vector<VEntry> vlist;
+                vlist.reserve(g_discovered.size());
                 for (const RE::FormID pid : g_discovered) {
-                    auto* alch = RE::TESForm::LookupByID<RE::AlchemyItem>(pid);
-                    if (!alch || alch->effects.empty() || !alch->effects[0] ||
-                        !alch->effects[0]->baseEffect) {
+                    auto* a = RE::TESForm::LookupByID<RE::AlchemyItem>(pid);
+                    if (!a || a->effects.empty() || !a->effects[0] || !a->effects[0]->baseEffect) {
                         continue;
                     }
-                    auto*           eff  = alch->effects[0]->baseEffect;
-                    const char*     pn   = alch->GetName();
-                    const bool      coat = eff->IsHostile() || eff->IsDetrimental();
-                    const bool      ingrMode = IngredientMode();
+                    auto*                  e   = a->effects[0]->baseEffect;
+                    const bool             c   = e->IsHostile() || e->IsDetrimental();
+                    const char*            en  = e->GetName();
+                    const std::string_view ev  = en ? en : "";
+                    auto has = [&](const char* s) { return ev.find(s) != std::string_view::npos; };
+                    int cat = 3;  // other beneficial
+                    if (c) {
+                        cat = 4;  // coatings last
+                    } else if (has("Restore")) {
+                        cat = 0;  // most-used
+                    } else if (has("Fortify")) {
+                        cat = 1;
+                    } else if (has("Resist") || has("Cure")) {
+                        cat = 2;
+                    }
+                    const char* pn2 = a->GetName();
+                    vlist.push_back({ pid, a, e, c, cat, en ? en : "", (pn2 && *pn2) ? pn2 : "(unknown)" });
+                }
+                std::sort(vlist.begin(), vlist.end(), [](const VEntry& x, const VEntry& y) {
+                    if (x.cat != y.cat) return x.cat < y.cat;
+                    if (int d = std::strcmp(x.effName, y.effName)) return d < 0;
+                    return std::strcmp(x.potName, y.potName) < 0;
+                });
+                int lastCat = -1;
+                for (const auto& v : vlist) {
+                    if (v.cat != lastCat) {
+                        lastCat = v.cat;
+                        ImGui::TextDisabled("%s", kCatLabels[v.cat]);
+                    }
+                    const RE::FormID pid  = v.pid;
+                    auto*            alch = v.alch;
+                    auto*            eff  = v.eff;
+                    const char*      pn   = v.potName;
+                    const bool       coat = v.coat;
+                    const bool       ingrMode = IngredientMode();
                     const FlaskCost cost     = VariantCost(alch) * chargesCap;
                     IngrCharge      ic{};
                     std::string     costStr;
