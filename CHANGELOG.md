@@ -7,6 +7,19 @@ Point fixes fold into their feature's entry unless load-bearing on their own.
 Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
 (build-stamped into the MCM Debug page by `MAO_GenerateESP.py`).
 
+## v0.22.2 — flask item card shows real effect (2026-07-17)
+
+- Soak fix (marth: flask effects read "0 seconds"): the flask item ships a baked
+  placeholder effect (Restore Health 5/0) and MAO only renamed it — the drink
+  hook casts the configured VARIANT, so the card always showed 0s. RenameFlask
+  now mirrors the variant's primary effect (magnitude/area/duration) onto the
+  flask form so the card matches.
+- Coatings keep the benign placeholder (Fable review): a hostile mirrored effect
+  would flip the engine's IsPoison() true, rerouting the flask off the
+  DrinkPotion hook to the vanilla apply-poison flow — consuming the permanent
+  flask and bypassing the coating system. Only beneficial variants mirror;
+  unconfigured-slot reset restores the placeholder too.
+
 ## v0.22.1 — rank-chain prerequisites (2026-07-16)
 
 - Chain ranks 2–5 now carry vanilla's second record condition,
