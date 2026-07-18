@@ -1,0 +1,2 @@
+Flask item card shows the configured variant's real effect (coatings stay benign so the flask is never poison-classified)
+built from native run 29621461204
