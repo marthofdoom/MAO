@@ -84,6 +84,17 @@ sliders. Flask, essence, and blueprint state lives in the SKSE co-save and
 migrates itself on load, so upgrades are save-safe within a major line. Flasks
 have no gold value and cannot be sold — they're kit hardware, not merchandise.
 
+QUEST COMPATIBILITY
+-------------------
+Quest items and quest-FLAGGED items are protected automatically and never
+convert (Vaermina's Torpor, Jarrin Root, Berit's Ashes, the White Phial, and
+any item a quest has flagged). A few quests instead need you to gather or hand
+over ORDINARY ingredients (e.g. The Only Cure wants Deathbell + Vampire Dust;
+some favor quests want bundles of common flora) — those still dissolve into
+essence while conversion is on, because they can't be excluded without breaking
+normal gathering. For those quests, toggle "Convert ingredients to essence" OFF
+in the MCM, gather/deliver, then toggle it back on.
+
 REQUIEM / LORERIM
 -----------------
 The Synthesis patcher targets whatever alchemy tree WINS in your load order, so

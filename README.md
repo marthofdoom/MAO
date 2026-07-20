@@ -66,6 +66,18 @@ codebase used by both a standalone CLI and the Synthesis patcher. Releases are
 cut immutably into `releases/` by `tools/release.sh`. Documentation entry
 point: **`Docs/INDEX.md`** (ARCHITECTURE / INVARIANTS / ANTI_PATTERNS).
 
+## Quest compatibility
+
+Quest items and quest-**flagged** items are protected automatically — they never
+convert (e.g. Vaermina's Torpor, Jarrin Root, Berit's Ashes, the White Phial).
+
+A few quests instead ask you to gather or hand over **ordinary** ingredients
+(*The Only Cure* wants Deathbell + Vampire Dust; some favor quests want bundles
+of common flora). Those ordinary ingredients still dissolve into essence while
+conversion is on — they can't be auto-excluded without breaking normal
+gathering. For such quests, toggle **"Convert ingredients to essence" off** in
+the MCM, gather/deliver, then toggle it back on.
+
 ## Status
 
 Public testing candidate (v0.23.x). The core loop, economy, coatings, perk

@@ -58,8 +58,14 @@ No FOMOD — the options are runtime MCM toggles. Upgrades are save-safe within 
 Two pieces are shipped honestly as unfinished — they won't break anything, but don't count on them yet:
 [list]
 [*][b]Automated-potion-mod compatibility[/b] — flasks are tagged as potions, so some auto-potion utilities may recognise them, but the dedicated compatibility layer (inventory-count faking, a consumption intercept) is [i]not built yet[/i]. Treat it as unverified and likely partial at best.[/*]
-[*][b]Fluid Motion perk[/b] — detects whether you run a drink-animation mod and disables itself when none is present. The detection is live; the actual movement-penalty reduction lands when a specific target mod is identified. Until then the perk is inert by design.[/*]
+[*][b]Fluid Motion perk[/b] — its effect (a drink-animation movement-penalty reduction) is not implemented yet, so the perk is deferred: it is not auto-granted and not placed in the tree. Reserved for a future update.[/*]
 [/list]
+
+[size=5][b]Quest compatibility[/b][/size]
+
+Quest items and quest-[i]flagged[/i] items are protected automatically and never convert (Vaermina's Torpor, Jarrin Root, Berit's Ashes, the White Phial, and anything a quest has flagged).
+
+A few quests instead ask you to gather or hand over [b]ordinary[/b] ingredients — [i]The Only Cure[/i] wants Deathbell + Vampire Dust; some favor quests want bundles of common flora. Those ordinary ingredients still dissolve into essence while conversion is on (they can't be auto-excluded without breaking normal gathering). For those quests, toggle [b]"Convert ingredients to essence" off[/b] in the MCM, gather/deliver, then toggle it back on.
 
 [size=5][b]FAQ[/b][/size]
 

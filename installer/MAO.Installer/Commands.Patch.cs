@@ -231,9 +231,10 @@ static partial class Commands
         // sequential branches grow downward: Vanguard Coating -> Corrosive
         // Retention (coating line) and Field Extraction -> Pouch Expansion
         // (gathering line).
-        //   fluid  vanguard apexStab      fieldExt  extSynth  capstone
-        //   (x-3)  (x-2,1)  (x-1,1)       (x+1,1)   (x+2,1)   (x+3,1)
-        //          corrosive(x-2,2)  calibration hub (x,0)  pouch (x+1,2)
+        //   vanguard apexStab      fieldExt  extSynth  capstone
+        //   (x-2,1)  (x-1,1)       (x+1,1)   (x+2,1)   (x+3,1)
+        //   corrosive(x-2,2)  calibration hub (x,0)  pouch (x+1,2)
+        //   (Fluid Motion node deferred — not placed; see below.)
         var occupied = over.PerkTree.Where(n => (n.Index ?? 0) != 0)
             .Select(n => (n.PerkGridX ?? 0, n.PerkGridY ?? 0)).ToHashSet();
         uint xBase = 3;  // leftmost reach is x-3; start clear of the grid edge
