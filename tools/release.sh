@@ -63,6 +63,9 @@ cp data/MCM/Config/MAO/config.json "$STAGE/MCM/Config/MAO/"
 cp data/MCM/Settings/MAO.ini "$STAGE/MCM/Settings/"
 cp data/Scripts/MAO_MCM.pex "$STAGE/Scripts/"
 
+cp assets/MAO-README.txt "$STAGE/MAO-README.txt"           # in-zip readme (Nexus users)
+cp assets/MAO.synth      "$STAGE/MAO.synth"                # the Synthesis onboarding file
+
 mkdir -p "$STAGE/fomod"
 cat > "$STAGE/fomod/info.xml" <<EOF
 <fomod>
@@ -79,7 +82,7 @@ for req in "SKSE/Plugins/MAO.dll" "SKSE/Plugins/MAO.ini" \
            "SKSE/Plugins/MAO/fonts/head.ttf" "SKSE/Plugins/MAO/fonts/body.ttf" \
            "SKSE/Plugins/MAO/fonts/sans.ttf" "MAO.esp" \
            "MCM/Config/MAO/config.json" "MCM/Settings/MAO.ini" \
-           "Scripts/MAO_MCM.pex" "fomod/info.xml"; do
+           "Scripts/MAO_MCM.pex" "fomod/info.xml" "MAO-README.txt" "MAO.synth"; do
     [[ -f "$STAGE/$req" ]] || { echo "ERROR: release incomplete — missing $req" >&2; exit 1; }
 done
 
