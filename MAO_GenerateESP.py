@@ -262,7 +262,7 @@ MAO_PERKS = [
     ("MAO_Perk_KitCalibration3",    "Kit Calibration III", "Tier I and Tier II essences are 15% more efficient during automated refills.",              40, 3),   # 0x81A
     ("MAO_Perk_FieldDeployment",    "Field Deployment",    "Bulk capacity burst: your kit scales to 4 flasks / 5 charges.",                             60, 4),   # 0x81B
     ("MAO_Perk_KitCalibration5",    "Kit Calibration V",   "Tier I and Tier II essence maintenance costs are halved during resting checkouts.",         80, None),# 0x81C
-    ("MAO_Perk_FluidMotion",        "Fluid Motion",        "The movement penalty while drinking from a flask is halved. Requires a drink-animation mod; without one this perk disables itself.", 20, None),# 0x81D
+    ("MAO_Perk_FluidMotion",        "Fluid Motion",        "(Not yet implemented - reserved for a future update. This perk currently has no effect and is not placed in the tree.)", 20, None),# 0x81D
     ("MAO_Perk_VanguardCoating",    "Vanguard Coating",    "Unlocks weapon coatings: offensive blueprints can be applied to your weapons for 45 seconds. Without this perk they cannot be prepared.", 30, None),# 0x81E
     ("MAO_Perk_ApexStabilization",  "Apex Stabilization",  "Tier III Apex essence costs are reduced by 35%.",                                           30, None),# 0x81F
     ("MAO_Perk_FieldExtraction",    "Field Extraction",    "Gathering flora and looting creatures yields 10% more essence.",                            50, None),# 0x820

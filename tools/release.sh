@@ -40,7 +40,17 @@ if [[ -z "$RUN_ID" ]]; then
     RUN_ID=$(gh run list --workflow=native.yml --status success --limit 1 --json databaseId -q '.[0].databaseId')
     [[ -n "$RUN_ID" ]] || { echo "ERROR: no successful 'native' run found." >&2; exit 1; }
 fi
-echo "== native DLL from run $RUN_ID =="
+# The DLL must be built from THIS commit — the ESP/MCM below are regenerated from
+# the working tree, so a mismatched DLL reships the "generated text vs code math"
+# drift (MEO's lying-tooltip incident class). Gate on the run's head SHA == HEAD.
+RUN_SHA=$(gh run view "$RUN_ID" --json headSha -q '.headSha' 2>/dev/null)
+HEAD_SHA=$(git rev-parse HEAD)
+if [[ -n "$RUN_SHA" && "$RUN_SHA" != "$HEAD_SHA" ]]; then
+    echo "ERROR: native run $RUN_ID built ${RUN_SHA:0:7}, but HEAD is ${HEAD_SHA:0:7}." >&2
+    echo "       Push HEAD, wait for its green build, and pass --run <that id>." >&2
+    exit 1
+fi
+echo "== native DLL from run $RUN_ID (${RUN_SHA:0:7}) =="
 
 STAGE="$(mktemp -d)"; trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/SKSE/Plugins/MAO/fonts"

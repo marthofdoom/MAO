@@ -144,9 +144,9 @@
 				{
 					"text": "Version",
 					"type": "text",
-					"help": "MAO version, stamped from the build (0.23.0 (field kit variants sorted by type)). Matches the MAO.dll built from the same commit.",
+					"help": "MAO version, stamped from the build (0.23.1 (quest-item guard + release hardening)). Matches the MAO.dll built from the same commit.",
 					"valueOptions": {
-						"value": "v0.23.0"
+						"value": "v0.23.1"
 					}
 				},
 				{

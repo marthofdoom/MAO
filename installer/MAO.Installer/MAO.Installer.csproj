@@ -10,7 +10,7 @@
     <Product>marth's Alchemy Overhaul Installer</Product>
     <Company>marth</Company>
     <Description>Post-install patcher: adapts the alchemy perk tree to your load order.</Description>
-    <InformationalVersion>0.1.0</InformationalVersion>
+    <InformationalVersion>0.23.1</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>

@@ -72,7 +72,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.23.0 (field kit variants sorted by type)";
+constexpr auto kPluginVersion = "0.23.1 (quest-item guard + release hardening)";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -268,8 +268,10 @@ void RecomputeCapacity(const char* a_why) {
     if (!g_treeMode.load() && g_capacityPerksResolved && avo) {
         const float skill = avo->GetBaseActorValue(RE::ActorValue::kAlchemy);
         for (int i = 0; i < PK_COUNT; ++i) {
-            if (i == PK_PHYSICIAN && !g_drinkAnimMod.load()) {
-                continue;  // Fluid Motion self-disables without a drink-anim mod
+            if (i == PK_PHYSICIAN) {
+                continue;  // Fluid Motion: effect not implemented yet — never
+                           // auto-grant a no-op perk (Fable v0.23.0 SF1). The
+                           // drink-anim detection stays for when the effect lands.
             }
             if (g_perkForm[i] && skill >= kPerkDefs[i].req && !pc->HasPerk(g_perkForm[i])) {
                 pc->AddPerk(g_perkForm[i], 1);
@@ -503,10 +505,42 @@ constexpr std::array<TierOverride, 18> kTierOverrides{ {
     { "Netch Jelly",      Tier::Catalyst },
 } };
 
-// P0 quest-ingredient exclusion: these must NEVER dissolve into essence.
-// Crimson Nirnroot drives "A Return To Your Roots". P1 broadens this to a
-// quest-item flag check plus the generated exclusion set.
-constexpr std::array<std::string_view, 1> kExclusions{ { "Crimson Nirnroot" } };
+// Quest-reagent exclusion — these must NEVER dissolve into essence or be
+// analyzed. The PRIMARY guard is the runtime quest-object flag (IsQuestItem
+// below), which catches ANY quest-flagged item (vanilla or modded) without
+// touching normal gathering of the same ingredient. This NAME list is a
+// deterministic backstop for always-quest-only items that have no ordinary
+// alchemy use, in case the flag isn't set at the pickup event. Do NOT add
+// common ingredients here (Deathbell/Nightshade/Nirnroot etc. are legitimate
+// gather targets — the quest-flag guard protects their quest instances).
+// (Release blocker fix, Fable v0.23.0 review: default mode destroyed
+// quest-required items and soft-locked vanilla quests incl. two Daedric.)
+constexpr std::array<std::string_view, 5> kExclusions{ {
+    "Crimson Nirnroot",   // A Return To Your Roots
+    "Vaermina's Torpor",  // Waking Nightmare (Daedric) — must be DRUNK
+    "Jarrin Root",        // Death Incarnate (Dark Brotherhood)
+    "Berit's Ashes",      // Wisdom of the Ages
+    "White Phial",        // Repairing the Phial
+} };
+
+// Is the player's inventory entry for this object a QUEST item? Generic guard
+// against converting any quest-flagged item — checks the live inventory entry's
+// quest-object flag (set from a quest alias). Runs on the task thread.
+bool IsQuestItem(RE::PlayerCharacter* a_player, RE::TESBoundObject* a_obj) {
+    if (!a_player || !a_obj) {
+        return false;
+    }
+    auto* changes = a_player->GetInventoryChanges();
+    if (!changes || !changes->entryList) {
+        return false;
+    }
+    for (auto* entry : *changes->entryList) {
+        if (entry && entry->object == a_obj) {
+            return entry->IsQuestObject();
+        }
+    }
+    return false;
+}
 
 // Per-tier yield rate: essence = ceil(goldValue * rate), min 1. All 1.0 for
 // P0 (amount == value, trivial to verify in the log); becomes the real
@@ -2029,6 +2063,12 @@ public:
                 if (!player) {
                     return;
                 }
+                // Never dissolve a quest-flagged item (checked live now that the
+                // pickup is complete and the alias/flag is attached).
+                if (IsQuestItem(player, ingr)) {
+                    spdlog::info("[gather] QUEST ITEM '{}' — kept as item, no conversion", nameStr);
+                    return;
+                }
                 player->RemoveItem(ingr, count, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
                 CreditPouch(tier, total);
                 spdlog::info("[gather] +{} {} essence <- {}x '{}' (value {}); pouch B={} C={} A={}",
@@ -2068,6 +2108,14 @@ public:
             if (IsFlaskForm(a_event->baseObj)) {
                 return RE::BSEventNotifyControl::kContinue;
             }
+            // Quest potions (e.g. Vaermina's Torpor, which the player must DRINK)
+            // must never be analysed. Same guard set as ingredients — name
+            // backstop here, live quest-flag check in the task below.
+            if (const char* pnm = alch->GetName(); pnm && IsExcluded(pnm)) {
+                spdlog::info("[discover] EXCLUDED '{}' ({:08X}) — kept as item, no analysis",
+                             pnm, a_event->baseObj);
+                return RE::BSEventNotifyControl::kContinue;
+            }
             // Primary effect → blueprint key. Beneficial effects become
             // drinkable flasks; hostile/detrimental ones become COATINGS (the
             // Poisoner→Vanguard Coating path, DESIGN §5.2) — both are learned
@@ -2091,6 +2139,12 @@ public:
                                                bpName]() {
                 auto* player = RE::PlayerCharacter::GetSingleton();
                 if (!player) {
+                    return;
+                }
+                // Never analyse a quest-flagged potion (delivery targets, or
+                // potions the quest wants you to drink).
+                if (IsQuestItem(player, alch)) {
+                    spdlog::info("[discover] QUEST ITEM '{}' — kept as item, no analysis", potName);
                     return;
                 }
                 player->RemoveItem(alch, count, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);

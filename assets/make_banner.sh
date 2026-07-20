@@ -53,3 +53,43 @@ magick flask.png \
   nexus-banner.png
 rm -f base.png flask.png
 echo "wrote nexus-banner.png (${W}x${H})"
+
+# ── 16:9 tile (1600x900) — same motif, centred composition: title block up
+#    top, a larger flask below. For the Nexus mod image / thumbnail.
+TW=1600; TH=900
+TCX=800; TCY=680; TR=150
+TNECK="772,440 828,440 828,535 772,535 772,440"
+TCORK="764,422 836,422 836,440 764,440 764,422"
+TSURF="656,705 944,705"
+
+magick -size ${TW}x${TH} gradient:'#16181d-#08090b' \
+  \( -size ${TW}x${TH} radial-gradient:'#12281f-#000000' -evaluate multiply 0.9 \) \
+  -compose screen -composite tbase.png
+
+magick tbase.png \
+  \( -clone 0 -fill none -stroke '#4bd8a0' -strokewidth 13 \
+     -draw "circle $TCX,$TCY $TCX,$((TCY-TR))" -draw "polyline $TNECK" -blur 0x11 \) \
+  -compose screen -composite \
+  -stroke none -fill 'rgba(60,180,130,0.16)' \
+     -draw "circle $TCX,$TCY $TCX,$((TCY-TR))" -draw "polygon $TNECK" \
+  -fill 'rgba(63,214,153,0.34)' -draw "circle $TCX,$((TCY+20)) $TCX,$((TCY+TR-6))" \
+  -stroke '#7ef0c0' -strokewidth 2.4 -fill none -draw "line $TSURF" \
+  -stroke none -fill 'rgba(190,255,230,0.55)' \
+     -draw "circle 764,740 764,745" -draw "circle 838,724 838,728" \
+     -draw "circle 802,764 802,769" \
+  -fill none -stroke '#e8c87e' -strokewidth 3.0 \
+     -draw "circle $TCX,$TCY $TCX,$((TCY-TR))" -draw "polyline $TNECK" \
+  -stroke none -fill '#b98a4e' -draw "polygon $TCORK" \
+  -fill 'rgba(245,223,168,0.9)' -draw "translate 748,636 rotate 40 rectangle -5,-24 5,24" \
+  tflask.png
+
+magick tflask.png -gravity north \
+  -font "$P052" \
+  -fill '#9a8a5e' -pointsize 40 -kerning 20 -annotate +0+96 "m a r t h" \
+  -fill '#eae1cb' -pointsize 132 -kerning 6 -annotate +6+140 "ALCHEMY" \
+  -fill '#c9a45c' -pointsize 38 -kerning 30 -annotate +8+300 "O V E R H A U L" \
+  -font "$P052I" -fill '#8d939e' -pointsize 27 -kerning 1 -annotate +0+360 \
+    "permanent, reusable flasks  —  gather essence, brew once, refill forever" \
+  nexus-tile-16x9.png
+rm -f tbase.png tflask.png
+echo "wrote nexus-tile-16x9.png (${TW}x${TH})"
