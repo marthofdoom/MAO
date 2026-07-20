@@ -144,9 +144,9 @@
 				{
 					"text": "Version",
 					"type": "text",
-					"help": "MAO version, stamped from the build (0.23.1 (quest-item guard + release hardening)). Matches the MAO.dll built from the same commit.",
+					"help": "MAO version, stamped from the build (1.0.0). Matches the MAO.dll built from the same commit.",
 					"valueOptions": {
-						"value": "v0.23.1"
+						"value": "v1.0.0"
 					}
 				},
 				{

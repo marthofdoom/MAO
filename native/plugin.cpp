@@ -72,7 +72,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "0.23.1 (quest-item guard + release hardening)";
+constexpr auto kPluginVersion = "1.0.0";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';

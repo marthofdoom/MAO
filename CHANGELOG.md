@@ -7,6 +7,27 @@ Point fixes fold into their feature's entry unless load-bearing on their own.
 Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
 (build-stamped into the MCM Debug page by `MAO_GenerateESP.py`).
 
+## v1.0.0 — first public release (2026-07-20)
+
+First Nexus release. The core loop, both economies, discovery, coatings, the
+perk tree, MCM, and the Synthesis install path are complete and soak-tested.
+
+Release hardening (over v0.23.0):
+- **Quest safety**: quest-FLAGGED items (vanilla or modded) are never converted
+  — a generic inventory quest-object guard on both the ingredient and potion
+  conversion paths, plus a name backstop for always-quest-only reagents
+  (Vaermina's Torpor, Jarrin Root, Berit's Ashes, White Phial). Note: quests
+  that need ORDINARY common ingredients (e.g. The Only Cure) require toggling
+  conversion off in the MCM — see the Quest Compatibility note.
+- **Fluid Motion deferred**: effect not implemented, so it is never granted and
+  never placed in the tree (no more no-op perk).
+- Accurate public README + Nexus description + in-zip readme; generated banner
+  (3.5:1 + 16:9); release cutter gates the DLL build against HEAD and ships the
+  readme.
+
+Known experimental (stated on the mod page): automated-potion-mod compatibility
+(not built) and the Fluid Motion perk (deferred).
+
 ## v0.23.0 — field-kit variants sorted by type (2026-07-17)
 
 - The field-kit variant list is grouped by effect type with commonly-used
