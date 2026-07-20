@@ -1,0 +1,2 @@
+First public release — flask-based alchemy: gather essence, reusable flasks, discovery, coatings, a rebuilt perk tree, two economy modes
+built from native run 29778450692
