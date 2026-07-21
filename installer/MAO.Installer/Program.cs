@@ -21,7 +21,7 @@ using Mutagen.Bethesda.Plugins.Order;
 using Mutagen.Bethesda.Skyrim;
 
 const string Usage =
-    "usage: MAO.Installer <stats|tree|tree-effects|perk|write-tiers|write-patch> <MO2-or-game root> <profile-or-plugins.txt|auto> [args]\n" +
+    "usage: MAO.Installer <stats|tree|tree-effects|perk|potion|sim-cost|write-tiers|write-patch> <MO2-or-game root> <profile-or-plugins.txt|auto> [args]\n" +
     "       tree/tree-effects default the AVIF to AVAlchemy when no EditorID is given\n" +
     "       write-tiers [out.json] classifies every ingredient into a rarity tier\n" +
     "                   by availability and writes it (default data/mao_tiers.json)\n" +
@@ -115,6 +115,15 @@ try
         "tree-effects" => Commands.DumpTreeEffects(loadOrder, cache, positional.ElementAtOrDefault(0) ?? "AVAlchemy"),
         "perk" => Commands.DumpPerk(loadOrder, cache, positional[0]),
         "potion" => Commands.DumpPotion(loadOrder, cache, positional.ElementAtOrDefault(0) ?? ""),
+        "sim-cost" => Commands.SimCost(loadOrder, cache,
+            positional.ElementAtOrDefault(0) ?? "data/mao_tiers.json",
+            positional.ElementAtOrDefault(1) ?? "",
+            double.Parse(positional.ElementAtOrDefault(2) ?? "0.70"),
+            double.Parse(positional.ElementAtOrDefault(3) ?? "0.90"),
+            double.Parse(positional.ElementAtOrDefault(4) ?? "2.0"),
+            double.Parse(positional.ElementAtOrDefault(5) ?? "4.0"),
+            double.Parse(positional.ElementAtOrDefault(6) ?? "1.0"),
+            (positional.ElementAtOrDefault(7) ?? "") == "shipped"),
         "write-tiers" => Commands.WriteTiers(loadOrder, cache, positional.ElementAtOrDefault(0) ?? "data/mao_tiers.json"),
         "write-patch" => Commands.WritePatch(loadOrder, cache, positional.ElementAtOrDefault(0) ?? "MAO - Patch.esp"),
         _ => Commands.Fail($"unknown command {cmd}"),
@@ -149,13 +158,20 @@ static partial class Commands
     public static int DumpPotion(
         LoadOrder<IModListingGetter<ISkyrimModGetter>> lo, ILinkCache cache, string needle)
     {
+        // "*" = dump the whole pool with distribution stats (no cap): this is the
+        // reference the DLL's quality metric normalises against, so being able to
+        // see the real spread is what tells you whether the metric is sane.
+        bool all = needle == "*";
         bool Match(string? s) => s?.Contains(needle, StringComparison.OrdinalIgnoreCase) ?? false;
         int shown = 0;
+        var values = new List<uint>();
         foreach (var p in lo.PriorityOrder.Ingestible().WinningOverrides())
         {
-            if (shown >= 10) break;
-            if (!Match(p.Name?.String) && !Match(p.EditorID)) continue;
+            if (!all && shown >= 10) break;
+            if (!all && !Match(p.Name?.String) && !Match(p.EditorID)) continue;
+            if (p.Value > 0) values.Add(p.Value);
             shown++;
+            if (all) continue;
             Console.WriteLine($"ALCH {p.EditorID} '{p.Name?.String}' [{p.FormKey}] value={p.Value}");
             foreach (var e in p.Effects)
             {
@@ -163,6 +179,14 @@ static partial class Commands
                     ? $"{m.EditorID} '{m.Name?.String}'" : e.BaseEffect.FormKey.ToString();
                 Console.WriteLine($"  effect {mgef} mag={e.Data?.Magnitude} dur={e.Data?.Duration}");
             }
+        }
+        if (all && values.Count > 0)
+        {
+            values.Sort();
+            uint Q(double f) => values[Math.Clamp((int)(values.Count * f), 0, values.Count - 1)];
+            Console.WriteLine($"potions with value>0: {values.Count}");
+            Console.WriteLine($"  min={values[0]} p10={Q(.10)} p25={Q(.25)} MEDIAN={Q(.50)} " +
+                              $"p75={Q(.75)} p90={Q(.90)} p99={Q(.99)} max={values[^1]}");
         }
         return shown > 0 ? 0 : Fail($"no ALCH matching '{needle}'");
     }
