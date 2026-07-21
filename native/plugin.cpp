@@ -72,7 +72,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "1.1.0";
+constexpr auto kPluginVersion = "1.0.1";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -548,7 +548,7 @@ bool IsQuestItem(RE::PlayerCharacter* a_player, RE::TESBoundObject* a_obj) {
     return false;
 }
 
-// ── TIER-RELATIVE VALUATION (v1.1 pricing redo, marth).
+// ── TIER-RELATIVE VALUATION (v1.0.1 pricing redo, marth).
 //
 // Essence used to be the ingredient's raw gold value at rate 1.0 for EVERY
 // tier. Because rarer ingredients are individually worth far more (on marth's
@@ -767,7 +767,7 @@ void AddTier(FlaskCost& c, Tier t, std::uint32_t amt) {
 }
 
 // ── QUALITY: how good this specific potion is, on a scale where a MEDIAN
-// potion in the load order is 1.0 (v1.1 pricing redo).
+// potion in the load order is 1.0 (v1.0.1 pricing redo).
 //
 // Replaces the old per-effect magnitude "concentration" (magnitude divided by
 // that effect's own weakest instance), which was only coherent WITHIN one
@@ -815,7 +815,7 @@ float VariantQuality(RE::AlchemyItem* a_alch) {
     }
     // NOTE: this ratio is a CONCENTRATION, a different scale from the
     // value-derived quality the thresholds are now calibrated against
-    // (Fable v1.1 S4). Compress it toward 1.0 so a value-0 potion isn't
+    // (Fable v1.0.1 S4). Compress it toward 1.0 so a value-0 potion isn't
     // handed Catalyst+Apex surcharges it never used to pay: a 2x-concentration
     // legacy potion reads ~1.0, not 2.0.
     const float conc = (minMag > 0.01f) ? std::max(1.0f, mag / minMag) : 1.0f;
@@ -1502,7 +1502,7 @@ void RefillFlasks(const char* a_trigger, std::uint32_t a_maxPerFlask = 0) {
                 // STARVED: the flask is below cap and the pouch can't afford a
                 // single charge. Say so — silently never refilling looks like a
                 // bug, and at the top of the quality curve it is the intended
-                // Scarcity Guardrail rather than a fault (Fable v1.1 S6).
+                // Scarcity Guardrail rather than a fault (Fable v1.0.1 S6).
                 // Ingredient mode needs no such line: the kit already lists the
                 // exact items and greys what you can't afford.
                 ++starved;
@@ -3105,7 +3105,7 @@ void LoadCallback(SKSE::SerializationInterface* a_intfc) {
         if (type == kRecPouch) {
             std::uint32_t pb = 0, pc = 0, pa = 0;
             if (readOk(pb) && readOk(pc) && readOk(pa)) {
-                // v1.1 note: Catalyst/Apex were GOLD-denominated before this
+                // v1.0.1 note: Catalyst/Apex were GOLD-denominated before this
                 // version and are now valued in small tier units, so a balance
                 // earned under the old economy buys much more. Deliberately NOT
                 // rescaled (marth): "I have no interest in messing with

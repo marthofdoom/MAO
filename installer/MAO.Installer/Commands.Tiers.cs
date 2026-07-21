@@ -159,7 +159,7 @@ static partial class Commands
 
         // Per-tier median ingredient gold value. The DLL divides by these to
         // value Catalyst/Apex ingredients RELATIVE to their own category
-        // (v1.1 pricing redo) — they are load-order specific, so they must be
+        // (v1.0.1 pricing redo) — they are load-order specific, so they must be
         // emitted here rather than hardcoded.
         static double Median(List<int> xs)
         {

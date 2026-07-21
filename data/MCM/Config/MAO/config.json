@@ -144,9 +144,9 @@
 				{
 					"text": "Version",
 					"type": "text",
-					"help": "MAO version, stamped from the build (1.1.0). Matches the MAO.dll built from the same commit.",
+					"help": "MAO version, stamped from the build (1.0.1). Matches the MAO.dll built from the same commit.",
 					"valueOptions": {
-						"value": "v1.1.0"
+						"value": "v1.0.1"
 					}
 				},
 				{
