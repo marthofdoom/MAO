@@ -157,9 +157,31 @@ static partial class Commands
             });
         }
 
+        // Per-tier median ingredient gold value. The DLL divides by these to
+        // value Catalyst/Apex ingredients RELATIVE to their own category
+        // (v1.1 pricing redo) — they are load-order specific, so they must be
+        // emitted here rather than hardcoded.
+        static double Median(List<int> xs)
+        {
+            if (xs.Count == 0) return 0;
+            xs.Sort();
+            return xs[xs.Count / 2];
+        }
+        var tierStats = new Dictionary<string, object>();
+        foreach (var (key, name) in new[] { ("base", "Base"), ("catalyst", "Catalyst"), ("apex", "Apex") })
+        {
+            var vals = order.Where(k => tierByKey[k] == name).Select(k => value[k]).ToList();
+            tierStats[key] = new Dictionary<string, object>
+            {
+                ["count"] = vals.Count,
+                ["median"] = Median(vals),
+            };
+        }
+
         var doc = new Dictionary<string, object>
         {
             ["from"] = $"{ingr.Count} ingredients scored over {lo.ListedOrder.Count()} plugins",
+            ["tierStats"] = tierStats,
             ["tiers"] = entries,
         };
         var dir = Path.GetDirectoryName(Path.GetFullPath(outPath));

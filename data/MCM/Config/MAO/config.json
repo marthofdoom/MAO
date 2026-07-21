@@ -55,31 +55,31 @@
 					}
 				},
 				{
-					"id": "fCatalystLevel:Economy",
-					"text": "Catalyst concentration threshold",
+					"id": "fCatalystQuality:Economy",
+					"text": "Catalyst quality threshold",
 					"type": "slider",
-					"help": "Concentration (variant magnitude / the effect's weakest) at which a flask starts costing Catalyst essence.",
+					"help": "Potion quality (median potion = 1.0) at/above which a flask needs a Catalyst surcharge.",
 					"valueOptions": {
-						"min": 1.1,
-						"max": 50.0,
+						"min": 0.5,
+						"max": 8.0,
+						"step": 0.1,
+						"formatString": "{1}",
+						"sourceType": "ModSettingFloat",
+						"defaultValue": 1.5
+					}
+				},
+				{
+					"id": "fApexQuality:Economy",
+					"text": "Apex quality threshold",
+					"type": "slider",
+					"help": "Potion quality at/above which the tier-up surcharge doubles (Apex).",
+					"valueOptions": {
+						"min": 0.5,
+						"max": 8.0,
 						"step": 0.1,
 						"formatString": "{1}",
 						"sourceType": "ModSettingFloat",
 						"defaultValue": 3.0
-					}
-				},
-				{
-					"id": "fApexLevel:Economy",
-					"text": "Apex concentration threshold",
-					"type": "slider",
-					"help": "Concentration at which the tier-up surcharge doubles (Apex).",
-					"valueOptions": {
-						"min": 1.2,
-						"max": 100.0,
-						"step": 0.1,
-						"formatString": "{1}",
-						"sourceType": "ModSettingFloat",
-						"defaultValue": 6.0
 					}
 				},
 				{
@@ -144,9 +144,9 @@
 				{
 					"text": "Version",
 					"type": "text",
-					"help": "MAO version, stamped from the build (1.0.0). Matches the MAO.dll built from the same commit.",
+					"help": "MAO version, stamped from the build (1.1.0). Matches the MAO.dll built from the same commit.",
 					"valueOptions": {
-						"value": "v1.0.0"
+						"value": "v1.1.0"
 					}
 				},
 				{

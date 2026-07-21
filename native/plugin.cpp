@@ -72,7 +72,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "1.0.0";
+constexpr auto kPluginVersion = "1.1.0";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -364,10 +364,15 @@ std::atomic<float>                            g_essenceTax = 1.3f;   // fEssence
 // Flask cost = round(effect baseCost * magnitude * g_costRate * tax) per charge
 // (linear in magnitude = "each concentration level costs 1x more"). The flask's
 // ESSENCE TIER steps up with concentration = magnitude / the effect's weakest
-// (standard) magnitude: >= g_catalystLevel -> Catalyst, >= g_apexLevel -> Apex.
+// QUALITY thresholds (v1.1): a potion's cross-effect quality (VariantQuality,
+// median potion = 1.0) at/above which the flask needs a tier-up surcharge.
+// RENAMED from fCatalystLevel/fApexLevel because the SEMANTICS changed
+// (concentration-x -> quality-x, a different scale): MCM Helper persists values
+// per key name forever, so a stale 3.0/6.0 would silently mis-apply on the new
+// scale (INVARIANTS: rename any key whose meaning changes).
 std::atomic<float> g_costRate = 1.0f;  // fCostRate
-std::atomic<float> g_catalystLevel = 3.0f;  // fCatalystLevel — concentration x for Catalyst tier
-std::atomic<float> g_apexLevel     = 6.0f;  // fApexLevel — concentration x for Apex tier
+std::atomic<float> g_catalystQuality = 1.5f;  // fCatalystQuality — quality x for the Catalyst surcharge
+std::atomic<float> g_apexQuality     = 3.0f;  // fApexQuality — quality x for the Apex surcharge
 
 // Effect -> the strongest load-order potion/poison carrying it as its primary
 // effect. This is what physically embodies a blueprint (the flask item + what
@@ -377,6 +382,9 @@ std::atomic<float> g_apexLevel     = 6.0f;  // fApexLevel — concentration x fo
 std::unordered_map<RE::FormID, std::pair<RE::FormID, std::uint32_t>> g_effectPotion;
 std::unordered_map<RE::FormID, float> g_effectMinMag;  // MGEF -> weakest (standard) primary-effect magnitude
 std::mutex                            g_effectPotionLock;
+// Median potion gold value in the load order — the QUALITY reference. Set at
+// kDataLoaded by BuildEffectPotionTable; 1.0 until then.
+std::atomic<float>                    g_medianPotionValue{ 1.0f };
 
 // Flask helpers — defined below near the container sink; forward-declared for
 // ConfigureFlask / the drink hook above them.
@@ -542,10 +550,41 @@ bool IsQuestItem(RE::PlayerCharacter* a_player, RE::TESBoundObject* a_obj) {
     return false;
 }
 
-// Per-tier yield rate: essence = ceil(goldValue * rate), min 1. All 1.0 for
-// P0 (amount == value, trivial to verify in the log); becomes the real
-// MCM-tunable curve in P1. Tier still only selects the bucket.
-constexpr std::array<float, 3> kTierRate{ { 1.0f, 1.0f, 1.0f } };
+// ── TIER-RELATIVE VALUATION (v1.1 pricing redo, marth).
+//
+// Essence used to be the ingredient's raw gold value at rate 1.0 for EVERY
+// tier. Because rarer ingredients are individually worth far more (on marth's
+// list the medians are Base 2g / Catalyst 20g / Apex 62g), a single Apex
+// pickup paid 31x a Base pickup — which exactly cancelled its rarity, so all
+// three pools filled at the same pace ("they stack up at an equal pace").
+//
+// Now each tier is valued RELATIVE TO ITS OWN CATEGORY: an ingredient is worth
+// its tier's unit scaled by how it compares to that tier's MEDIAN value, so a
+// typical Apex drop is worth kApexUnit no matter how many gold pieces it is.
+// BASE IS UNCHANGED (absolute gold value) — marth: "leave base costs as is".
+// The medians are per-load-order and come from mao_tiers.json (the installer
+// emits them); the defaults below are only a fallback.
+constexpr float kCatalystUnit = 3.0f;  // a MEDIAN Catalyst ingredient yields this
+constexpr float kApexUnit     = 1.0f;  // a MEDIAN Apex ingredient yields this
+// Surcharge cost in those same units — this sets "drops per charge":
+// Catalyst 6/3 = ~2 drops, Apex 3/1 = ~3 drops (marth: "several Apex drops
+// per charge").
+constexpr std::uint32_t kCatalystSurcharge = 6;
+constexpr std::uint32_t kApexSurcharge     = 3;
+// Per-tier median ingredient gold value (index by Tier). Overwritten from
+// mao_tiers.json at kDataLoaded when the installer supplied stats.
+std::atomic<float> g_tierMedian[3]{ { 5.0f }, { 20.0f }, { 60.0f } };
+
+// An ingredient's worth in ITS OWN tier's essence units.
+float IngredientUnits(std::uint32_t a_value, Tier a_tier) {
+    const int i = static_cast<int>(a_tier);
+    if (a_tier == Tier::Base) {
+        return static_cast<float>(a_value);  // unchanged: absolute gold value
+    }
+    const float unit   = (a_tier == Tier::Apex) ? kApexUnit : kCatalystUnit;
+    const float median = std::max(1.0f, g_tierMedian[i].load());
+    return unit * (static_cast<float>(a_value) / median);
+}
 
 bool ContainsCI(std::string_view a_hay, std::string_view a_needle) {
     if (a_needle.empty() || a_needle.size() > a_hay.size()) {
@@ -607,8 +646,23 @@ void LoadTierMap() {
                 ++miss;
             }
         }
-        spdlog::info("[tiers] loaded {} ingredient tiers ({} unresolved) from mao_tiers.json", n,
-                     miss);
+        // Per-tier median ingredient value — the reference the tier-relative
+        // valuation divides by (IngredientUnits). Load-order specific, so the
+        // installer emits it; older tier files without it keep the defaults.
+        if (const auto st = j.find("tierStats"); st != j.end() && st->is_object()) {
+            const char* names[3] = { "base", "catalyst", "apex" };
+            for (int i = 0; i < 3; ++i) {
+                if (const auto t = st->find(names[i]); t != st->end() && t->is_object()) {
+                    const float m = t->value("median", 0.0f);
+                    if (m > 0.0f) {
+                        g_tierMedian[i].store(m);
+                    }
+                }
+            }
+        }
+        spdlog::info("[tiers] loaded {} ingredient tiers ({} unresolved); medians B={} C={} A={}",
+                     n, miss, g_tierMedian[0].load(), g_tierMedian[1].load(),
+                     g_tierMedian[2].load());
     } catch (const std::exception& ex) {
         spdlog::error("[tiers] parse failed ({}) — using the name fallback", ex.what());
         g_ingredientTier.clear();
@@ -637,7 +691,7 @@ bool IsExcluded(std::string_view a_name) {
 }
 
 std::uint32_t YieldFor(int a_value, Tier a_tier) {
-    const float raw = static_cast<float>(std::max(0, a_value)) * kTierRate[static_cast<int>(a_tier)];
+    const float raw = IngredientUnits(static_cast<std::uint32_t>(std::max(0, a_value)), a_tier);
     return static_cast<std::uint32_t>(std::max(1.0f, std::ceil(raw)));
 }
 
@@ -717,12 +771,63 @@ void AddTier(FlaskCost& c, Tier t, std::uint32_t amt) {
 }
 Tier TierAbove(Tier t) { return t == Tier::Base ? Tier::Catalyst : Tier::Apex; }
 
+// ── QUALITY: how good this specific potion is, on a scale where a MEDIAN
+// potion in the load order is 1.0 (v1.1 pricing redo).
+//
+// Replaces the old per-effect magnitude "concentration" (magnitude divided by
+// that effect's own weakest instance), which was only coherent WITHIN one
+// effect family and produced real inversions across families: an effect used by
+// exactly ONE potion normalized against itself and always read 1.0 — the
+// cheapest possible — so Requiem's Restore Health (Surpassing) (its own
+// full-heal MGEF, 500 gold) priced BELOW (Good) (80 gold). Magnitude is also
+// unusable across effects: it is 0 for duration-only effects (Invisibility),
+// 9999 for full-heals, 2-5 for Fortify Smithing and 40-120 for Damage Health,
+// and it cannot see duration at all (lingering poisons are entirely duration).
+//
+// Gold value is the load order's OWN cross-effect quality metric: it is
+// monotonic along every quality ladder (Diluted->Surpassing), authored by the
+// same people who balanced the potions, and prices duration in implicitly.
+// The cost BASIS stays ingredient-denominated (DESIGN §2) — only this
+// multiplier changed.
+//
+// Fallback: potions with no gold value (some mod-added flasks) keep the old
+// magnitude concentration. Floored so nothing is ever free, capped so a single
+// absurdly-priced modded potion can't demand the whole pouch.
+constexpr float kQualityFloor = 0.25f;
+constexpr float kQualityCap   = 8.0f;
+
+float VariantQuality(RE::AlchemyItem* a_alch) {
+    if (!a_alch) {
+        return 1.0f;
+    }
+    if (const auto gv = a_alch->GetGoldValue(); gv > 0) {
+        return std::clamp(static_cast<float>(gv) / g_medianPotionValue.load(), kQualityFloor,
+                          kQualityCap);
+    }
+    // No gold value — fall back to the legacy per-effect magnitude ratio.
+    if (a_alch->effects.empty() || !a_alch->effects[0] || !a_alch->effects[0]->baseEffect) {
+        return 1.0f;
+    }
+    const float mag =
+        a_alch->effects[0]->effectItem.magnitude > 0.0f ? a_alch->effects[0]->effectItem.magnitude : 1.0f;
+    float minMag = 0.0f;
+    {
+        std::scoped_lock lk(g_effectPotionLock);
+        auto             it = g_effectMinMag.find(a_alch->effects[0]->baseEffect->GetFormID());
+        if (it != g_effectMinMag.end()) {
+            minMag = it->second;
+        }
+    }
+    const float conc = (minMag > 0.01f) ? std::max(1.0f, mag / minMag) : 1.0f;
+    return std::clamp(conc, kQualityFloor, kQualityCap);
+}
+
 // Compound per-charge cost for a specific variant (Marth's model):
 //   BASE = each recipe ingredient's value x concentration x tax, added to THAT
 //          ingredient's own tier pool (so a Base+Catalyst recipe splits into
 //          part Base + part Catalyst by design).
-//   +CAT = high concentration (>= fCatalystLevel) needs a tier-up ingredient's
-//          worth; doubles at >= fApexLevel (Vigorous -> 1, Extreme+ -> 2).
+//   +CAT = high quality (>= fCatalystQuality) needs a tier-up surcharge;
+//          doubles at >= fApexQuality.
 //   +APEX = any multi-effect potion needs an Apex ingredient's worth.
 // Concentration = magnitude / the effect's weakest magnitude (magnitude-ranked).
 FlaskCost VariantCost(RE::AlchemyItem* a_alch) {
@@ -731,40 +836,29 @@ FlaskCost VariantCost(RE::AlchemyItem* a_alch) {
         !a_alch->effects[0]->baseEffect) {
         return fc;
     }
-    auto*       eff = a_alch->effects[0]->baseEffect;
-    const float mag = a_alch->effects[0]->effectItem.magnitude > 0.0f
-                          ? a_alch->effects[0]->effectItem.magnitude
-                          : 1.0f;
-    Recipe        rec{};
-    std::uint32_t catUnit = 40, apexUnit = 120;
+    auto*  eff = a_alch->effects[0]->baseEffect;
+    Recipe rec{};
     {
         std::scoped_lock lk(g_effectCostLock);
         auto             it = g_effectRecipe.find(eff->GetFormID());
         if (it != g_effectRecipe.end()) {
             rec = it->second;
         }
-        catUnit  = g_catalystUnit;
-        apexUnit = g_apexUnit;
     }
-    float minMag = 0.0f;
-    {
-        std::scoped_lock lk(g_effectPotionLock);
-        auto             it = g_effectMinMag.find(eff->GetFormID());
-        if (it != g_effectMinMag.end()) {
-            minMag = it->second;
-        }
-    }
-    const float conc  = (minMag > 0.01f) ? std::max(1.0f, mag / minMag) : 1.0f;
-    const float basis = conc * g_costRate * g_essenceTax;
-    // BASE splits per ingredient, each in its own tier.
+    // Cross-effect quality (see VariantQuality) replaces the old per-effect
+    // magnitude concentration.
+    const float quality = VariantQuality(a_alch);
+    const float basis   = quality * g_costRate * g_essenceTax;
+    // BASE splits per ingredient, each priced in ITS OWN tier's units.
     for (const RecipeIng& ing : { rec.a, rec.b }) {
         AddTier(fc, ing.tier,
-                std::max(1u, static_cast<std::uint32_t>(std::lround(ing.value * basis))));
+                std::max(1u, static_cast<std::uint32_t>(
+                                 std::lround(IngredientUnits(ing.value, ing.tier) * basis))));
     }
-    if (conc >= g_catalystLevel) {  // surcharge sits one tier above the recipe's rarest
+    if (quality >= g_catalystQuality) {  // surcharge sits one tier above the recipe's rarest
         const Tier          su   = TierAbove(std::max(rec.a.tier, rec.b.tier));
-        const std::uint32_t unit = (su == Tier::Apex) ? apexUnit : catUnit;
-        AddTier(fc, su, unit * (conc >= g_apexLevel ? 2u : 1u));
+        const std::uint32_t unit = (su == Tier::Apex) ? kApexSurcharge : kCatalystSurcharge;
+        AddTier(fc, su, unit * (quality >= g_apexQuality ? 2u : 1u));
     }
     // Secondary effects that match the primary's polarity price like the
     // primary: their own recipe pair at their own concentration, in their own
@@ -795,24 +889,15 @@ FlaskCost VariantCost(RE::AlchemyItem* a_alch) {
             }
         }
         if (!have2) {
-            AddTier(fc, Tier::Catalyst, catUnit);  // no recipe known — mild fallback
+            AddTier(fc, Tier::Catalyst, kCatalystSurcharge);  // no recipe known — mild fallback
             continue;
         }
-        float min2 = 0.0f;
-        {
-            std::scoped_lock lk(g_effectPotionLock);
-            auto             it = g_effectMinMag.find(m2->GetFormID());
-            if (it != g_effectMinMag.end()) {
-                min2 = it->second;
-            }
-        }
-        const float mag2 =
-            e2->effectItem.magnitude > 0.0f ? e2->effectItem.magnitude : 1.0f;
-        const float conc2  = (min2 > 0.01f) ? std::max(1.0f, mag2 / min2) : 1.0f;
-        const float basis2 = conc2 * g_costRate * g_essenceTax;
+        // Riders price off the SAME potion quality as the primary (one potion,
+        // one quality) — their own recipe pair in their own tier units.
         for (const RecipeIng& ing : { r2.a, r2.b }) {
             AddTier(fc, ing.tier,
-                    std::max(1u, static_cast<std::uint32_t>(std::lround(ing.value * basis2))));
+                    std::max(1u, static_cast<std::uint32_t>(
+                                     std::lround(IngredientUnits(ing.value, ing.tier) * basis))));
         }
     }
     if (g_hasBenefactor.load() && fc.apex > 0) {  // Apex Stabilization: Tier III cost -35%
@@ -879,10 +964,7 @@ IngrCharge IngrCostPerCharge(RE::AlchemyItem* a_alch) {
         !a_alch->effects[0]->baseEffect) {
         return ic;
     }
-    auto*       eff = a_alch->effects[0]->baseEffect;
-    const float mag = a_alch->effects[0]->effectItem.magnitude > 0.0f
-                          ? a_alch->effects[0]->effectItem.magnitude
-                          : 1.0f;
+    auto*  eff = a_alch->effects[0]->baseEffect;
     Recipe rec{};
     {
         std::scoped_lock lk(g_effectCostLock);
@@ -895,15 +977,10 @@ IngrCharge IngrCostPerCharge(RE::AlchemyItem* a_alch) {
     if (!rec.a.form || !rec.b.form) {
         return ic;
     }
-    float minMag = 0.0f;
-    {
-        std::scoped_lock lk(g_effectPotionLock);
-        auto             it = g_effectMinMag.find(eff->GetFormID());
-        if (it != g_effectMinMag.end()) {
-            minMag = it->second;
-        }
-    }
-    const float conc = (minMag > 0.01f) ? std::max(1.0f, mag / minMag) : 1.0f;
+    // SAME curve as the essence economy (marth): ingredient mode scales off the
+    // same cross-effect quality, not the retired per-effect concentration — the
+    // two economies must stay mirror images.
+    const float quality = VariantQuality(a_alch);
     // Mirror of VariantCost's multi-effect rule: only secondaries matching the
     // primary's polarity add a pair — drawbacks (Requiem side effects) are free.
     const bool    primaryHostile = eff->IsHostile() || eff->IsDetrimental();
@@ -918,7 +995,8 @@ IngrCharge IngrCostPerCharge(RE::AlchemyItem* a_alch) {
     }
     ic.a     = rec.a.form;
     ic.b     = rec.b.form;
-    ic.pairs = 1u + (conc >= g_catalystLevel ? 1u : 0u) + (conc >= g_apexLevel ? 1u : 0u) + extra;
+    ic.pairs =
+        1u + (quality >= g_catalystQuality ? 1u : 0u) + (quality >= g_apexQuality ? 1u : 0u) + extra;
     return ic;
 }
 
@@ -1066,10 +1144,14 @@ void BuildEffectPotionTable() {
     struct Best { RE::FormID form = 0; std::size_t effects = 0; std::uint32_t value = 0; };
     std::unordered_map<RE::FormID, Best>  best;
     std::unordered_map<RE::FormID, float> minMag;  // weakest primary-effect magnitude = "standard"
+    std::vector<std::uint32_t>            potionValues;  // for the global quality reference
     for (auto* alch : dh->GetFormArray<RE::AlchemyItem>()) {
         if (!alch || alch->IsFood() || alch->effects.empty() || !alch->effects[0] ||
             !alch->effects[0]->baseEffect) {
             continue;
+        }
+        if (const auto gv = alch->GetGoldValue(); gv > 0) {
+            potionValues.push_back(static_cast<std::uint32_t>(gv));
         }
         const RE::FormID    e = alch->effects[0]->baseEffect->GetFormID();
         const std::size_t   n = alch->effects.size();
@@ -1086,13 +1168,22 @@ void BuildEffectPotionTable() {
             }
         }
     }
+    // Global quality reference = the MEDIAN potion gold value in this load
+    // order. Quality is value/median, so a typical potion is ~1.0 and every
+    // potion is comparable ACROSS effects (see VariantQuality).
+    if (!potionValues.empty()) {
+        std::sort(potionValues.begin(), potionValues.end());
+        g_medianPotionValue =
+            std::max(1.0f, static_cast<float>(potionValues[potionValues.size() / 2]));
+    }
     std::scoped_lock lk(g_effectPotionLock);
     g_effectPotion.clear();
     g_effectMinMag = std::move(minMag);
     for (const auto& [e, b] : best) {
         g_effectPotion[e] = { b.form, b.value };
     }
-    spdlog::info("[potions] rep table: {} effect(s)", g_effectPotion.size());
+    spdlog::info("[potions] rep table: {} effect(s); median potion value {} (quality reference)",
+                 g_effectPotion.size(), g_medianPotionValue);
 }
 
 // Play a potion's drink sound at the player (the vanilla DrinkPotion we bypass
@@ -1818,10 +1909,10 @@ void ApplyIniLine(std::string a_line) {
             std::clamp<long>(std::strtol(val.c_str(), nullptr, 0), 15, 86400));
     } else if (key == "fCostRate") {
         g_costRate = std::clamp(static_cast<float>(std::strtod(val.c_str(), nullptr)), 0.05f, 20.0f);
-    } else if (key == "fCatalystLevel") {
-        g_catalystLevel = std::clamp(static_cast<float>(std::strtod(val.c_str(), nullptr)), 1.1f, 50.0f);
-    } else if (key == "fApexLevel") {
-        g_apexLevel = std::clamp(static_cast<float>(std::strtod(val.c_str(), nullptr)), 1.2f, 100.0f);
+    } else if (key == "fCatalystQuality") {
+        g_catalystQuality = std::clamp(static_cast<float>(std::strtod(val.c_str(), nullptr)), 0.5f, 8.0f);
+    } else if (key == "fApexQuality") {
+        g_apexQuality = std::clamp(static_cast<float>(std::strtod(val.c_str(), nullptr)), 0.5f, 8.0f);
     } else if (key == "bDebugPerks") {
         g_perkDebug.store(!(val == "0" || val == "false"));
     } else {
@@ -2532,8 +2623,22 @@ namespace menuhook {
                         const std::size_t slot  = static_cast<std::size_t>(g_selectedSlot);
                         const RE::FormID  p     = pid;
                         const bool        field = !g_menu.station.load();  // power = field mode
-                        SKSE::GetTaskInterface()->AddTask(
-                            [slot, p, field]() { ConfigureFlask(slot, p, field); });
+                        // Debounce identical re-selects (marth: MEO's gem pouch
+                        // double-counted click+release). ImGui itself fires once
+                        // per click, but a duplicated input event in the frame's
+                        // list would double-dispatch — and in FIELD mode that
+                        // silently burns the one change/trip. Cheap insurance.
+                        static RE::FormID    lastPid  = 0;
+                        static std::size_t   lastSlot = static_cast<std::size_t>(-1);
+                        static std::uint64_t lastMs   = 0;
+                        const std::uint64_t  now      = NowMs();
+                        if (!(p == lastPid && slot == lastSlot && now - lastMs < 250)) {
+                            lastPid  = p;
+                            lastSlot = slot;
+                            lastMs   = now;
+                            SKSE::GetTaskInterface()->AddTask(
+                                [slot, p, field]() { ConfigureFlask(slot, p, field); });
+                        }
                     }
                     if (!enabled) {
                         ImGui::EndDisabled();
@@ -2727,6 +2832,8 @@ namespace menuhook {
                 case RE::INPUT_DEVICE::kKeyboard:
                     if (code == 0x01 && down) {  // Esc closes
                         CloseFieldKit();
+                    } else if (down && isOpener(dev, code)) {
+                        CloseFieldKit();  // the opener toggles (matches the power)
                     } else if (auto k = DIKToImGuiKey(code); k != ImGuiKey_None) {
                         io.AddKeyEvent(k, down);
                     }
@@ -2734,6 +2841,8 @@ namespace menuhook {
                 case RE::INPUT_DEVICE::kGamepad:
                     if (code == kGamepadB && down) {  // B closes
                         CloseFieldKit();
+                    } else if (down && isOpener(dev, code)) {
+                        CloseFieldKit();  // the opener toggles (matches the power)
                     } else if (auto k = GamepadToImGuiKey(code); k != ImGuiKey_None) {
                         io.AddKeyEvent(k, down);
                     }
@@ -2801,7 +2910,24 @@ public:
                                           RE::BSTEventSource<RE::TESSpellCastEvent>*) override {
         if (a_event && a_event->object && a_event->object->IsPlayerRef() && g_fieldKitSpell &&
             a_event->spell == g_fieldKitSpell->GetFormID()) {
-            SKSE::GetTaskInterface()->AddTask([]() { OpenFieldKit(false); });  // field mode
+            // TOGGLE: casting the power again closes the kit (marth). DEBOUNCED
+            // — the engine can dispatch more than one cast event for a single
+            // press, and an undebounced toggle would open-then-close within the
+            // same press and look like nothing happened.
+            static std::atomic<std::uint64_t> lastCastMs{ 0 };
+            const std::uint64_t               now  = NowMs();
+            const std::uint64_t               prev = lastCastMs.load();
+            if (now - prev < 400) {
+                return RE::BSEventNotifyControl::kContinue;  // same press
+            }
+            lastCastMs.store(now);
+            SKSE::GetTaskInterface()->AddTask([]() {
+                if (g_menu.open.load()) {
+                    CloseFieldKit();
+                } else {
+                    OpenFieldKit(false);  // field mode
+                }
+            });
         }
         return RE::BSEventNotifyControl::kContinue;
     }
