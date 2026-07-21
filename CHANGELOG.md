@@ -7,35 +7,62 @@ Point fixes fold into their feature's entry unless load-bearing on their own.
 Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
 (build-stamped into the MCM Debug page by `MAO_GenerateESP.py`).
 
-## v1.0.1 — economy fixes (2026-07-20)
+## v1.0.2 — economy rebuild (2026-07-21)
 
-All fixes to behaviour 1.0 already claimed. Saves stay compatible.
+Supersedes v1.0.1, which was withdrawn the day it was cut: it fixed the
+reported inversion but replaced it with a worse one (Requiem's Restore Health
+priced 6B flat for four straight rungs, then 228B for the fifth). It never
+reached Nexus. Everything below is a fix to behaviour 1.0 already claimed;
+saves stay compatible and banked essence is never rescaled.
 
-- **Potion pricing was inverted across effect families.** Cost scaled with a
-  per-effect "concentration" (magnitude vs that effect's own weakest instance),
-  which is only coherent *within* one family — an effect used by exactly one
-  potion normalised against itself and always read as the cheapest possible.
-  On a Requiem list that made **Restore Health (Surpassing)** — its own
-  full-heal effect, 500 gold — price *below* **(Good)**. Cost now scales with a
-  cross-effect **quality** (the potion's gold value vs your load order's median
-  potion), which is monotonic along every quality ladder and sees duration.
-- **Rare essence accrued as fast as common essence.** Yield was the ingredient's
-  raw gold value for every tier, so a median Apex pickup paid ~31x a Base one —
-  cancelling its rarity. Catalyst and Apex are now valued *relative to their own
-  category* (per-load-order medians, written by the Synthesis patcher). Base is
-  unchanged. High-quality potions now also *require* Catalyst/Apex regardless of
-  their ingredients, per the design's Apex Route.
-- **The power didn't close the field kit** (advertised since July): while the kit
-  is open all input is swallowed, so the shout button never reached the game. It
-  now closes the kit, resolved through the game's control map so rebinds work.
-- Ingredient mode rides the same curve; refills now log when a flask is short of
-  essence instead of silently never filling; guarded against a double-dispatch on
-  a variant click.
+**Pricing.** Cost scaled with a per-effect magnitude "concentration", which is
+only coherent WITHIN one effect family — an effect used by exactly one potion
+normalised against itself and read as the cheapest possible. On a Requiem list
+that made Restore Health (Surpassing) cost less than (Good). Quality is now
+derived from gold value, so it is comparable across every effect.
 
-**Note:** the two threshold sliders were renamed (`fCatalystLevel`/`fApexLevel`
--> `fCatalystQuality`/`fApexQuality`) because the old numbers are on a scale that
-no longer exists — custom values reset to defaults, and the retired keys log a
-warning. **Essence you have already banked is left exactly as-is.**
+- The reference is the **p15 gold value of the load order's non-food potions**,
+  computed by the patcher. Not the median: the median sits ABOVE five of six
+  Restore Health rungs (126 vs a 20-100g ladder), which floors the common
+  potions and prices them to nearly free. Measured across ten modlists the
+  anchor lands 21-50 while the medians run 83-193.
+- Quality is **log-scaled** (1.0 = the anchor, +0.5 per doubling of value) and
+  capped, because potion pools are heavy-tailed — marth's runs from 1 to 50000
+  gold. A linear ratio has no resolution at the bottom and no ceiling at the
+  top. ~91% of every list's pool now resolves distinctly.
+- Recipe cost accumulates in float and **rounds once per tier**. Rounding per
+  ingredient was what flattened the ladders: Restore Health's pair is two
+  1-GOLD reagents, so every quality below ~1.0 rounded to the same 1+1.
+
+**Guaranteed tiers** (DESIGN §1/§2) now hold as written. Catalyst on any
+above-anchor potion regardless of its reagents; Apex on the top rungs of the
+potion's own family. Both grow with the rung. Apex is POSITIONAL because the
+design's rule is ("surpassing and the tier below") — no numeric cut expresses
+that across families with different value spreads.
+
+**Ladder detection moved into the Synthesis patcher**, which has the whole load
+order at patch time. The DLL was string-stripping a trailing "(rank)" from
+potion names — a Requiem convention, not a Skyrim one. Vanilla ships "Potion of
+Minor/Plentiful/Vigorous/Ultimate Healing", so every rung read as a singleton
+and the Apex guarantee silently never fired. The patcher now combines
+parenthetical ranks, trailing numerals, vessel-noun swaps, rank-adjective
+vocabulary and EditorID digit stems, with a validation gauntlet that rejects
+rather than invents (Requiem ships four "Healing Poultice" forms all worth 4
+gold — that is one item, not a four-rung ladder). Validated on every modlist
+available: ten lists, sixteen profiles.
+
+**Also**: rare essence accrued as fast as common (Catalyst/Apex are now valued
+relative to their own category medians, Base unchanged); the power now closes
+the field kit, resolved through the control map so rebinds work; ingredient
+mode rides the identical curve; refills log essence shortfalls; guarded a
+double-dispatch on a variant click.
+
+**Upgrading: re-run Synthesis** — the patcher emits new ladder and anchor data.
+Without it the DLL logs a DEGRADED warning and falls back (no positional Apex).
+Two MCM keys changed meaning and were renamed, so custom values reset:
+`fCatalystLevel`/`fApexLevel` are gone; use `fCatalystQuality` (1.0) and
+`iApexTopRungs` (2), with `fApexQuality` (2.5) now only an absolute fallback
+for a one-off potion with no family.
 
 ## v1.0.0 — first public release (2026-07-20)
 

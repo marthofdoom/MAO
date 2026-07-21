@@ -207,6 +207,18 @@ static partial class Commands
             uint NQ(double f) => noFood[Math.Clamp((int)(noFood.Count * f), 0, noFood.Count - 1)];
             Console.WriteLine($"  no-food percentiles: p10={NQ(.10)} p20={NQ(.20)} p25={NQ(.25)} " +
                               $"p30={NQ(.30)} p35={NQ(.35)} p40={NQ(.40)} p50={NQ(.50)}");
+            // How much of the pool does the log quality curve actually resolve,
+            // and how much is pinned at the floor/cap where money stops mattering?
+            double anchor = NQ(.15);
+            int floored = 0, capped = 0;
+            foreach (var v in noFood)
+            {
+                double q = 1.0 + Math.Log2(v / anchor) / 2.0;
+                if (q <= 0.4) floored++; else if (q >= 4.0) capped++;
+            }
+            Console.WriteLine($"  anchor(p15)={anchor}: FLOORED {floored} ({100.0 * floored / noFood.Count:0.0}%, <={Math.Round(anchor * 0.435)}g) " +
+                              $"CAPPED {capped} ({100.0 * capped / noFood.Count:0.0}%, >={Math.Round(anchor * 64)}g) " +
+                              $"resolved {100.0 * (noFood.Count - floored - capped) / noFood.Count:0.0}%");
             Console.WriteLine($"  min={values[0]} p10={Q(.10)} p25={Q(.25)} MEDIAN={Q(.50)} " +
                               $"p75={Q(.75)} p90={Q(.90)} p99={Q(.99)} max={values[^1]}");
         }

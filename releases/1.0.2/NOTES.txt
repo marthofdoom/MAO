@@ -1,0 +1,2 @@
+Economy rebuild: gold-anchored log quality, patcher-side ladder detection, guaranteed tiers per design
+built from native run 29808747459
