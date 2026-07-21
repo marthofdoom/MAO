@@ -178,10 +178,107 @@ static partial class Commands
             };
         }
 
+        // ── NAMED-LADDER INDEX (see Commands.Ladders.cs for the heuristic).
+        // Emitted alongside the tiers so the DLL can apply the POSITIONAL Apex
+        // guarantee (top iApexTopRungs rungs of a family) and price sourceless
+        // rungs off their family's real reagent pair — the DLL only consumes
+        // this; it does no name parsing of its own (marth: programmatically
+        // understood in the patcher, not a string convention in the DLL).
+        // Pool mirrors the DLL's BuildEffectPotionTable filter: no food, and
+        // never MAO's own flask forms.
+        var potionPool = lo.PriorityOrder.Ingestible().WinningOverrides()
+            .Where(p => !p.Flags.HasFlag(Ingestible.Flag.FoodItem))
+            .Where(p => !p.FormKey.ModKey.Name.StartsWith("MAO", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        // MGEFs with a real ingredient source (mirrors BuildRecipeTable's
+        // value>0 filter): a ladder's representative effect must be one the
+        // DLL's recipe table can actually price.
+        var sourcedEffects = new HashSet<FormKey>();
+        foreach (var i in lo.PriorityOrder.Ingredient().WinningOverrides())
+            if (i.Value > 0)
+                foreach (var e in i.Effects) sourcedEffects.Add(e.BaseEffect.FormKey);
+        var rejects = new List<string>();
+        var ladders = DetectLadders(potionPool, cache, sourcedEffects, rejects);
+        var ladderJson = new List<object>();
+        var signalCount = new Dictionary<string, int>();
+        int rungTotal = 0, apexMarked = 0;                 // apex count at the DLL default N=2
+        foreach (var lad in ladders)
+        {
+            foreach (var s in lad.Signal.Split('+'))
+                signalCount[s] = signalCount.GetValueOrDefault(s) + 1;
+            var rungsJson = new List<object>();
+            foreach (var r in lad.Rungs)
+            {
+                rungTotal++;
+                if (r.Rung >= lad.Height - Math.Min(2, lad.Height - 1)) apexMarked++;
+                rungsJson.Add(new Dictionary<string, object>
+                {
+                    ["plugin"] = r.Potion.FormKey.ModKey.FileName.String,
+                    ["fid"] = $"0x{r.Potion.FormKey.ID:X6}",
+                    ["name"] = r.Potion.Name?.String ?? "?",
+                    ["value"] = (int)r.Value,
+                    ["rung"] = r.Rung,
+                });
+            }
+            var lj = new Dictionary<string, object>
+            {
+                ["stem"] = lad.Stem,
+                ["signal"] = lad.Signal,
+                ["height"] = lad.Height,
+                ["rungs"] = rungsJson,
+            };
+            // The family's representative MGEF — the DLL looks its recipe up in
+            // its own g_effectRecipe. Absent when no rung's primary effect has
+            // an ingredient source (rungs still get the Apex position marking).
+            if (lad.RepEffect is { } eff)
+                lj["effect"] = new Dictionary<string, object>
+                {
+                    ["plugin"] = eff.ModKey.FileName.String,
+                    ["fid"] = $"0x{eff.ID:X6}",
+                };
+            ladderJson.Add(lj);
+        }
+
+        // QUALITY ANCHOR. VariantQuality reads 1.0 at this gold value. It is
+        // deliberately NOT the potion median: MAO ignores food at every point
+        // of the economy (plugin.cpp: "Food is NOT a potion — leave it"), so
+        // bread cannot help anchor potion quality — but the honest no-food
+        // MEDIAN (126 on marth's Requiem list, 192 on Default) sits ABOVE
+        // five of Requiem's six Restore Health rungs, slams the entry rungs
+        // into the quality floor and prices the everyday ladder near free.
+        // What the validated tuning was ACTUALLY anchored to (measured, marth
+        // 2026-07-20) is a low percentile of the no-food pool: the old
+        // food-included median landed at ~p13-p18 of it on two very different
+        // profiles — that accident is why it worked. So emit the percentile
+        // EXPLICITLY: p15 of the no-food, non-MAO potion pool. Quality 1.0
+        // then means "a real potion, the cheapest you'd actually brew" — the
+        // entry rungs (Diluted/Minor) sit just below it, the working rungs
+        // just above, exactly where the Catalyst line is supposed to bite.
+        // LVLI-distribution filtering was ruled out (distributed-only medians
+        // are within 2 gold of the full pool — essentially every potion form
+        // is distributed).
+        const double AnchorPercentile = 0.15;
+        var anchorVals = potionPool
+            .Where(p => p.Value > 0 && p.Effects.Count > 0)
+            .Select(p => (int)p.Value).OrderBy(v => v).ToList();
+        int Pctl(double f) => anchorVals.Count == 0 ? 0
+            : anchorVals[Math.Clamp((int)(anchorVals.Count * f), 0, anchorVals.Count - 1)];
+        var potionStats = new Dictionary<string, object>
+        {
+            ["count"] = anchorVals.Count,
+            // The value the DLL consumes: quality 1.0 = this many gold.
+            ["anchor"] = Pctl(AnchorPercentile),
+            ["anchorPercentile"] = AnchorPercentile,
+            // Diagnostic only — the pool's true median, to eyeball the gap.
+            ["median"] = Pctl(0.50),
+        };
+
         var doc = new Dictionary<string, object>
         {
             ["from"] = $"{ingr.Count} ingredients scored over {lo.ListedOrder.Count()} plugins",
             ["tierStats"] = tierStats,
+            ["potionStats"] = potionStats,
+            ["ladders"] = ladderJson,
             ["tiers"] = entries,
         };
         var dir = Path.GetDirectoryName(Path.GetFullPath(outPath));
@@ -195,6 +292,13 @@ static partial class Commands
             $"{orphans} 0-source -> Base");
         Console.WriteLine($"rank cuts: Apex rarest {apexCut}, Catalyst next {catCut - apexCut}, Base rest");
         Console.WriteLine($"tiers: Apex={tierCount["Apex"]}  Catalyst={tierCount["Catalyst"]}  Base={tierCount["Base"]}");
+        Console.WriteLine($"ladders: {ladders.Count} detected over {potionPool.Count} potions " +
+            $"({string.Join(", ", signalCount.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key} {kv.Value}"))}); " +
+            $"{rungTotal} rungs, {apexMarked} apex-marked at top-2 " +
+            $"({100.0 * apexMarked / Math.Max(1, potionPool.Count):0.0}% of pool); " +
+            $"{rejects.Count} group(s) rejected by validation");
+        Console.WriteLine($"quality anchor: {potionStats["anchor"]} gold (p{AnchorPercentile * 100:0} of " +
+            $"{anchorVals.Count} no-food potions, pool p50 {potionStats["median"]}; emitted — the DLL consumes this)");
         // Sanity reference: report where the named Vampire Dust ingredient lands,
         // with its raw signals, so the tiering can be eyeballed. NOTE: the design
         // note's FormKey 0x0003AD5F is vanilla FROST SALTS, not Vampire Dust — so
@@ -219,6 +323,24 @@ static partial class Commands
             File.WriteAllText(outPath + ".debug.json", System.Text.Json.JsonSerializer.Serialize(
                 dbg, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
             Console.WriteLine($"wrote {outPath}.debug.json (raw components)");
+        }
+        if (Environment.GetEnvironmentVariable("MAO_LADDER_DEBUG") == "1")
+        {
+            // Rejected groups + full accepted ladders, for eyeballing a new
+            // list's naming convention (the MAO_TIER_DEBUG pattern).
+            var dbg = new Dictionary<string, object>
+            {
+                ["rejected"] = rejects,
+                ["ladders"] = ladders.Select(l => new Dictionary<string, object>
+                {
+                    ["stem"] = l.Stem, ["signal"] = l.Signal, ["height"] = l.Height,
+                    ["rungs"] = l.Rungs.Select(r =>
+                        $"{r.Potion.Name?.String} [{r.Potion.FormKey}] {r.Value}g rung {r.Rung}").ToList(),
+                }).ToList(),
+            };
+            File.WriteAllText(outPath + ".ladders.json", System.Text.Json.JsonSerializer.Serialize(
+                dbg, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+            Console.WriteLine($"wrote {outPath}.ladders.json (ladder detection detail)");
         }
         Console.WriteLine($"wrote {outPath}");
         return 0;

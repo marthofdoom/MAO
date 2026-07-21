@@ -72,7 +72,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "1.0.1";
+constexpr auto kPluginVersion = "1.0.2";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -360,7 +360,7 @@ std::mutex    g_effectCostLock;
 // makes the concurrent read/write well-defined (matches g_perkDebug's pattern).
 std::atomic<float>                            g_essenceTax = 1.3f;   // fEssenceTax
 // Flask cost scales linearly with the variant's QUALITY (VariantQuality:
-// cross-effect, median potion = 1.0), and the flask's ESSENCE TIER
+// cross-effect, anchor potion = 1.0), and the flask's ESSENCE TIER
 // REQUIREMENT steps up at the two quality thresholds below — above
 // fCatalystQuality it also needs Catalyst, at/above fApexQuality it also needs
 // Apex, independent of what the recipe's ingredients are (DESIGN §1/§2).
@@ -370,7 +370,14 @@ std::atomic<float>                            g_essenceTax = 1.3f;   // fEssence
 // scale (INVARIANTS: rename any key whose meaning changes).
 std::atomic<float> g_costRate = 1.0f;  // fCostRate
 std::atomic<float> g_catalystQuality = 1.0f;  // fCatalystQuality — ABOVE this, Catalyst is required
-std::atomic<float> g_apexQuality     = 1.2f;  // fApexQuality — at/above this, Apex is required
+// fApexQuality — ABSOLUTE Apex line, for a potion with no ladder to be the top
+// of (a one-off legendary). Positional guarantee below handles the normal case.
+std::atomic<float>         g_apexQuality{ 2.5f };
+// iApexTopRungs — how many TOP rungs of a ladder are Apex-guaranteed.
+// Replaces the old fApexQuality threshold: the design's rule ("surpassing and
+// the tier below") is positional, and no numeric quality cut expresses it across
+// ladders with different value spreads. See g_ladderPos / IsApexRungLocked.
+std::atomic<std::uint32_t> g_apexTopRungs{ 2 };
 
 // Effect -> the strongest load-order potion/poison carrying it as its primary
 // effect. This is what physically embodies a blueprint (the flask item + what
@@ -380,9 +387,66 @@ std::atomic<float> g_apexQuality     = 1.2f;  // fApexQuality — at/above this,
 std::unordered_map<RE::FormID, std::pair<RE::FormID, std::uint32_t>> g_effectPotion;
 std::unordered_map<RE::FormID, float> g_effectMinMag;  // MGEF -> weakest (standard) primary-effect magnitude
 std::mutex                            g_effectPotionLock;
-// Median potion gold value in the load order — the QUALITY reference. Set at
-// kDataLoaded by BuildEffectPotionTable; 1.0 until then.
-std::atomic<float>                    g_medianPotionValue{ 1.0f };
+// QUALITY ANCHOR — the gold value at which quality reads 1.0. Deliberately
+// NOT the potion median: MAO ignores food everywhere, but the honest no-food
+// median (126 on marth's Requiem list) sits ABOVE five of the six Restore
+// Health rungs and collapses the everyday ladders onto the quality floor.
+// What the validated tuning was actually anchored to (measured) is a LOW
+// PERCENTILE of the no-food pool — the anchor is p15: "a real potion, the
+// cheapest you'd actually brew". Runtime fallback computed by
+// BuildEffectPotionTable at kDataLoaded (p15 of its own no-food, non-flask
+// pool); OVERRIDDEN by the installer's emitted potionStats.anchor right
+// after (LoadLadders) — the number the sim's validated tables price with
+// must be the number the game prices with. 1.0 until then.
+std::atomic<float>                    g_qualityAnchor{ 1.0f };
+
+// INSTALLER-DERIVED LADDER INDEX (v1.0.2). A "ladder" is one potion family's
+// quality progression: Requiem's "Potion of Restore Health (Diluted ..
+// Surpassing)", vanilla's "Potion of Minor .. Ultimate Healing". The DLL used
+// to string-strip a trailing "(rank)" at runtime — but that convention is
+// Requiem's alone: vanilla ranks by ADJECTIVE, so on a vanilla-ish list every
+// rung read as a singleton and the Apex guarantee silently never fired. And
+// grouping by MGEF cannot work either — Requiem's top rung uses its own effect
+// (REQ_Alch_RestoreHealthComplete) that nothing else shares. Ladder detection
+// therefore lives in the PATCHER (Commands.Ladders.cs: multi-signal name/
+// EditorID grouping, validated by effect-archetype coherence, rungs ranked by
+// gold value — the same metric quality prices from) and is EMITTED into
+// mao_tiers.json ("ladders"). This DLL only CONSUMES it (LoadLadders):
+//   g_ladderPos     — potion form -> (rung, height). The top iApexTopRungs
+//                     rungs are Apex-guaranteed (DESIGN §2: "surpassing and the
+//                     tier below") — POSITIONAL, because no single quality
+//                     threshold can express it: ladders have different value
+//                     spreads, and a fixed cut catches the top two of one
+//                     ladder and only the top one of the next. Evaluated live
+//                     (IsApexRungLocked) so the MCM knob needs no data rebuild.
+//   g_ladderRecipe  — the family's real reagent pair, for rungs whose own
+//                     effect has NO ingredient source. Those used to fall back
+//                     to a phantom {5 gold, Base} pair which quality then
+//                     multiplied — that phantom was the whole 228B Surpassing
+//                     flask.
+// DEGRADED MODE (no/stale mao_tiers.json): both maps stay empty — the
+// positional guarantee never fires (the absolute fApexQuality line still
+// does), sourceless rungs price off the phantom pair again, and LoadLadders
+// warns LOUDLY. No runtime name parsing remains; re-running the installer /
+// Synthesis patcher is the fix. Guarded by g_effectCostLock (read together
+// with g_effectRecipe in VariantCost / IngrCostPerCharge).
+struct LadderPos { std::uint16_t rung = 0, height = 0; };
+std::unordered_map<RE::FormID, LadderPos> g_ladderPos;
+std::unordered_map<RE::FormID, Recipe>    g_ladderRecipe;
+
+// True when a_form sits in the top iApexTopRungs rungs of its ladder — the
+// positional Apex guarantee. Caller holds g_effectCostLock (the maps' guard);
+// the knob is read live so an MCM change applies immediately.
+bool IsApexRungLocked(RE::FormID a_form) {
+    const auto it = g_ladderPos.find(a_form);
+    if (it == g_ladderPos.end()) {
+        return false;
+    }
+    const auto&         p = it->second;
+    const std::uint32_t n = std::min<std::uint32_t>(g_apexTopRungs.load(),
+                                                    p.height > 0u ? p.height - 1u : 0u);
+    return p.rung + n >= p.height;  // rung >= height - n, underflow-safe
+}
 
 // Flask helpers — defined below near the container sink; forward-declared for
 // ConfigureFlask / the drink hook above them.
@@ -569,6 +633,14 @@ constexpr float kApexUnit     = 1.0f;  // a MEDIAN Apex ingredient yields this
 // per charge").
 constexpr std::uint32_t kCatalystSurcharge = 6;
 constexpr std::uint32_t kApexSurcharge     = 3;
+// Base reagents in Requiem are worth 1-2 gold, so an unscaled Base cost lands in
+// the 2-5 essence range where integer rounding erases a whole quality ladder.
+// x2 buys the rungs distinct values (audit over marth's 54 named ladders: 27%
+// of steps flat at x1, 6% at x2, only 3 points better at x3) and lands Base
+// costs where v1.0.0 had them, so essence banked under 1.0.0 keeps its
+// purchasing power — balances are never rescaled (marth: "they have what they
+// have").
+constexpr double       kBaseScale         = 2.0;
 // Per-tier median ingredient gold value (index by Tier). Overwritten from
 // mao_tiers.json at kDataLoaded when the installer supplied stats.
 std::atomic<float> g_tierMedian[3]{ { 5.0f }, { 20.0f }, { 60.0f } };
@@ -754,6 +826,116 @@ void BuildRecipeTable() {
     spdlog::info("[econ] recipe table: {} effects from {} ingredients; tier medians C={} A={}",
                  g_effectRecipe.size(), ingredients, g_tierMedian[1].load(), g_tierMedian[2].load());
 }
+
+// ── INSTALLER LADDER DATA (mao_tiers.json "ladders" + "potionStats").
+// Consumes what the patcher detected (Commands.Ladders.cs) — the DLL does NO
+// name parsing of its own (marth: ladders are programmatically understood in
+// the patcher, not a string convention here). Must run AFTER BuildRecipeTable
+// (the family recipe is looked up in g_effectRecipe) and after
+// BuildEffectPotionTable (the emitted quality anchor overrides its runtime
+// fallback). Logs LOUDLY which path is active: ACTIVE (installer data) or
+// DEGRADED (absent/stale/corrupt file — positional Apex guarantees off, only
+// the absolute fApexQuality line applies).
+void LoadLadders() {
+    std::scoped_lock lk(g_effectCostLock);
+    g_ladderPos.clear();
+    g_ladderRecipe.clear();
+    auto*         dh = RE::TESDataHandler::GetSingleton();
+    std::ifstream f("Data/SKSE/Plugins/MAO/mao_tiers.json");
+    if (!f || !dh) {
+        spdlog::warn("[ladders] no mao_tiers.json — DEGRADED pricing: no positional Apex "
+                     "guarantee and no family-recipe fallback (only the absolute fApexQuality "
+                     "line applies). Run the MAO installer / Synthesis patcher to fix.");
+        return;
+    }
+    try {
+        nlohmann::json j;
+        f >> j;
+        // Emitted quality ANCHOR — p15 of the patcher's no-food potion pool,
+        // the number every validated cost table prices against (see
+        // g_qualityAnchor). The runtime-computed value stays only as the
+        // degraded fallback; it is the SAME percentile over the same kind of
+        // pool, so ACTIVE and DEGRADED stay within a few gold of each other.
+        if (const auto ps = j.find("potionStats"); ps != j.end() && ps->is_object()) {
+            const float m = ps->value("anchor", 0.0f);
+            if (m > 0.0f) {
+                spdlog::info("[ladders] quality anchor: emitted {} (runtime fallback was {})", m,
+                             g_qualityAnchor.load());
+                g_qualityAnchor.store(std::max(1.0f, m));
+            }
+        }
+        const auto la = j.find("ladders");
+        if (la == j.end() || !la->is_array()) {
+            spdlog::warn("[ladders] mao_tiers.json has NO ladder data (pre-1.0.2 file) — "
+                         "DEGRADED pricing: no positional Apex guarantee and no family-recipe "
+                         "fallback. Re-run the MAO installer / Synthesis patcher.");
+            return;
+        }
+        std::size_t ladders = 0, rungs = 0, withRecipe = 0, miss = 0;
+        for (const auto& L : *la) {
+            const int rawHeight = L.value("height", 0);
+            if (rawHeight < 2 || rawHeight > 0xFFFF) {
+                continue;  // not a ladder / corrupt count — clamp at ingestion
+            }
+            const auto height = static_cast<std::uint16_t>(rawHeight);
+            // The family's reagent pair: the ladder's representative MGEF looked
+            // up in OUR recipe table (the same computation the patcher mirrors).
+            const Recipe* fam = nullptr;
+            if (const auto eff = L.find("effect"); eff != L.end() && eff->is_object()) {
+                const std::string ep = eff->value("plugin", std::string{});
+                const std::string ef = eff->value("fid", std::string{});
+                if (!ep.empty() && !ef.empty()) {
+                    const RE::FormID raw =
+                        static_cast<RE::FormID>(std::strtoul(ef.c_str(), nullptr, 0)) & 0xFFFFFF;
+                    if (auto* mg = dh->LookupForm<RE::EffectSetting>(raw, ep)) {
+                        if (const auto rit = g_effectRecipe.find(mg->GetFormID());
+                            rit != g_effectRecipe.end()) {
+                            fam = &rit->second;
+                        }
+                    }
+                }
+            }
+            bool any = false;
+            for (const auto& r : L.value("rungs", nlohmann::json::array())) {
+                const std::string plugin = r.value("plugin", std::string{});
+                const std::string fidStr = r.value("fid", std::string{});
+                if (plugin.empty() || fidStr.empty()) {
+                    continue;
+                }
+                const RE::FormID raw =
+                    static_cast<RE::FormID>(std::strtoul(fidStr.c_str(), nullptr, 0)) & 0xFFFFFF;
+                auto* alch = dh->LookupForm<RE::AlchemyItem>(raw, plugin);
+                if (!alch) {
+                    ++miss;  // unresolved (plugin removed): drop, never guess
+                    continue;
+                }
+                const auto rung = static_cast<std::uint16_t>(
+                    std::clamp(r.value("rung", 0), 0, rawHeight - 1));
+                g_ladderPos[alch->GetFormID()] = { rung, height };
+                if (fam) {
+                    g_ladderRecipe[alch->GetFormID()] = *fam;
+                    ++withRecipe;
+                }
+                ++rungs;
+                any = true;
+            }
+            if (any) {
+                ++ladders;
+            }
+        }
+        spdlog::info("[ladders] installer ladder data ACTIVE: {} ladder(s), {} rung(s) "
+                     "({} with a family recipe, {} unresolved); top {} rung(s) per ladder "
+                     "Apex-guaranteed",
+                     ladders, rungs, withRecipe, miss, g_apexTopRungs.load());
+    } catch (const std::exception& ex) {
+        g_ladderPos.clear();
+        g_ladderRecipe.clear();
+        spdlog::error("[ladders] parse failed ({}) — DEGRADED pricing (no positional Apex "
+                      "guarantee); re-run the MAO installer / Synthesis patcher",
+                      ex.what());
+    }
+}
+
 struct FlaskCost { std::uint32_t base = 0, catalyst = 0, apex = 0; };
 
 void AddTier(FlaskCost& c, Tier t, std::uint32_t amt) {
@@ -766,8 +948,9 @@ void AddTier(FlaskCost& c, Tier t, std::uint32_t amt) {
     }
 }
 
-// ── QUALITY: how good this specific potion is, on a scale where a MEDIAN
-// potion in the load order is 1.0 (v1.0.1 pricing redo).
+// ── QUALITY: how good this specific potion is, on a scale where the load
+// order's ANCHOR potion (g_qualityAnchor — p15 of the no-food pool, "the
+// cheapest potion you'd actually brew") is 1.0 (v1.0.1 pricing redo).
 //
 // Replaces the old per-effect magnitude "concentration" (magnitude divided by
 // that effect's own weakest instance), which was only coherent WITHIN one
@@ -788,16 +971,25 @@ void AddTier(FlaskCost& c, Tier t, std::uint32_t amt) {
 // Fallback: potions with no gold value (some mod-added flasks) keep the old
 // magnitude concentration. Floored so nothing is ever free, capped so a single
 // absurdly-priced modded potion can't demand the whole pouch.
-constexpr float kQualityFloor = 0.25f;
-constexpr float kQualityCap   = 8.0f;
+// LOG-ratio, not linear. A load order's potion pool is heavy-tailed (marth's
+// Requiem list: anchor ~35 gold, p90 311, max 50000), and a linear value ratio
+// on that distribution has no useful resolution at the bottom and no ceiling at
+// the top — v1.0.1 shipped it and every low rung of a ladder collapsed onto the
+// floor while the top rung blew out ~38x. log2 keeps the ordering (a pricier
+// potion can never read as lower quality) while compressing the tail: a 25x
+// outlier prices ~3x, not ~20x. Quality is 1.0 exactly at the anchor, which is
+// what the Catalyst guarantee threshold is expressed against.
+constexpr float kQualityFloor = 0.4f;
+constexpr float kQualityCap   = 4.0f;
+constexpr float kQualityLogDiv = 2.0f;
 
 float VariantQuality(RE::AlchemyItem* a_alch) {
     if (!a_alch) {
         return 1.0f;
     }
     if (const auto gv = a_alch->GetGoldValue(); gv > 0) {
-        return std::clamp(static_cast<float>(gv) / g_medianPotionValue.load(), kQualityFloor,
-                          kQualityCap);
+        const float ratio = static_cast<float>(gv) / std::max(1.0f, g_qualityAnchor.load());
+        return std::clamp(1.0f + std::log2(ratio) / kQualityLogDiv, kQualityFloor, kQualityCap);
     }
     // No gold value — fall back to the legacy per-effect magnitude ratio.
     if (a_alch->effects.empty() || !a_alch->effects[0] || !a_alch->effects[0]->baseEffect) {
@@ -819,7 +1011,7 @@ float VariantQuality(RE::AlchemyItem* a_alch) {
     // handed Catalyst+Apex surcharges it never used to pay: a 2x-concentration
     // legacy potion reads ~1.0, not 2.0.
     const float conc = (minMag > 0.01f) ? std::max(1.0f, mag / minMag) : 1.0f;
-    return std::clamp(std::sqrt(conc), kQualityFloor, kQualityCap);
+    return std::clamp(1.0f + std::log2(conc) / kQualityLogDiv, kQualityFloor, kQualityCap);
 }
 
 // Compound per-charge cost for a specific variant (Marth's model):
@@ -837,46 +1029,53 @@ FlaskCost VariantCost(RE::AlchemyItem* a_alch) {
         return fc;
     }
     auto*  eff = a_alch->effects[0]->baseEffect;
+    const RE::FormID selfId = a_alch->GetFormID();
     Recipe rec{};
+    bool   apexRung = false;
     {
         std::scoped_lock lk(g_effectCostLock);
         auto             it = g_effectRecipe.find(eff->GetFormID());
         if (it != g_effectRecipe.end()) {
             rec = it->second;
+        } else if (auto lit = g_ladderRecipe.find(selfId); lit != g_ladderRecipe.end()) {
+            // No ingredient carries this effect (Requiem's top rungs use
+            // potion-only MGEFs). Borrow the family's reagent pair from the
+            // installer's ladder index rather than the phantom {5 gold, Base}
+            // default: a stronger rung of a family is brewed from that family's
+            // reagents, and quality does the rest. The phantom was the entire
+            // base cost of the 228B Surpassing flask (marth, v1.0.1).
+            rec = lit->second;
         }
+        apexRung = IsApexRungLocked(selfId);
     }
     // Cross-effect quality (see VariantQuality) replaces the old per-effect
     // magnitude concentration.
     const float quality = VariantQuality(a_alch);
     const float basis   = quality * g_costRate * g_essenceTax;
-    // BASE splits per ingredient, each priced in ITS OWN tier's units.
-    for (const RecipeIng& ing : { rec.a, rec.b }) {
-        AddTier(fc, ing.tier,
-                std::max(1u, static_cast<std::uint32_t>(
-                                 std::lround(IngredientUnits(ing.value, ing.tier) * basis))));
-    }
-    // GUARANTEED TIER REQUIREMENTS BY QUALITY (DESIGN §1/§2, marth). These do
-    // NOT depend on the recipe's ingredient tiers: a high-quality potion
-    // requires the rarer essences even when its ingredients are common
-    // ("The Unperked Ceiling / Apex Route" — reaching top-quality caps means
-    // burning Tier III at a deliberately inefficient rate). They are
-    // INDEPENDENT and ADDITIVE — a top-tier potion needs Catalyst *and* Apex.
-    // Amounts scale with quality like the base portion does.
-    if (quality > g_catalystQuality) {
-        fc.catalyst += std::max(kCatalystSurcharge,
-                                static_cast<std::uint32_t>(std::lround(kCatalystSurcharge * quality)));
-    }
-    if (quality > g_apexQuality) {
-        fc.apex += std::max(kApexSurcharge,
-                            static_cast<std::uint32_t>(std::lround(kApexSurcharge * quality)));
-    }
+    // Accumulate in FLOAT and round ONCE per tier at the end. v1.0.1 rounded
+    // max(1, ...) per INGREDIENT, which is what flattened the ladders: Requiem's
+    // Restore Health pair is two 1-GOLD reagents, so every quality below ~1.0
+    // rounded to the same 1+1 and Diluted..Good all cost exactly the same
+    // (marth: "thats def not correct").
+    double fb = 0.0, fcat = 0.0, fap = 0.0;
+    auto   addF = [&](Tier t, double n) {
+        if (t == Tier::Base) fb += n;
+        else if (t == Tier::Catalyst) fcat += n;
+        else fap += n;
+    };
+    auto pricePair = [&](const Recipe& r) {
+        for (const RecipeIng& ing : { r.a, r.b }) {
+            // kBaseScale gives the Base ladder integer headroom (see its note).
+            const double sc = (ing.tier == Tier::Base) ? kBaseScale : 1.0;
+            addF(ing.tier, IngredientUnits(ing.value, ing.tier) * basis * sc);
+        }
+    };
+    pricePair(rec);
     // Secondary effects that match the primary's polarity price like the
     // primary: their own recipe pair at the SAME potion quality, in their own
     // tiers. A drawback (opposite polarity — Requiem's Damage-Regen side
     // effects on every standard potion) adds NOTHING: it is a cost the drinker
-    // pays, not the brewer. (Replaces the flat +apexUnit for ANY multi-effect
-    // potion, which priced ordinary Requiem poultices like endgame combos —
-    // marth 2026-07-16: "42B and 165A. Thats not correct".)
+    // pays, not the brewer.
     const bool primaryHostile = eff->IsHostile() || eff->IsDetrimental();
     for (std::size_t i = 1; i < a_alch->effects.size(); ++i) {
         auto* e2 = a_alch->effects[i];
@@ -899,17 +1098,45 @@ FlaskCost VariantCost(RE::AlchemyItem* a_alch) {
             }
         }
         if (!have2) {
-            AddTier(fc, Tier::Catalyst, kCatalystSurcharge);  // no recipe known — mild fallback
+            fcat += kCatalystSurcharge;  // no recipe known — mild fallback
             continue;
         }
-        // Riders price off the SAME potion quality as the primary (one potion,
-        // one quality) — their own recipe pair in their own tier units.
-        for (const RecipeIng& ing : { r2.a, r2.b }) {
-            AddTier(fc, ing.tier,
-                    std::max(1u, static_cast<std::uint32_t>(
-                                     std::lround(IngredientUnits(ing.value, ing.tier) * basis))));
-        }
+        pricePair(r2);
     }
+    // GUARANTEED TIERS (DESIGN §1/§2, marth: "anything over 1.0 quality has
+    // Catalyst added even if the ingredients dont show it, and surpassing and the
+    // tier below have apex guaranteed the same way"). Independent and additive —
+    // a top rung needs Catalyst *and* Apex. Amounts are FLAT: quality already
+    // scales the recipe portion, and scaling the surcharges by quality too made
+    // cost quadratic (v1.0.1's 38x cliff).
+    //   Catalyst — any ABOVE-ANCHOR potion. Quality is 1.0 at the p15 anchor by
+    //              construction, so g_catalystQuality is a true "better than the
+    //              cheapest real potion" line.
+    //   Apex     — the top iApexTopRungs rungs of the potion's OWN ladder, from
+    //              the installer's emitted index (see g_ladderPos/LoadLadders).
+    //              Positional, per the design's own words; a numeric threshold
+    //              cannot express "and the tier below" across ladders of
+    //              different value spreads.
+    // Both surcharges GROW with the rung (marth). Safe in a way v1.0.1's were
+    // not: quality there was a LINEAR value/median running to 8, so scaling the
+    // surcharge on top of a base that also scaled made cost quadratic (the 38x
+    // cliff). Quality is now log-scaled and capped at 4.0, so the surcharge span
+    // is a bounded ~6..24 Catalyst / 3..12 Apex.
+    const bool aboveAnchor = quality > g_catalystQuality;
+    if (aboveAnchor) {
+        fcat += kCatalystSurcharge * quality;
+    }
+    // Positional guarantee, but only for an ABOVE-ANCHOR rung — the top of a junk
+    // ladder is still junk. The absolute line covers a one-off with no ladder.
+    if ((aboveAnchor && apexRung) || quality >= g_apexQuality) {
+        fap += kApexSurcharge * quality;
+    }
+    auto settle = [](double v) -> std::uint32_t {
+        return v <= 0.0 ? 0u : std::max(1u, static_cast<std::uint32_t>(std::lround(v)));
+    };
+    fc.base     = settle(fb);
+    fc.catalyst = settle(fcat);
+    fc.apex     = settle(fap);
     if (g_hasBenefactor.load() && fc.apex > 0) {  // Apex Stabilization: Tier III cost -35%
         fc.apex = std::max(1u, static_cast<std::uint32_t>(std::lround(fc.apex * 0.65)));
     }
@@ -976,16 +1203,28 @@ IngrCharge IngrCostPerCharge(RE::AlchemyItem* a_alch) {
     }
     auto*  eff = a_alch->effects[0]->baseEffect;
     Recipe rec{};
+    bool   apexLadder = false;
     {
         std::scoped_lock lk(g_effectCostLock);
         auto             it = g_effectRecipe.find(eff->GetFormID());
-        if (it == g_effectRecipe.end()) {
-            return ic;  // no known recipe — unpriceable in ingredient mode
+        if (it != g_effectRecipe.end()) {
+            rec = it->second;
         }
-        rec = it->second;
+        // Same ladder fallback as the essence economy: a rung whose own effect
+        // has no ingredient source (Requiem's potion-only top MGEFs) borrows its
+        // family's reagents from the installer's ladder index. Without this
+        // those rungs were simply UNPRICEABLE in ingredient mode — the two
+        // economies must stay mirror images (marth).
+        if (!rec.a.form || !rec.b.form) {
+            if (auto lit = g_ladderRecipe.find(a_alch->GetFormID());
+                lit != g_ladderRecipe.end()) {
+                rec = lit->second;
+            }
+        }
+        apexLadder = IsApexRungLocked(a_alch->GetFormID());
     }
     if (!rec.a.form || !rec.b.form) {
-        return ic;
+        return ic;  // genuinely unpriceable in ingredient mode
     }
     // SAME curve as the essence economy (marth): ingredient mode scales off the
     // same cross-effect quality, not the retired per-effect concentration — the
@@ -1005,8 +1244,12 @@ IngrCharge IngrCostPerCharge(RE::AlchemyItem* a_alch) {
     }
     ic.a     = rec.a.form;
     ic.b     = rec.b.form;
-    ic.pairs =
-        1u + (quality > g_catalystQuality ? 1u : 0u) + (quality > g_apexQuality ? 1u : 0u) + extra;
+    // Mirrors VariantCost's guarantees exactly: above-anchor adds a pair, and
+    // being a top rung of its ladder adds another (positional, from the
+    // installer's index — see g_ladderPos).
+    const bool aboveAnchor = quality > g_catalystQuality;
+    const bool apexRung    = (aboveAnchor && apexLadder) || quality >= g_apexQuality;
+    ic.pairs = 1u + (aboveAnchor ? 1u : 0u) + (apexRung ? 1u : 0u) + extra;
     return ic;
 }
 
@@ -1160,6 +1403,12 @@ void BuildEffectPotionTable() {
             !alch->effects[0]->baseEffect) {
             continue;
         }
+        // Our own flask forms are placeholders, not load-order potions — keep
+        // them out of the anchor pool AND the rep table (the patcher's pool
+        // excludes MAO plugins the same way).
+        if (IsFlaskForm(alch->GetFormID())) {
+            continue;
+        }
         if (const auto gv = alch->GetGoldValue(); gv > 0) {
             potionValues.push_back(static_cast<std::uint32_t>(gv));
         }
@@ -1178,13 +1427,16 @@ void BuildEffectPotionTable() {
             }
         }
     }
-    // Global quality reference = the MEDIAN potion gold value in this load
-    // order. Quality is value/median, so a typical potion is ~1.0 and every
-    // potion is comparable ACROSS effects (see VariantQuality).
+    // Runtime-fallback quality ANCHOR = p15 of the no-food potion pool — the
+    // SAME percentile the installer emits (see g_qualityAnchor: the honest
+    // median sits above the everyday ladders; p15 is where quality 1.0 means
+    // "the cheapest potion you'd actually brew"). LoadLadders overrides this
+    // with the emitted potionStats.anchor when the tiers file carries one, so
+    // ACTIVE vs DEGRADED differ by pool details only, never by definition.
     if (!potionValues.empty()) {
         std::sort(potionValues.begin(), potionValues.end());
-        g_medianPotionValue =
-            std::max(1.0f, static_cast<float>(potionValues[potionValues.size() / 2]));
+        g_qualityAnchor = std::max(
+            1.0f, static_cast<float>(potionValues[potionValues.size() * 15 / 100]));
     }
     std::scoped_lock lk(g_effectPotionLock);
     g_effectPotion.clear();
@@ -1192,8 +1444,8 @@ void BuildEffectPotionTable() {
     for (const auto& [e, b] : best) {
         g_effectPotion[e] = { b.form, b.value };
     }
-    spdlog::info("[potions] rep table: {} effect(s); median potion value {} (quality reference)",
-                 g_effectPotion.size(), g_medianPotionValue.load());
+    spdlog::info("[potions] rep table: {} effect(s); quality anchor {} (runtime p15 fallback)",
+                 g_effectPotion.size(), g_qualityAnchor.load());
 }
 
 // Play a potion's drink sound at the player (the vanilla DrinkPotion we bypass
@@ -1946,15 +2198,18 @@ void ApplyIniLine(std::string a_line) {
         static bool warned = false;
         if (!warned) {
             warned = true;
-            spdlog::warn("[config] '{}' is retired — v1.1 replaced the concentration thresholds "
-                         "with fCatalystQuality/fApexQuality (different scale); ignoring it. "
-                         "Re-set the new sliders in the MCM if you had tuned this.",
+            spdlog::warn("[config] '{}' is retired — v1.0.2 prices on a log quality scale "
+                         "(1.0 = the load order's quality anchor) and guarantees Apex by LADDER "
+                         "POSITION, not by threshold. Use fCatalystQuality / iApexTopRungs.",
                          key);
         }
     } else if (key == "fCatalystQuality") {
-        g_catalystQuality = std::clamp(static_cast<float>(std::strtod(val.c_str(), nullptr)), 0.5f, 8.0f);
+        g_catalystQuality = std::clamp(static_cast<float>(std::strtod(val.c_str(), nullptr)), 0.4f, 4.0f);
     } else if (key == "fApexQuality") {
-        g_apexQuality = std::clamp(static_cast<float>(std::strtod(val.c_str(), nullptr)), 0.5f, 8.0f);
+        g_apexQuality = std::clamp(static_cast<float>(std::strtod(val.c_str(), nullptr)), 1.0f, 4.0f);
+    } else if (key == "iApexTopRungs") {
+        g_apexTopRungs.store(static_cast<std::uint32_t>(
+            std::clamp(std::strtol(val.c_str(), nullptr, 10), 0L, 5L)));
     } else if (key == "bDebugPerks") {
         g_perkDebug.store(!(val == "0" || val == "false"));
     } else {
@@ -3321,6 +3576,8 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
         LoadTierMap();  // before BuildRecipeTable — it tiers ingredients per this map
         BuildRecipeTable();
         BuildEffectPotionTable();
+        LoadLadders();  // after BOTH: family recipes resolve via g_effectRecipe, and the
+                        // emitted quality anchor overrides the runtime fallback
         InstallDrinkHook();
         StartRefillTimer();
         const auto gameVersion = REL::Module::get().version();

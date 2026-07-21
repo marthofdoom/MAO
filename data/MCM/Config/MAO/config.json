@@ -58,10 +58,10 @@
 					"id": "fCatalystQuality:Economy",
 					"text": "Catalyst quality threshold",
 					"type": "slider",
-					"help": "Potion quality (median potion = 1.0) ABOVE which a flask requires Catalyst essence, regardless of its ingredients. Max = off.",
+					"help": "Potion quality ABOVE which a flask requires Catalyst essence regardless of its ingredients. Log scale: 1.0 = your load order's quality anchor (the cheapest real potions), +0.5 = twice the gold value. Max = off.",
 					"valueOptions": {
 						"min": 0.5,
-						"max": 8.0,
+						"max": 4.0,
 						"step": 0.1,
 						"formatString": "{1}",
 						"sourceType": "ModSettingFloat",
@@ -69,17 +69,31 @@
 					}
 				},
 				{
-					"id": "fApexQuality:Economy",
-					"text": "Apex quality threshold",
+					"id": "iApexTopRungs:Economy",
+					"text": "Apex-guaranteed top rungs",
 					"type": "slider",
-					"help": "Potion quality ABOVE which a flask also requires Apex essence (the top quality tiers), regardless of its ingredients. Max = off.",
+					"help": "How many TOP rungs of a potion's own family require Apex essence. 2 = the strongest and the one below it (e.g. Surpassing and Remarkable). 0 = off.",
 					"valueOptions": {
-						"min": 0.5,
-						"max": 8.0,
+						"min": 0,
+						"max": 5,
+						"step": 1,
+						"formatString": "{0}",
+						"sourceType": "ModSettingInt",
+						"defaultValue": 2
+					}
+				},
+				{
+					"id": "fApexQuality:Economy",
+					"text": "Apex quality fallback",
+					"type": "slider",
+					"help": "Absolute quality at which a flask requires Apex even with no potion family to be the top rung of (a one-off legendary). Max = off.",
+					"valueOptions": {
+						"min": 1.0,
+						"max": 4.0,
 						"step": 0.1,
 						"formatString": "{1}",
 						"sourceType": "ModSettingFloat",
-						"defaultValue": 1.2
+						"defaultValue": 2.5
 					}
 				},
 				{
@@ -144,9 +158,9 @@
 				{
 					"text": "Version",
 					"type": "text",
-					"help": "MAO version, stamped from the build (1.0.1). Matches the MAO.dll built from the same commit.",
+					"help": "MAO version, stamped from the build (1.0.2). Matches the MAO.dll built from the same commit.",
 					"valueOptions": {
-						"value": "v1.0.1"
+						"value": "v1.0.2"
 					}
 				},
 				{

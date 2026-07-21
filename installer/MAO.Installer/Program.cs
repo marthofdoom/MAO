@@ -118,8 +118,8 @@ try
         "sim-cost" => Commands.SimCost(loadOrder, cache,
             positional.ElementAtOrDefault(0) ?? "data/mao_tiers.json",
             positional.ElementAtOrDefault(1) ?? "",
-            double.Parse(positional.ElementAtOrDefault(2) ?? "0.70"),
-            double.Parse(positional.ElementAtOrDefault(3) ?? "0.90"),
+            double.Parse(positional.ElementAtOrDefault(2) ?? "1.0"),   // fCatalystQuality
+            double.Parse(positional.ElementAtOrDefault(3) ?? "2.5"),   // fApexQuality (absolute fallback)
             double.Parse(positional.ElementAtOrDefault(4) ?? "2.0"),
             double.Parse(positional.ElementAtOrDefault(5) ?? "4.0"),
             double.Parse(positional.ElementAtOrDefault(6) ?? "1.0"),
@@ -185,6 +185,28 @@ static partial class Commands
             values.Sort();
             uint Q(double f) => values[Math.Clamp((int)(values.Count * f), 0, values.Count - 1)];
             Console.WriteLine($"potions with value>0: {values.Count}");
+            var noFood = new List<uint>();
+            foreach (var q in lo.PriorityOrder.Ingestible().WinningOverrides())
+                if (q.Value > 0 && !q.Flags.HasFlag(Ingestible.Flag.FoodItem)) noFood.Add(q.Value);
+            noFood.Sort();
+            if (noFood.Count > 0)
+                Console.WriteLine($"  EXCLUDING FOOD: {noFood.Count} potions, MEDIAN={noFood[noFood.Count / 2]}");
+            // Potions actually DISTRIBUTED in the world (referenced by a leveled
+            // list) — the pool a player really encounters, as opposed to every
+            // exotic form a load order happens to define.
+            var refd = new HashSet<Mutagen.Bethesda.Plugins.FormKey>();
+            foreach (var l in lo.PriorityOrder.LeveledItem().WinningOverrides())
+                foreach (var e in l.Entries ?? new System.Collections.Generic.List<LeveledItemEntry>())
+                    if (e.Data is not null) refd.Add(e.Data.Reference.FormKey);
+            var dist = lo.PriorityOrder.Ingestible().WinningOverrides()
+                .Where(q => q.Value > 0 && !q.Flags.HasFlag(Ingestible.Flag.FoodItem)
+                            && refd.Contains(q.FormKey))
+                .Select(q => q.Value).OrderBy(v => v).ToList();
+            if (dist.Count > 0)
+                Console.WriteLine($"  LVLI-DISTRIBUTED, no food: {dist.Count} potions, MEDIAN={dist[dist.Count / 2]}");
+            uint NQ(double f) => noFood[Math.Clamp((int)(noFood.Count * f), 0, noFood.Count - 1)];
+            Console.WriteLine($"  no-food percentiles: p10={NQ(.10)} p20={NQ(.20)} p25={NQ(.25)} " +
+                              $"p30={NQ(.30)} p35={NQ(.35)} p40={NQ(.40)} p50={NQ(.50)}");
             Console.WriteLine($"  min={values[0]} p10={Q(.10)} p25={Q(.25)} MEDIAN={Q(.50)} " +
                               $"p75={Q(.75)} p90={Q(.90)} p99={Q(.99)} max={values[^1]}");
         }

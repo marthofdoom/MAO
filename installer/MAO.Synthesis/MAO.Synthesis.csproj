@@ -8,7 +8,7 @@
     <Product>marth's Alchemy Overhaul Synthesis Patcher</Product>
     <Company>marth</Company>
     <Description>Synthesis patcher: adapts the alchemy perk tree to your load order + writes the MAO ingredient tier map. Reuses the standalone installer's record-analysis code for byte-identical output.</Description>
-    <InformationalVersion>1.0.1</InformationalVersion>
+    <InformationalVersion>1.0.2</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -24,6 +24,7 @@
     <!-- Reuse the EXACT standalone-installer analysis code (no copy, no fork). -->
     <Compile Include="..\MAO.Installer\Commands.Patch.cs" />
     <Compile Include="..\MAO.Installer\Commands.Tiers.cs" />
+    <Compile Include="..\MAO.Installer\Commands.Ladders.cs" />
   </ItemGroup>
 
 </Project>

@@ -16,7 +16,7 @@ using System.Reflection;
     "AO ingredient tier map. Reuses the standalone installer\'s record-analysis code f" +
     "or byte-identical output."))]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.19.0+22cef7de2b58e7fb484024628d37f1712515b20d")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.2+1ba2bfb1de1f518d58040acb251f8afb4ccc1779")]
 [assembly: System.Reflection.AssemblyProductAttribute("marth\'s Alchemy Overhaul Synthesis Patcher")]
 [assembly: System.Reflection.AssemblyTitleAttribute("MAO.Synthesis")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

@@ -75,8 +75,10 @@ the player's inventory through funnels here.
 ## 2. The essence economy (:297-767)
 
 Built once at kDataLoaded (:2260-2262), in this order: `LoadTierMap` →
-`BuildRecipeTable` → `BuildEffectPotionTable` (the recipe table tiers
-ingredients per the map, so the map must load first).
+`BuildRecipeTable` → `BuildEffectPotionTable` → `LoadLadders` (the recipe
+table tiers ingredients per the map, so the map loads first; the ladder data
+resolves family recipes via `g_effectRecipe` and overrides the runtime
+quality anchor, so it loads LAST).
 
 - **`LoadTierMap`** (:486): `Data/SKSE/Plugins/MAO/mao_tiers.json`
   (installer-written, availability-based); resolves each `(plugin, fid)` via
@@ -88,26 +90,54 @@ ingredients per the map, so the map must load first).
   = median Catalyst/Apex ingredient values (:587-607).
 - **`BuildEffectPotionTable`** (:729): per effect, the CLEANEST embodiment
   (fewest effects, then highest value) and the weakest primary magnitude
-  (= "standard", the concentration denominator).
-- **`VariantQuality`** — cross-effect quality, median potion = 1.0: the
-  potion's gold value ÷ `g_medianPotionValue`, clamped [0.25, 8.0], with a
-  (compressed) magnitude-ratio fallback for value-0 potions. Replaced the
-  per-effect magnitude "concentration", which was only coherent *within* one
-  effect family — a one-off effect normalised against itself and always read
-  1.0, so Requiem's Restore Health (Surpassing) priced below (Good).
+  (= "standard", the concentration denominator). Also computes the RUNTIME
+  FALLBACK quality anchor (p15 of the no-food, non-flask potion pool — the
+  same percentile the patcher emits).
+- **`LoadLadders`** — the INSTALLER-DERIVED ladder index, from the same
+  `mao_tiers.json` (`"ladders"` + `"potionStats"`, emitted by
+  `Commands.Ladders.cs`/`WriteTiers`). A ladder is one potion family's
+  quality progression (Requiem's "(Diluted..Surpassing)" parentheticals,
+  vanilla's Minor..Ultimate adjectives), detected AT PATCH TIME by
+  multi-signal name/EditorID grouping validated by effect-archetype
+  coherence — the DLL does NO name parsing of its own. Per rung it stores
+  `g_ladderPos` (rung, height; rungs ranked by gold — the same metric
+  quality prices from) and `g_ladderRecipe` (the family's real reagent
+  pair, resolved through the ladder's representative MGEF →
+  `g_effectRecipe`). Also overrides `g_qualityAnchor` with the emitted
+  `potionStats.anchor` — the number every sim-validated table prices
+  against. DEGRADED MODE (absent/stale/corrupt file): maps stay empty,
+  positional Apex never fires (the absolute `fApexQuality` line still
+  does), sourceless rungs price off the phantom pair again, and the anchor
+  falls back to the runtime p15 — logged LOUDLY as `[ladders] ...
+  DEGRADED`, vs `... ACTIVE` when installer data loaded.
+- **`VariantQuality`** — cross-effect quality on a LOG scale: 1.0 at the
+  load order's QUALITY ANCHOR (`g_qualityAnchor` — p15 of the no-food
+  potion pool, installer-emitted when available; deliberately NOT the
+  median, which sits above the everyday ladders and floors them),
+  `1 + log2(value/anchor)/2`, clamped [0.4, 4.0]; a (compressed)
+  magnitude-ratio fallback for value-0 potions. Log, not linear: the
+  potion pool is heavy-tailed, and the linear ratio collapsed every low
+  rung onto the floor while the top rung blew out ~38x (v1.0.1).
 - **`IngredientUnits`** — an ingredient's worth in ITS OWN tier's units. Base
   = raw gold value (unchanged); Catalyst/Apex = tier unit × (value ÷ that
   tier's median, from `mao_tiers.json` `tierStats`). Stops a rare ingredient's
   large gold value from cancelling its rarity.
 - **`VariantCost`** — compound per-charge cost: basis = quality ×
   `g_costRate` × `g_essenceTax`; BASE = each recipe ingredient priced via
-  `IngredientUnits` into THAT ingredient's tier pool; then the GUARANTEED
-  tier requirements, independent of the recipe's ingredients (DESIGN §1/§2):
-  quality > `fCatalystQuality` adds Catalyst, quality ≥ `fApexQuality` adds
-  Apex, both scaling with quality; same-polarity rider effects price off the
-  same quality; Apex Stabilization −35% on the apex component.
-- **Ingredient mode** (`IngrCostPerCharge`) rides the SAME quality curve —
-  the two economies are mirror images by contract.
+  `IngredientUnits` into THAT ingredient's tier pool (float-accumulated,
+  rounded ONCE per tier; Base ×`kBaseScale` for integer headroom); a rung
+  whose own effect has no ingredient source borrows its family's pair from
+  `g_ladderRecipe`; then the GUARANTEED tier requirements, independent of
+  the recipe's ingredients (DESIGN §1/§2): quality > `fCatalystQuality`
+  (default 1.0 = above-anchor) adds Catalyst; Apex is POSITIONAL — the top
+  `iApexTopRungs` rungs of the potion's own ladder (`IsApexRungLocked`,
+  gated above-anchor so the top of a junk ladder stays junk), with
+  `fApexQuality` as the absolute line for one-offs with no ladder. Both
+  surcharges grow with quality (safe only because quality is log-capped);
+  same-polarity rider effects price off the same quality; Apex
+  Stabilization −35% on the apex component.
+- **Ingredient mode** (`IngrCostPerCharge`) rides the SAME quality curve and
+  the SAME ladder index — the two economies are mirror images by contract.
 - **Spending trains Alchemy**: `SpendCost` (:702) awards
   `kAlchemyXpPerEssence` (0.1/essence, :691) via `AwardAlchemyXP` (:693) —
   configures AND automatic refills both count as potion-making.
@@ -323,7 +353,24 @@ slots.
     obtainability = harvest×60 + container×20 + min(lvli,3)×4 (:80-83);
     0-source ingredients go straight to Base (:97-99, quest leftovers);
     rarity = **0.15 × avail-rank + 0.85 × value-rank** (:117-121, the tuned
-    blend); percentile cuts Apex 12% / Catalyst next 30% (:126-132).
+    blend); percentile cuts Apex 12% / Catalyst next 30% (:126-132). Since
+    v1.0.2 it also emits **`"ladders"`** (the named-ladder index the DLL's
+    positional Apex guarantee and family-recipe fallback consume — detector
+    in **Commands.Ladders.cs**, shared with Synthesis: name-stem cascade
+    [parenthetical strip → vessel-noun placeholder → rank-adjective
+    vocabulary → trailing-numeral strip] union-merged with an
+    EditorID-trailing-digit axis, then validated by polarity + effect-
+    archetype coherence + ≥2 distinct gold values; rungs ranked by gold) and
+    **`"potionStats"`** (the QUALITY ANCHOR — p15 of the no-food, non-MAO
+    potion pool, the value at which quality reads 1.0; emitted so the sim's
+    tables and in-game pricing normalise against the SAME number, with the
+    pool's true median alongside as a diagnostic). `MAO_LADDER_DEBUG=1`
+    dumps accepted ladders + rejected groups next to the output.
+  - **`sim-cost`** (Commands.Sim.cs, installer-only) replays `VariantCost`
+    over a real load order and CONSUMES the emitted `"ladders"`/
+    `"potionStats"` exactly as the DLL's `LoadLadders` does — the printed
+    tables are priced from the very data the DLL will load. Audit mode
+    (`"*"`) walks every emitted ladder counting FLAT steps and CLIFFs.
   - Both self-exclude `MAO - Patch.esp` from the read (Program.cs:63,
     Synthesis:84); MAO.Synthesis builds its OWN tier load order including
     `Skyrim.ccc` (Synthesis omits CC plugins — MEO measured ~24% loss and
