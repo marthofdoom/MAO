@@ -7,6 +7,36 @@ Point fixes fold into their feature's entry unless load-bearing on their own.
 Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
 (build-stamped into the MCM Debug page by `MAO_GenerateESP.py`).
 
+## v1.0.1 — economy fixes (2026-07-20)
+
+All fixes to behaviour 1.0 already claimed. Saves stay compatible.
+
+- **Potion pricing was inverted across effect families.** Cost scaled with a
+  per-effect "concentration" (magnitude vs that effect's own weakest instance),
+  which is only coherent *within* one family — an effect used by exactly one
+  potion normalised against itself and always read as the cheapest possible.
+  On a Requiem list that made **Restore Health (Surpassing)** — its own
+  full-heal effect, 500 gold — price *below* **(Good)**. Cost now scales with a
+  cross-effect **quality** (the potion's gold value vs your load order's median
+  potion), which is monotonic along every quality ladder and sees duration.
+- **Rare essence accrued as fast as common essence.** Yield was the ingredient's
+  raw gold value for every tier, so a median Apex pickup paid ~31x a Base one —
+  cancelling its rarity. Catalyst and Apex are now valued *relative to their own
+  category* (per-load-order medians, written by the Synthesis patcher). Base is
+  unchanged. High-quality potions now also *require* Catalyst/Apex regardless of
+  their ingredients, per the design's Apex Route.
+- **The power didn't close the field kit** (advertised since July): while the kit
+  is open all input is swallowed, so the shout button never reached the game. It
+  now closes the kit, resolved through the game's control map so rebinds work.
+- Ingredient mode rides the same curve; refills now log when a flask is short of
+  essence instead of silently never filling; guarded against a double-dispatch on
+  a variant click.
+
+**Note:** the two threshold sliders were renamed (`fCatalystLevel`/`fApexLevel`
+-> `fCatalystQuality`/`fApexQuality`) because the old numbers are on a scale that
+no longer exists — custom values reset to defaults, and the retired keys log a
+warning. **Essence you have already banked is left exactly as-is.**
+
 ## v1.0.0 — first public release (2026-07-20)
 
 First Nexus release. The core loop, both economies, discovery, coatings, the
