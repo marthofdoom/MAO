@@ -866,7 +866,7 @@ FlaskCost VariantCost(RE::AlchemyItem* a_alch) {
         fc.catalyst += std::max(kCatalystSurcharge,
                                 static_cast<std::uint32_t>(std::lround(kCatalystSurcharge * quality)));
     }
-    if (quality >= g_apexQuality) {
+    if (quality > g_apexQuality) {
         fc.apex += std::max(kApexSurcharge,
                             static_cast<std::uint32_t>(std::lround(kApexSurcharge * quality)));
     }
@@ -1006,7 +1006,7 @@ IngrCharge IngrCostPerCharge(RE::AlchemyItem* a_alch) {
     ic.a     = rec.a.form;
     ic.b     = rec.b.form;
     ic.pairs =
-        1u + (quality > g_catalystQuality ? 1u : 0u) + (quality >= g_apexQuality ? 1u : 0u) + extra;
+        1u + (quality > g_catalystQuality ? 1u : 0u) + (quality > g_apexQuality ? 1u : 0u) + extra;
     return ic;
 }
 
@@ -1405,7 +1405,7 @@ void RefillFlasks(const char* a_trigger, std::uint32_t a_maxPerFlask = 0) {
     if (!RE::PlayerCharacter::GetSingleton()) {
         return;  // no game loaded (timer fires at the main menu too)
     }
-    std::uint32_t refilled = 0, slots = 0;
+    std::uint32_t refilled = 0, slots = 0, starved = 0;
     {
         std::scoped_lock lk(g_flasksLock);
         for (std::uint32_t i = 0; i < g_flaskCount; ++i) {
@@ -1498,15 +1498,36 @@ void RefillFlasks(const char* a_trigger, std::uint32_t a_maxPerFlask = 0) {
             if (added) {
                 refilled += added;
                 ++slots;
+            } else if (f.charges < g_chargesPerFlask) {
+                // STARVED: the flask is below cap and the pouch can't afford a
+                // single charge. Say so — silently never refilling looks like a
+                // bug, and at the top of the quality curve it is the intended
+                // Scarcity Guardrail rather than a fault (Fable v1.1 S6).
+                // Ingredient mode needs no such line: the kit already lists the
+                // exact items and greys what you can't afford.
+                ++starved;
+                if (!IngredientMode()) {
+                    const char* vn = valch->GetName();
+                    spdlog::info("[refill] {}: '{}' short of {} — {}/{} charges, "
+                                 "pouch B={} C={} A={}",
+                                 a_trigger, vn ? vn : "?", CostString(fc), f.charges,
+                                 g_chargesPerFlask, g_pouch.base.load(),
+                                 g_pouch.catalyst.load(), g_pouch.apex.load());
+                }
             }
         }
     }
     if (refilled) {
-        spdlog::info("[refill] {}: +{} charge(s) across {} flask(s); pouch B={}", a_trigger,
-                     refilled, slots, g_pouch.base.load());
+        spdlog::info("[refill] {}: +{} charge(s) across {} flask(s){}; pouch B={}", a_trigger,
+                     refilled, slots,
+                     starved ? std::format(", {} flask(s) short", starved) : std::string{},
+                     g_pouch.base.load());
         if (g_notify) {
             RE::DebugNotification(std::format("Field Kit replenished (+{} charges).", refilled).c_str());
         }
+    } else if (starved) {
+        spdlog::info("[refill] {}: nothing refilled — {} flask(s) short of essence", a_trigger,
+                     starved);
     }
 }
 

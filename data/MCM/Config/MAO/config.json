@@ -58,7 +58,7 @@
 					"id": "fCatalystQuality:Economy",
 					"text": "Catalyst quality threshold",
 					"type": "slider",
-					"help": "Potion quality (median potion = 1.0) ABOVE which a flask requires Catalyst essence, regardless of its ingredients.",
+					"help": "Potion quality (median potion = 1.0) ABOVE which a flask requires Catalyst essence, regardless of its ingredients. Max = off.",
 					"valueOptions": {
 						"min": 0.5,
 						"max": 8.0,
@@ -72,7 +72,7 @@
 					"id": "fApexQuality:Economy",
 					"text": "Apex quality threshold",
 					"type": "slider",
-					"help": "Potion quality at/above which a flask also requires Apex essence (the top quality tiers), regardless of its ingredients.",
+					"help": "Potion quality ABOVE which a flask also requires Apex essence (the top quality tiers), regardless of its ingredients. Max = off.",
 					"valueOptions": {
 						"min": 0.5,
 						"max": 8.0,
