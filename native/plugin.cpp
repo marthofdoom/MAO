@@ -371,8 +371,8 @@ std::atomic<float>                            g_essenceTax = 1.3f;   // fEssence
 // per key name forever, so a stale 3.0/6.0 would silently mis-apply on the new
 // scale (INVARIANTS: rename any key whose meaning changes).
 std::atomic<float> g_costRate = 1.0f;  // fCostRate
-std::atomic<float> g_catalystQuality = 1.5f;  // fCatalystQuality — quality x for the Catalyst surcharge
-std::atomic<float> g_apexQuality     = 3.0f;  // fApexQuality — quality x for the Apex surcharge
+std::atomic<float> g_catalystQuality = 1.0f;  // fCatalystQuality — ABOVE this, Catalyst is required
+std::atomic<float> g_apexQuality     = 1.2f;  // fApexQuality — at/above this, Apex is required
 
 // Effect -> the strongest load-order potion/poison carrying it as its primary
 // effect. This is what physically embodies a blueprint (the flask item + what
@@ -855,10 +855,20 @@ FlaskCost VariantCost(RE::AlchemyItem* a_alch) {
                 std::max(1u, static_cast<std::uint32_t>(
                                  std::lround(IngredientUnits(ing.value, ing.tier) * basis))));
     }
-    if (quality >= g_catalystQuality) {  // surcharge sits one tier above the recipe's rarest
-        const Tier          su   = TierAbove(std::max(rec.a.tier, rec.b.tier));
-        const std::uint32_t unit = (su == Tier::Apex) ? kApexSurcharge : kCatalystSurcharge;
-        AddTier(fc, su, unit * (quality >= g_apexQuality ? 2u : 1u));
+    // GUARANTEED TIER REQUIREMENTS BY QUALITY (DESIGN §1/§2, marth). These do
+    // NOT depend on the recipe's ingredient tiers: a high-quality potion
+    // requires the rarer essences even when its ingredients are common
+    // ("The Unperked Ceiling / Apex Route" — reaching top-quality caps means
+    // burning Tier III at a deliberately inefficient rate). They are
+    // INDEPENDENT and ADDITIVE — a top-tier potion needs Catalyst *and* Apex.
+    // Amounts scale with quality like the base portion does.
+    if (quality > g_catalystQuality) {
+        fc.catalyst += std::max(kCatalystSurcharge,
+                                static_cast<std::uint32_t>(std::lround(kCatalystSurcharge * quality)));
+    }
+    if (quality >= g_apexQuality) {
+        fc.apex += std::max(kApexSurcharge,
+                            static_cast<std::uint32_t>(std::lround(kApexSurcharge * quality)));
     }
     // Secondary effects that match the primary's polarity price like the
     // primary: their own recipe pair at their own concentration, in their own
