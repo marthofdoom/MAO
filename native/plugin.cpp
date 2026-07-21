@@ -349,23 +349,21 @@ void RecomputeCapacity(const char* a_why) {
 // Per-effect cheapest 2-ingredient recipe, kept as its TWO ingredients so the
 // base cost splits per ingredient IN ITS OWN TIER (a Base flower + a Catalyst
 // plant → part Base + part Catalyst). Base cost = each ingredient's value ×
-// concentration × tax, added to that ingredient's tier pool.
+// quality x tax, added to that ingredient's tier pool.
 struct RecipeIng { std::uint32_t value = 5; Tier tier = Tier::Base; RE::FormID form = 0; };
 struct Recipe { RecipeIng a, b; };
 std::unordered_map<RE::FormID, Recipe> g_effectRecipe;
-std::uint32_t g_catalystUnit = 40;   // representative Catalyst ingredient value (surcharge unit)
-std::uint32_t g_apexUnit     = 120;  // representative Apex ingredient value
 std::mutex    g_effectCostLock;
 // Tuning globals are atomic: ReadConfig() now re-runs mid-session (on MCM/menu
 // close) on the task thread while these are read from the render / refill /
 // input / event-sink threads. Aligned scalars don't tear on x86-64, but atomic
 // makes the concurrent read/write well-defined (matches g_perkDebug's pattern).
 std::atomic<float>                            g_essenceTax = 1.3f;   // fEssenceTax
-// Flask cost = round(effect baseCost * magnitude * g_costRate * tax) per charge
-// (linear in magnitude = "each concentration level costs 1x more"). The flask's
-// ESSENCE TIER steps up with concentration = magnitude / the effect's weakest
-// QUALITY thresholds (v1.1): a potion's cross-effect quality (VariantQuality,
-// median potion = 1.0) at/above which the flask needs a tier-up surcharge.
+// Flask cost scales linearly with the variant's QUALITY (VariantQuality:
+// cross-effect, median potion = 1.0), and the flask's ESSENCE TIER
+// REQUIREMENT steps up at the two quality thresholds below — above
+// fCatalystQuality it also needs Catalyst, at/above fApexQuality it also needs
+// Apex, independent of what the recipe's ingredients are (DESIGN §1/§2).
 // RENAMED from fCatalystLevel/fApexLevel because the SEMANTICS changed
 // (concentration-x -> quality-x, a different scale): MCM Helper persists values
 // per key name forever, so a stale 3.0/6.0 would silently mis-apply on the new
@@ -753,10 +751,8 @@ void BuildRecipeTable() {
         g_effectRecipe[id] = { { std::max(1u, i0.value), i0.tier, i0.form },
                                { std::max(1u, i1.value), i1.tier, i1.form } };
     }
-    g_catalystUnit = median(catVals, 40);
-    g_apexUnit     = median(apexVals, 120);
-    spdlog::info("[econ] recipe table: {} effects from {} ingredients; catalystUnit={} apexUnit={}",
-                 g_effectRecipe.size(), ingredients, g_catalystUnit, g_apexUnit);
+    spdlog::info("[econ] recipe table: {} effects from {} ingredients; tier medians C={} A={}",
+                 g_effectRecipe.size(), ingredients, g_tierMedian[1].load(), g_tierMedian[2].load());
 }
 struct FlaskCost { std::uint32_t base = 0, catalyst = 0, apex = 0; };
 
@@ -769,7 +765,6 @@ void AddTier(FlaskCost& c, Tier t, std::uint32_t amt) {
         c.base += amt;
     }
 }
-Tier TierAbove(Tier t) { return t == Tier::Base ? Tier::Catalyst : Tier::Apex; }
 
 // ── QUALITY: how good this specific potion is, on a scale where a MEDIAN
 // potion in the load order is 1.0 (v1.1 pricing redo).
@@ -818,12 +813,17 @@ float VariantQuality(RE::AlchemyItem* a_alch) {
             minMag = it->second;
         }
     }
+    // NOTE: this ratio is a CONCENTRATION, a different scale from the
+    // value-derived quality the thresholds are now calibrated against
+    // (Fable v1.1 S4). Compress it toward 1.0 so a value-0 potion isn't
+    // handed Catalyst+Apex surcharges it never used to pay: a 2x-concentration
+    // legacy potion reads ~1.0, not 2.0.
     const float conc = (minMag > 0.01f) ? std::max(1.0f, mag / minMag) : 1.0f;
-    return std::clamp(conc, kQualityFloor, kQualityCap);
+    return std::clamp(std::sqrt(conc), kQualityFloor, kQualityCap);
 }
 
 // Compound per-charge cost for a specific variant (Marth's model):
-//   BASE = each recipe ingredient's value x concentration x tax, added to THAT
+//   BASE = each recipe ingredient's value x quality x tax, added to THAT
 //          ingredient's own tier pool (so a Base+Catalyst recipe splits into
 //          part Base + part Catalyst by design).
 //   +CAT = high quality (>= fCatalystQuality) needs a tier-up surcharge;
@@ -871,7 +871,7 @@ FlaskCost VariantCost(RE::AlchemyItem* a_alch) {
                             static_cast<std::uint32_t>(std::lround(kApexSurcharge * quality)));
     }
     // Secondary effects that match the primary's polarity price like the
-    // primary: their own recipe pair at their own concentration, in their own
+    // primary: their own recipe pair at the SAME potion quality, in their own
     // tiers. A drawback (opposite polarity — Requiem's Damage-Regen side
     // effects on every standard potion) adds NOTHING: it is a cost the drinker
     // pays, not the brewer. (Replaces the flat +apexUnit for ANY multi-effect
@@ -1006,7 +1006,7 @@ IngrCharge IngrCostPerCharge(RE::AlchemyItem* a_alch) {
     ic.a     = rec.a.form;
     ic.b     = rec.b.form;
     ic.pairs =
-        1u + (quality >= g_catalystQuality ? 1u : 0u) + (quality >= g_apexQuality ? 1u : 0u) + extra;
+        1u + (quality > g_catalystQuality ? 1u : 0u) + (quality >= g_apexQuality ? 1u : 0u) + extra;
     return ic;
 }
 
@@ -1193,7 +1193,7 @@ void BuildEffectPotionTable() {
         g_effectPotion[e] = { b.form, b.value };
     }
     spdlog::info("[potions] rep table: {} effect(s); median potion value {} (quality reference)",
-                 g_effectPotion.size(), g_medianPotionValue);
+                 g_effectPotion.size(), g_medianPotionValue.load());
 }
 
 // Play a potion's drink sound at the player (the vanilla DrinkPotion we bypass
@@ -1919,6 +1919,17 @@ void ApplyIniLine(std::string a_line) {
             std::clamp<long>(std::strtol(val.c_str(), nullptr, 0), 15, 86400));
     } else if (key == "fCostRate") {
         g_costRate = std::clamp(static_cast<float>(std::strtod(val.c_str(), nullptr)), 0.05f, 20.0f);
+    } else if (key == "fCatalystLevel" || key == "fApexLevel") {
+        // Retired in v1.1 (concentration -> quality rescale); the value is on a
+        // different scale so it is deliberately ignored rather than applied.
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            spdlog::warn("[config] '{}' is retired — v1.1 replaced the concentration thresholds "
+                         "with fCatalystQuality/fApexQuality (different scale); ignoring it. "
+                         "Re-set the new sliders in the MCM if you had tuned this.",
+                         key);
+        }
     } else if (key == "fCatalystQuality") {
         g_catalystQuality = std::clamp(static_cast<float>(std::strtod(val.c_str(), nullptr)), 0.5f, 8.0f);
     } else if (key == "fApexQuality") {
@@ -2779,6 +2790,22 @@ namespace menuhook {
                        (a_dev == RE::INPUT_DEVICE::kGamepad && g_openButtonGamepad != 0 &&
                         a_code == g_openButtonGamepad);
             };
+            // The POWER opens the kit via its cast event — but while the kit is
+            // open we null the whole event list below, so the game never sees
+            // the shout/power button and no second cast event can ever fire.
+            // The toggle-close therefore has to be handled HERE. Resolve the
+            // shout binding through the game's own control map so a rebound
+            // button (or the Deck's layout) still works.
+            auto isShout = [&](RE::INPUT_DEVICE a_dev, std::uint32_t a_code) {
+                auto* cm = RE::ControlMap::GetSingleton();
+                if (!cm) {
+                    return false;
+                }
+                const auto mapped =
+                    cm->GetMappedKey("Shout", a_dev, RE::ControlMap::InputContextID::kGameplay);
+                return mapped != 0xFF && mapped != static_cast<std::uint32_t>(-1) &&
+                       mapped == a_code;
+            };
             const bool wasOpen  = g_menu.open.load();
             bool       justOpen = false;
             auto&      io        = ImGui::GetIO();
@@ -2842,8 +2869,8 @@ namespace menuhook {
                 case RE::INPUT_DEVICE::kKeyboard:
                     if (code == 0x01 && down) {  // Esc closes
                         CloseFieldKit();
-                    } else if (down && isOpener(dev, code)) {
-                        CloseFieldKit();  // the opener toggles (matches the power)
+                    } else if (down && (isOpener(dev, code) || isShout(dev, code))) {
+                        CloseFieldKit();  // opener OR the power/shout button toggles
                     } else if (auto k = DIKToImGuiKey(code); k != ImGuiKey_None) {
                         io.AddKeyEvent(k, down);
                     }
@@ -2851,8 +2878,8 @@ namespace menuhook {
                 case RE::INPUT_DEVICE::kGamepad:
                     if (code == kGamepadB && down) {  // B closes
                         CloseFieldKit();
-                    } else if (down && isOpener(dev, code)) {
-                        CloseFieldKit();  // the opener toggles (matches the power)
+                    } else if (down && (isOpener(dev, code) || isShout(dev, code))) {
+                        CloseFieldKit();  // opener OR the power/shout button toggles
                     } else if (auto k = GamepadToImGuiKey(code); k != ImGuiKey_None) {
                         io.AddKeyEvent(k, down);
                     }
@@ -3057,6 +3084,11 @@ void LoadCallback(SKSE::SerializationInterface* a_intfc) {
         if (type == kRecPouch) {
             std::uint32_t pb = 0, pc = 0, pa = 0;
             if (readOk(pb) && readOk(pc) && readOk(pa)) {
+                // v1.1 note: Catalyst/Apex were GOLD-denominated before this
+                // version and are now valued in small tier units, so a balance
+                // earned under the old economy buys much more. Deliberately NOT
+                // rescaled (marth): "I have no interest in messing with
+                // peoples stored essence, they have what they have."
                 g_pouch.base.store(pb);
                 g_pouch.catalyst.store(pc);
                 g_pouch.apex.store(pa);

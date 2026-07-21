@@ -89,14 +89,25 @@ ingredients per the map, so the map must load first).
 - **`BuildEffectPotionTable`** (:729): per effect, the CLEANEST embodiment
   (fewest effects, then highest value) and the weakest primary magnitude
   (= "standard", the concentration denominator).
-- **`VariantCost`** (:630) — the compound per-charge cost (Marth's model):
-  concentration = magnitude / effect min-magnitude (:659); basis = conc ×
-  `g_costRate` × `g_essenceTax` (:660); BASE = each recipe ingredient's
-  value × basis added to THAT ingredient's tier pool (:662-665); +CATALYST
-  surcharge one tier above the recipe's rarest at conc ≥ `fCatalystLevel`,
-  doubled at ≥ `fApexLevel` (:666-669); any multi-effect variant adds an
-  Apex unit (:671-673); Apex Stabilization −35% on the apex component
-  (:674-676).
+- **`VariantQuality`** — cross-effect quality, median potion = 1.0: the
+  potion's gold value ÷ `g_medianPotionValue`, clamped [0.25, 8.0], with a
+  (compressed) magnitude-ratio fallback for value-0 potions. Replaced the
+  per-effect magnitude "concentration", which was only coherent *within* one
+  effect family — a one-off effect normalised against itself and always read
+  1.0, so Requiem's Restore Health (Surpassing) priced below (Good).
+- **`IngredientUnits`** — an ingredient's worth in ITS OWN tier's units. Base
+  = raw gold value (unchanged); Catalyst/Apex = tier unit × (value ÷ that
+  tier's median, from `mao_tiers.json` `tierStats`). Stops a rare ingredient's
+  large gold value from cancelling its rarity.
+- **`VariantCost`** — compound per-charge cost: basis = quality ×
+  `g_costRate` × `g_essenceTax`; BASE = each recipe ingredient priced via
+  `IngredientUnits` into THAT ingredient's tier pool; then the GUARANTEED
+  tier requirements, independent of the recipe's ingredients (DESIGN §1/§2):
+  quality > `fCatalystQuality` adds Catalyst, quality ≥ `fApexQuality` adds
+  Apex, both scaling with quality; same-polarity rider effects price off the
+  same quality; Apex Stabilization −35% on the apex component.
+- **Ingredient mode** (`IngrCostPerCharge`) rides the SAME quality curve —
+  the two economies are mirror images by contract.
 - **Spending trains Alchemy**: `SpendCost` (:702) awards
   `kAlchemyXpPerEssence` (0.1/essence, :691) via `AwardAlchemyXP` (:693) —
   configures AND automatic refills both count as potion-making.
