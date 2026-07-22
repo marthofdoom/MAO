@@ -7,6 +7,19 @@ Point fixes fold into their feature's entry unless load-bearing on their own.
 Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
 (build-stamped into the MCM Debug page by `MAO_GenerateESP.py`).
 
+## v1.0.3 — the power is the only opener (2026-07-21)
+
+- **The keyboard opener ships DISABLED** (`iOpenHotkey = 0`). It defaulted to
+  K, which is live at all times and silently collides with whatever else a load
+  order binds there — marth: "we cant have that hardcoded hotkey K". It was P0
+  scaffolding from before the power existed and simply outlived its purpose.
+  Still available as an opt-in for anyone who wants it; the gamepad fallback
+  already shipped off.
+  The kit opens by the **"Open Field Kit" power** (field mode) or by using an
+  **alchemy station** (full kit) — so nothing is lost, and neither can be
+  clobbered by a keybind conflict. The power re-grants itself every load, so
+  there is no way to be locked out of your own essence.
+
 ## v1.0.2 — economy rebuild (2026-07-21)
 
 Supersedes v1.0.1, which was withdrawn the day it was cut: it fixed the

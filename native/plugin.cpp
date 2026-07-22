@@ -13,9 +13,9 @@
 //   M2: THE FIELD KIT VIEWER. An ImGui overlay (D3D11 present
 //       thunk + input dispatch thunk — the Wheeler pattern, ported verbatim
 //       from MEO's proven hook sites) shows the essence stores, read-only.
-//       Opened by a hotkey for now (Data/SKSE/Plugins/MAO.ini iOpenHotkey);
-//       DESIGN §3.3 makes this a lesser POWER in P1, when the ESP that grants
-//       the power exists for flasks/blueprints anyway. The render hook is a
+//       Opened by the "Open Field Kit" lesser POWER (DESIGN §3.3); the ini
+//       button openers are optional fallbacks and ship DISABLED. The render
+//       hook is a
 //       CODE hook — its address-library IDs are proven live on 1.6.1170 in
 //       MEO; re-verify with tools/verify_hook_site_live.py before trusting a
 //       new runtime.
@@ -72,7 +72,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "1.0.2";
+constexpr auto kPluginVersion = "1.0.3";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -525,7 +525,11 @@ void CloseFieldKit() {
 // ── Config (Data/SKSE/Plugins/MAO.ini). The full MCM option set arrives with
 // P1; P0 seeds the surface with the keys it needs.
 std::atomic<bool> g_notify   = true;  // bNotify — per-pickup essence notifications
-std::atomic<std::uint32_t> g_openHotkey = 0x25;  // iOpenHotkey — keyboard DirectInput scancode; 0x25 = K
+// iOpenHotkey — OPTIONAL keyboard opener, DirectInput scancode; 0 = disabled.
+// DEFAULT IS OFF (marth, v1.0.3): the power is the only opener. A baked-in K
+// silently collides with whatever else a load order binds there, and the user
+// never asked for it — it was P0 scaffolding from before the power existed.
+std::atomic<std::uint32_t> g_openHotkey = 0x0;
 // iOpenButtonGamepad — RE::BSWin32GamepadDevice::Key bitflag, or 0 = disabled.
 // DEFAULT 0: the power is the opener. On the Steam Deck the View button (0x20)
 // doubles as Select, so binding an opener there collides — leave it off.
