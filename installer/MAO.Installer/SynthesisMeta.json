@@ -1,0 +1,9 @@
+{
+  "Nickname": "MAO Installer (dev CLI — not a patcher)",
+  "Visibility": "Exclude",
+  "OneLineDescription": "Standalone dev tooling; the Synthesis patcher is MAO.Synthesis.",
+  "LongDescription": "Not a Synthesis patcher. This is the standalone CLI used for development (stats/tree/tree-effects/perk/write-tiers/write-patch). The Synthesis patcher users should install is MAO.Synthesis. Excluded from the patcher browser so it cannot be added by mistake.",
+  "PreferredAutoVersioning": "Default",
+  "RequiredMods": [],
+  "TargetedReleases": []
+}
