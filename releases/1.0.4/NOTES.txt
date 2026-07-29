@@ -1,0 +1,2 @@
+Extended Synthesis shown on the flask card; fortify-only by default (bExtSynthAllBuffs toggle)
+built from native run 30419461529
