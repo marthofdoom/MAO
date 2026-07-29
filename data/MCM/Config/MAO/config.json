@@ -1,6 +1,6 @@
 {
 	"modName": "MAO",
-	"displayName": "Marth's Alchemy Overhaul",
+	"displayName": "marth Alchemy Overhaul",
 	"minMcmVersion": 9,
 	"cursorFillMode": "topToBottom",
 	"pages": [
@@ -111,6 +111,20 @@
 					}
 				},
 				{
+					"text": "Perks",
+					"type": "header"
+				},
+				{
+					"id": "bExtSynthAllBuffs:General",
+					"text": "Extended Synthesis: extend all buffs",
+					"type": "toggle",
+					"help": "OFF (default): Extended Synthesis lengthens only stat-fortify buffs (Fortify/Resist and the like). ON: it also lengthens restore-over-time effects such as Requiem's Restore Health, which can multiply their total healing.",
+					"valueOptions": {
+						"sourceType": "ModSettingBool",
+						"defaultValue": false
+					}
+				},
+				{
 					"text": "Interface",
 					"type": "header"
 				},
@@ -158,9 +172,9 @@
 				{
 					"text": "Version",
 					"type": "text",
-					"help": "MAO version, stamped from the build (1.0.3). Matches the MAO.dll built from the same commit.",
+					"help": "MAO version, stamped from the build (1.0.4). Matches the MAO.dll built from the same commit.",
 					"valueOptions": {
-						"value": "v1.0.3"
+						"value": "v1.0.4"
 					}
 				},
 				{

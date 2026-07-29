@@ -175,9 +175,17 @@ static partial class Commands
             Console.WriteLine($"ALCH {p.EditorID} '{p.Name?.String}' [{p.FormKey}] value={p.Value}");
             foreach (var e in p.Effects)
             {
-                var mgef = e.BaseEffect.TryResolve(cache, out var m)
-                    ? $"{m.EditorID} '{m.Name?.String}'" : e.BaseEffect.FormKey.ToString();
-                Console.WriteLine($"  effect {mgef} mag={e.Data?.Magnitude} dur={e.Data?.Duration}");
+                string mgef; string flags = "";
+                if (e.BaseEffect.TryResolve(cache, out var m))
+                {
+                    mgef = $"{m.EditorID} '{m.Name?.String}'";
+                    bool det = m.Flags.HasFlag(MagicEffect.Flag.Detrimental);
+                    bool hos = m.Flags.HasFlag(MagicEffect.Flag.Hostile);
+                    bool rec = m.Flags.HasFlag(MagicEffect.Flag.Recover);
+                    flags = $"  [{(det ? "DETRIMENTAL " : "")}{(hos ? "HOSTILE " : "")}{(rec ? "RECOVER " : "")}{(det || hos ? "" : "beneficial")}]";
+                }
+                else mgef = e.BaseEffect.FormKey.ToString();
+                Console.WriteLine($"  effect {mgef} mag={e.Data?.Magnitude} dur={e.Data?.Duration}{flags}");
             }
         }
         if (all && values.Count > 0)

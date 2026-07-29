@@ -7,6 +7,29 @@ Point fixes fold into their feature's entry unless load-bearing on their own.
 Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
 (build-stamped into the MCM Debug page by `MAO_GenerateESP.py`).
 
+## v1.0.4 — Extended Synthesis: visible, and fortify-only by default (2026-07-21)
+
+- **The flask item card now shows the Extended Synthesis bonus.** Before, the
+  card mirrored the variant's BASE duration and the perk's +30s was applied
+  transiently at drink time, so it was invisible and unverifiable (marth:
+  "im very confident it doesnt update the information about the flasks contained
+  potion"). RenameFlask and the drink hook now share one eligibility predicate,
+  so a held perk shows the extended number on the card AND casts it — if the card
+  says 50s and your active-effect timer does not, the cast path is the bug.
+- **Extended Synthesis is now stat-FORTIFY only by default.** It was lengthening
+  any beneficial timed effect, which on a Requiem list turned a 20s Restore
+  Health regen into 50s — ~2.5x its total healing. The discriminator is the
+  Recover flag (a temporary modifier that reverts when it ends: Fortify One-
+  Handed, Fortify Health, Resist X — all Recover; Restore Health does not),
+  verified across the real load order. Instant heals (no duration) were never
+  affected either way.
+- **New toggle `bExtSynthAllBuffs`** (MCM: Field Kit > Perks; default OFF)
+  restores the old "extend every beneficial buff" reach, healing included.
+- MCM display name is now **"marth Alchemy Overhaul"** (was "Marth's Alchemy
+  Overhaul"); the internal config key stays MAO.
+
+DLL + data change. No economy change; no Synthesis re-run needed from 1.0.2+.
+
 ## v1.0.3 — the power is the only opener (2026-07-21)
 
 - **The keyboard opener ships DISABLED** (`iOpenHotkey = 0`). It defaulted to

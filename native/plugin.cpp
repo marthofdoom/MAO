@@ -72,7 +72,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "1.0.3";
+constexpr auto kPluginVersion = "1.0.4";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -220,6 +220,31 @@ std::atomic<bool> g_hasCal3{ false };       // Kit Calibration III -> T1/T2 refi
 std::atomic<bool> g_hasCal5{ false };       // Kit Calibration V -> T1/T2 sleep-refill cost halved
 std::atomic<bool> g_hasPouchExp{ false };   // Pouch Expansion -> 15% bonus Catalyst per harvest
 std::atomic<bool> g_hasExtSynth{ false };   // Extended Synthesis -> +30s drinkable buff durations
+// bExtSynthAllBuffs — widen Extended Synthesis to EVERY beneficial timed effect.
+// DEFAULT OFF (marth): by default the perk touches only stat-FORTIFY buffs, so
+// it can't silently 2.5x a Requiem heal-over-time (Restore Health mag/sec x dur).
+// The discriminator is the Recover flag — a temporary modifier that reverts when
+// the effect ends (Fortify X, Resist X). Restore/heal effects do NOT Recover
+// (their change is permanent), so they are excluded unless this is turned on.
+std::atomic<bool>     g_extSynthAllBuffs{ false };
+constexpr std::int32_t kExtSynthBonus = 30;  // seconds added per eligible effect
+
+// Would Extended Synthesis extend this effect if the perk were held? Shared by
+// the drink hook (which applies it) and RenameFlask (which must SHOW it), so the
+// flask card and the actual cast can never disagree about the number.
+bool ExtSynthEligible(const RE::Effect* a_eff) {
+    if (!a_eff || a_eff->effectItem.duration <= 0 || !a_eff->baseEffect) {
+        return false;  // instant effect (dur 0) has nothing to extend
+    }
+    const auto* mgef = a_eff->baseEffect;
+    if (mgef->IsHostile() || mgef->IsDetrimental()) {
+        return false;  // never lengthen a drawback / poison rider
+    }
+    if (g_extSynthAllBuffs.load()) {
+        return true;   // widened: any beneficial timed effect (pre-1.0.4 reach)
+    }
+    return mgef->data.flags.all(RE::EffectSetting::EffectSettingData::Flag::kRecover);
+}
 
 // Fluid Motion only means something when a drink-animation mod imposes a
 // movement penalty — MAO's own drinks are instant (§Why Native). The perk
@@ -2087,15 +2112,15 @@ struct DrinkPotionHook {
                     // and the form never stays mutated.
                     std::vector<std::pair<RE::Effect*, std::uint32_t>> bumped;
                     if (g_hasExtSynth.load()) {
+                        // Eligibility (fortify-only by default; polarity guard so a
+                        // Requiem Damage-Regen drawback never runs longer too) is
+                        // ExtSynthEligible — the SAME predicate RenameFlask shows on
+                        // the card, so the number the player sees is the number cast.
                         for (auto* e : vAlch->effects) {
-                            // BUFFS only: a hostile rider (Requiem's Damage-Regen
-                            // drawbacks) must not run longer too (Fable v0.22.0
-                            // finding 1 — mirrors VariantCost's polarity rule).
-                            if (e && e->effectItem.duration > 0 && e->baseEffect &&
-                                !e->baseEffect->IsHostile() && !e->baseEffect->IsDetrimental()) {
+                            if (ExtSynthEligible(e)) {
                                 bumped.emplace_back(
                                     e, static_cast<std::uint32_t>(e->effectItem.duration));
-                                e->effectItem.duration += 30;
+                                e->effectItem.duration += kExtSynthBonus;
                             }
                         }
                     }
@@ -2183,6 +2208,8 @@ void ApplyIniLine(std::string a_line) {
         g_conversionEnabled = !(val == "0" || val == "false");
     } else if (key == "bNotify") {
         g_notify = !(val == "0" || val == "false");
+    } else if (key == "bExtSynthAllBuffs") {
+        g_extSynthAllBuffs = (val == "1" || val == "true");
     } else if (key == "iOpenHotkey") {
         g_openHotkey = static_cast<std::uint32_t>(std::strtoul(val.c_str(), nullptr, 0));
     } else if (key == "iOpenButtonGamepad") {
@@ -2237,6 +2264,7 @@ void ReadConfig() {
     g_perkWantMask.store(0);
     g_conversionEnabled.store(true);  // absent key = conversion on (default)
     g_notify.store(true);             // absent key = notifications on (default)
+    g_extSynthAllBuffs.store(false);  // absent key = fortify-only (default OFF)
     for (const char* path : { "Data/SKSE/Plugins/MAO.ini", "Data/MCM/Settings/MAO.ini" }) {
         std::ifstream f(path);
         std::string   line;
@@ -2244,9 +2272,10 @@ void ReadConfig() {
             ApplyIniLine(line);
         }
     }
-    spdlog::info("[config] conversion={} bNotify={} iOpenHotkey=0x{:X} debugPerks={} wantMask=0x{:X}",
-                 g_conversionEnabled.load(), g_notify.load(), g_openHotkey.load(), g_perkDebug.load(),
-                 g_perkWantMask.load());
+    spdlog::info("[config] conversion={} bNotify={} extSynthAllBuffs={} iOpenHotkey=0x{:X} "
+                 "debugPerks={} wantMask=0x{:X}",
+                 g_conversionEnabled.load(), g_notify.load(), g_extSynthAllBuffs.load(),
+                 g_openHotkey.load(), g_perkDebug.load(), g_perkWantMask.load());
 }
 
 // Which flask slot (if any) uses this form as its physical item. -1 = none.
@@ -2326,6 +2355,18 @@ void RenameFlask(std::size_t a_slot, RE::AlchemyItem* a_variant) {
                a_variant->effects[0] && a_variant->effects[0]->baseEffect) {
         flask->effects[0]->baseEffect = a_variant->effects[0]->baseEffect;
         flask->effects[0]->effectItem = a_variant->effects[0]->effectItem;
+        // If Extended Synthesis will lengthen this drink, SHOW it on the card.
+        // Before 1.0.4 the card always read the base duration, so the +30s was
+        // invisible and unverifiable (marth). Mirroring it here means the card
+        // and the cast agree: if the card says 50s and the active-effect timer
+        // does not, the cast path is broken — the card is now the diagnostic.
+        // Display-only: the drink hook casts the VARIANT, so this never changes
+        // what is applied; recomputed on every configure and re-run for all
+        // slots by SyncFlaskItems (load + MCM close), so a perk/toggle change
+        // reflows the cards.
+        if (g_hasExtSynth.load() && ExtSynthEligible(a_variant->effects[0])) {
+            flask->effects[0]->effectItem.duration += kExtSynthBonus;
+        }
     }
 }
 
@@ -3290,6 +3331,7 @@ public:
             SKSE::GetTaskInterface()->AddTask([]() {
                 ReadConfig();
                 RecomputeCapacity("mcm");
+                SyncFlaskItems();  // reflow cards: perk-debug or bExtSynthAllBuffs may have changed
             });
         }
         return RE::BSEventNotifyControl::kContinue;
