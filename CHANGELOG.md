@@ -7,6 +7,11 @@ Point fixes fold into their feature's entry unless load-bearing on their own.
 Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
 (build-stamped into the MCM Debug page by `MAO_GenerateESP.py`).
 
+## v1.0.6 — description box hugs its text (2026-07-28)
+
+- The field-kit description box is now only as tall as the current description
+  needs; the freed space goes to the variant list. Window size is unchanged.
+
 ## v1.0.5 — bigger field kit, description box, logging toggle (2026-07-28)
 
 - **The field kit window is larger**, matching MEO's socketing window
