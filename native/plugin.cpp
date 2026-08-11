@@ -72,7 +72,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "1.0.5";
+constexpr auto kPluginVersion = "1.0.6";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -2959,10 +2959,14 @@ namespace menuhook {
                 // load, so the box is never empty once a flask is chosen.
                 RE::AlchemyItem*  descAlch = nullptr;
                 const char*       descName = nullptr;
-                const float       descH =
-                    ImGui::GetTextLineHeightWithSpacing() * 4.0f + ImGui::GetFrameHeight();
-                ImGui::BeginChild("variants",
-                                  ImVec2(0, -(descH + ImGui::GetFrameHeightWithSpacing() * 2.2f)));
+                // The box is sized to its CURRENT text; the list gets the rest
+                // (marth). Which description shows depends on what's hovered THIS
+                // frame, so the list is sized from the LAST frame's measured
+                // height (a one-frame settle, imperceptible) and the box is
+                // re-measured to its content below.
+                static float      s_descH = ImGui::GetTextLineHeightWithSpacing() * 2.0f;
+                const float       footerH = ImGui::GetFrameHeightWithSpacing() * 2.2f;
+                ImGui::BeginChild("variants", ImVec2(0, -(s_descH + footerH)));
                 // Sort by TYPE with commonly-used categories up top (marth),
                 // instead of g_discovered's hash order. Category from the
                 // primary effect's name; within a category, cluster by effect
@@ -3094,17 +3098,38 @@ namespace menuhook {
                         }
                     }
                 }
-                ImGui::BeginChild("desc", ImVec2(0, descH), ImGuiChildFlags_Borders);
+                // Resolve the body ONCE (measured and rendered from the same
+                // string), then size the box to exactly name + wrapped body,
+                // clamped to [1 line, 8 lines] so a many-effect potion can't eat
+                // the list and a scrollbar takes over past the cap.
+                const ImGuiStyle& st = ImGui::GetStyle();
+                std::string       body;
+                if (descAlch) {
+                    body = VariantDescription(descAlch);
+                    if (body.empty()) {
+                        body = "No description.";
+                    }
+                } else {
+                    body = "Hover a variant to read its effects.";
+                }
+                const float lineH = ImGui::GetTextLineHeightWithSpacing();
+                const float wrapW =
+                    std::max(1.0f, ImGui::GetContentRegionAvail().x - st.WindowPadding.x * 2.0f);
+                const float bodyH = ImGui::CalcTextSize(body.c_str(), nullptr, false, wrapW).y;
+                const float nameH = (descAlch && descName) ? lineH : 0.0f;
+                s_descH           = std::clamp(st.WindowPadding.y * 2.0f + nameH + bodyH,
+                                     st.WindowPadding.y * 2.0f + lineH,
+                                     st.WindowPadding.y * 2.0f + lineH * 8.0f);
+                ImGui::BeginChild("desc", ImVec2(0, s_descH), ImGuiChildFlags_Borders);
                 if (descAlch) {
                     if (descName) {
                         ImGui::PushStyleColor(ImGuiCol_Text, skin.accent);
                         ImGui::TextUnformatted(descName);
                         ImGui::PopStyleColor();
                     }
-                    const std::string d = VariantDescription(descAlch);
-                    ImGui::TextWrapped("%s", d.empty() ? "No description." : d.c_str());
+                    ImGui::TextWrapped("%s", body.c_str());
                 } else {
-                    ImGui::TextDisabled("Hover a variant to read its effects.");
+                    ImGui::TextDisabled("%s", body.c_str());
                 }
                 ImGui::EndChild();
             }
