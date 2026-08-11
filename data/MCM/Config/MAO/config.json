@@ -172,9 +172,19 @@
 				{
 					"text": "Version",
 					"type": "text",
-					"help": "MAO version, stamped from the build (1.0.4). Matches the MAO.dll built from the same commit.",
+					"help": "MAO version, stamped from the build (1.0.5). Matches the MAO.dll built from the same commit.",
 					"valueOptions": {
-						"value": "v1.0.4"
+						"value": "v1.0.5"
+					}
+				},
+				{
+					"id": "bEnableLogging:Debug",
+					"text": "Write MAO.log",
+					"type": "toggle",
+					"help": "ON (default): MAO writes its diagnostic log to Documents/My Games/.../SKSE/MAO.log. Turn OFF to silence all file logging (useful once everything works). Applies when you close the menu.",
+					"valueOptions": {
+						"sourceType": "ModSettingBool",
+						"defaultValue": true
 					}
 				},
 				{

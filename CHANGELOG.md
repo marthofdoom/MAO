@@ -7,6 +7,21 @@ Point fixes fold into their feature's entry unless load-bearing on their own.
 Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
 (build-stamped into the MCM Debug page by `MAO_GenerateESP.py`).
 
+## v1.0.5 — bigger field kit, description box, logging toggle (2026-07-28)
+
+- **The field kit window is larger**, matching MEO's socketing window
+  (0.62 x 0.68 of the screen, was 0.40 x 0.62) and now resizable by dragging any
+  edge.
+- **Selected/hovered variants show a description box** below the list: the
+  effect breakdown pulled from each effect's own in-game description (magnitude
+  and duration filled from that specific potion), with off-polarity drawbacks
+  tagged. Works with mouse hover and gamepad nav; falls back to the selected
+  flask's current load when nothing is highlighted.
+- **New MCM toggle "Write MAO.log"** (Debug page, default on) — turn logging off
+  once everything works. Ported from MEO; flips the log level in one place.
+
+UI/data change, no economy change. No Synthesis re-run needed from 1.0.2+.
+
 ## v1.0.4 — Extended Synthesis: visible, and fortify-only by default (2026-07-21)
 
 - **The flask item card now shows the Extended Synthesis bonus.** Before, the

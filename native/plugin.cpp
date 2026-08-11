@@ -72,7 +72,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "1.0.4";
+constexpr auto kPluginVersion = "1.0.5";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -550,6 +550,10 @@ void CloseFieldKit() {
 // ── Config (Data/SKSE/Plugins/MAO.ini). The full MCM option set arrives with
 // P1; P0 seeds the surface with the keys it needs.
 std::atomic<bool> g_notify   = true;  // bNotify — per-pickup essence notifications
+// bEnableLogging — write MAO.log (default on). ReadConfig flips the spdlog level
+// in ONE place rather than guarding every call site (ported from MEO m38d). MCM
+// re-reads on menu close, so toggling takes effect immediately.
+std::atomic<bool> g_enableLogging = true;
 // iOpenHotkey — OPTIONAL keyboard opener, DirectInput scancode; 0 = disabled.
 // DEFAULT IS OFF (marth, v1.0.3): the power is the only opener. A baked-in K
 // silently collides with whatever else a load order binds there, and the user
@@ -2210,6 +2214,8 @@ void ApplyIniLine(std::string a_line) {
         g_notify = !(val == "0" || val == "false");
     } else if (key == "bExtSynthAllBuffs") {
         g_extSynthAllBuffs = (val == "1" || val == "true");
+    } else if (key == "bEnableLogging") {
+        g_enableLogging = !(val == "0" || val == "false");
     } else if (key == "iOpenHotkey") {
         g_openHotkey = static_cast<std::uint32_t>(std::strtoul(val.c_str(), nullptr, 0));
     } else if (key == "iOpenButtonGamepad") {
@@ -2265,6 +2271,7 @@ void ReadConfig() {
     g_conversionEnabled.store(true);  // absent key = conversion on (default)
     g_notify.store(true);             // absent key = notifications on (default)
     g_extSynthAllBuffs.store(false);  // absent key = fortify-only (default OFF)
+    g_enableLogging.store(true);      // absent key = logging on (default)
     for (const char* path : { "Data/SKSE/Plugins/MAO.ini", "Data/MCM/Settings/MAO.ini" }) {
         std::ifstream f(path);
         std::string   line;
@@ -2272,10 +2279,16 @@ void ReadConfig() {
             ApplyIniLine(line);
         }
     }
-    spdlog::info("[config] conversion={} bNotify={} extSynthAllBuffs={} iOpenHotkey=0x{:X} "
+    // bEnableLogging gates ALL file logging in one place (ported from MEO m38d) —
+    // flip the spdlog level rather than guard every call site. This last [config]
+    // line still prints (it's above the level flip) so the log always records why
+    // it went quiet.
+    spdlog::info("[config] conversion={} bNotify={} extSynthAllBuffs={} logging={} iOpenHotkey=0x{:X} "
                  "debugPerks={} wantMask=0x{:X}",
                  g_conversionEnabled.load(), g_notify.load(), g_extSynthAllBuffs.load(),
-                 g_openHotkey.load(), g_perkDebug.load(), g_perkWantMask.load());
+                 g_enableLogging.load(), g_openHotkey.load(), g_perkDebug.load(),
+                 g_perkWantMask.load());
+    spdlog::set_level(g_enableLogging.load() ? spdlog::level::info : spdlog::level::off);
 }
 
 // Which flask slot (if any) uses this form as its physical item. -1 = none.
@@ -2368,6 +2381,64 @@ void RenameFlask(std::size_t a_slot, RE::AlchemyItem* a_variant) {
             flask->effects[0]->effectItem.duration += kExtSynthBonus;
         }
     }
+}
+
+// Human-readable effect breakdown for the field-kit description box (marth: "a
+// description box for selected potions"). Prefer each effect's own templated
+// game description (DNAM), with <mag>/<dur>/<area> filled from THIS variant's
+// values — per-list truth, the same source MEO reads. Falls back to composing
+// from the effect name when a MGEF has no description. Off-polarity riders
+// (Requiem's Damage-Regen drawbacks) are tagged so the box doesn't read them as
+// benefits.
+std::string VariantDescription(RE::AlchemyItem* a_alch) {
+    if (!a_alch || a_alch->effects.empty() || !a_alch->effects[0] ||
+        !a_alch->effects[0]->baseEffect) {
+        return {};
+    }
+    const bool primaryHostile = a_alch->effects[0]->baseEffect->IsHostile() ||
+                                a_alch->effects[0]->baseEffect->IsDetrimental();
+    std::string out;
+    for (auto* e : a_alch->effects) {
+        if (!e || !e->baseEffect) {
+            continue;
+        }
+        auto*     m    = e->baseEffect;
+        const int mag  = static_cast<int>(e->effectItem.magnitude);
+        const int dur  = static_cast<int>(e->effectItem.duration);
+        const int area = static_cast<int>(e->effectItem.area);
+        std::string line;
+        if (const char* d = m->magicItemDescription.c_str(); d && *d) {
+            line = d;
+            auto sub = [&](std::string_view tok, int v) {
+                const std::string rep = std::to_string(v);
+                for (auto p = line.find(tok); p != std::string::npos; p = line.find(tok)) {
+                    line.replace(p, tok.size(), rep);
+                }
+            };
+            sub("<mag>", mag);
+            sub("<dur>", dur);
+            sub("<area>", area);
+            std::erase(line, '<');  // strip any tokens we don't fill (e.g. <Global=...>)
+            std::erase(line, '>');
+        } else {
+            const char* en = m->GetName();
+            line           = (en && *en) ? en : "Effect";
+            if (mag > 0) {
+                line += std::format("  {}", mag);
+            }
+            if (dur > 0) {
+                line += std::format(" for {}s", dur);
+            }
+        }
+        if (!out.empty()) {
+            out += '\n';
+        }
+        if ((m->IsHostile() || m->IsDetrimental()) != primaryHostile) {
+            out += "(drawback) ";
+        }
+        out += line;
+    }
+    return out;
 }
 
 // ── The gathering sink: the SOLE essence-credit point. Anything an ingredient
@@ -2791,8 +2862,13 @@ namespace menuhook {
         }
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
                                 ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-        ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x * 0.40f, io.DisplaySize.y * 0.62f),
+        // Sized to match MEO's socketing window (marth): 0.62 x 0.68 of the
+        // display (was 0.40 x 0.62 — too small beside its sibling). Resizable by
+        // dragging any edge; ImGui keeps the chosen size for the session.
+        ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x * 0.62f, io.DisplaySize.y * 0.68f),
                                  ImGuiCond_Appearing);
+        ImGui::SetNextWindowSizeConstraints(ImVec2(640.0f, 420.0f),
+                                            ImVec2(io.DisplaySize.x, io.DisplaySize.y));
         if (!ImGui::Begin("MAO Field Kit", nullptr,
                           ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
                               ImGuiWindowFlags_NoTitleBar)) {
@@ -2829,12 +2905,16 @@ namespace menuhook {
         ImGui::Separator();
         // Snapshot the perk-scaled charge cap under the lock — RecomputeCapacity
         // writes it from the task thread while this menu renders.
-        std::uint32_t chargesCap = 2;
+        std::uint32_t chargesCap  = 2;
+        RE::FormID    selectedRep = 0;  // selected slot's current load, for the description box
         {
             std::scoped_lock lk(g_flasksLock);
             chargesCap = g_chargesPerFlask;
             if (g_selectedSlot >= static_cast<int>(g_flaskCount)) {
                 g_selectedSlot = -1;
+            }
+            if (g_selectedSlot >= 0) {
+                selectedRep = g_flasks[g_selectedSlot].repPotion;
             }
             for (int i = 0; i < static_cast<int>(g_flaskCount); ++i) {
                 const auto& f    = g_flasks[i];
@@ -2873,7 +2953,16 @@ namespace menuhook {
                 if (g_selectedSlot < 0) {
                     ImGui::TextDisabled("Select a flask above first.");
                 }
-                ImGui::BeginChild("variants", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 2.2f));
+                // Reserve a description box below the list (marth) plus the two
+                // footer lines. Whatever variant is hovered or nav-focused fills
+                // it; nothing focused falls back to the selected slot's current
+                // load, so the box is never empty once a flask is chosen.
+                RE::AlchemyItem*  descAlch = nullptr;
+                const char*       descName = nullptr;
+                const float       descH =
+                    ImGui::GetTextLineHeightWithSpacing() * 4.0f + ImGui::GetFrameHeight();
+                ImGui::BeginChild("variants",
+                                  ImVec2(0, -(descH + ImGui::GetFrameHeightWithSpacing() * 2.2f)));
                 // Sort by TYPE with commonly-used categories up top (marth),
                 // instead of g_discovered's hash order. Category from the
                 // primary effect's name; within a category, cluster by effect
@@ -2982,9 +3071,40 @@ namespace menuhook {
                                 [slot, p, field]() { ConfigureFlask(slot, p, field); });
                         }
                     }
+                    // Feed the description box from whatever the cursor is over or
+                    // gamepad nav has focused. AllowWhenDisabled so you can still
+                    // read a variant you can't currently afford.
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) ||
+                        ImGui::IsItemFocused()) {
+                        descAlch = alch;
+                        descName = pn;
+                    }
                     if (!enabled) {
                         ImGui::EndDisabled();
                     }
+                }
+                ImGui::EndChild();
+                // Nothing hovered/focused → show the selected slot's current load,
+                // so the box is populated the moment a flask is chosen.
+                if (!descAlch && selectedRep) {
+                    if (auto* rp = RE::TESForm::LookupByID<RE::AlchemyItem>(selectedRep)) {
+                        descAlch = rp;
+                        if (const char* n = rp->GetName(); n && *n) {
+                            descName = n;
+                        }
+                    }
+                }
+                ImGui::BeginChild("desc", ImVec2(0, descH), ImGuiChildFlags_Borders);
+                if (descAlch) {
+                    if (descName) {
+                        ImGui::PushStyleColor(ImGuiCol_Text, skin.accent);
+                        ImGui::TextUnformatted(descName);
+                        ImGui::PopStyleColor();
+                    }
+                    const std::string d = VariantDescription(descAlch);
+                    ImGui::TextWrapped("%s", d.empty() ? "No description." : d.c_str());
+                } else {
+                    ImGui::TextDisabled("Hover a variant to read its effects.");
                 }
                 ImGui::EndChild();
             }
