@@ -1,0 +1,2 @@
+Larger field kit window, per-variant description box, MAO.log toggle
+built from native run 31444760597
