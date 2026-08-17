@@ -72,7 +72,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "1.0.7";
+constexpr auto kPluginVersion = "1.0.8";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -275,6 +275,28 @@ int RankFromMask(std::uint32_t a_mask) {
         }
     }
     return r;
+}
+// BFS the perk-tree node graph for a specific perk (ported verbatim from MEO
+// m51b). Used to detect TREE mode by PRESENCE of MAO's perks in the winning
+// AVAlchemy tree — never by a plugin name (see the g_treeMode assignment).
+bool TreeContainsPerk(const RE::BGSSkillPerkTreeNode* a_root, const RE::BGSPerk* a_perk) {
+    if (!a_root || !a_perk) {
+        return false;
+    }
+    std::vector<const RE::BGSSkillPerkTreeNode*>        queue{ a_root };
+    std::unordered_set<const RE::BGSSkillPerkTreeNode*> seen{ a_root };
+    for (std::size_t i = 0; i < queue.size(); ++i) {
+        const auto* node = queue[i];
+        if (node->perk == a_perk) {
+            return true;
+        }
+        for (const auto* kid : node->children) {
+            if (kid && seen.insert(kid).second) {
+                queue.push_back(kid);
+            }
+        }
+    }
+    return false;
 }
 // Recompute flask/charge capacity + efficiency flags from the player's perks —
 // or, when the MCM debug override is on, from its toggle bits instead. Safe to
@@ -3877,10 +3899,34 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
                 }
             }
             g_capacityPerksResolved = (na > 0);
-            // Tree mode: the installer-written patch puts these perks into the
-            // AVAlchemy constellation (player buys them with perk points).
-            // Without it, RecomputeCapacity auto-grants them by skill threshold.
-            g_treeMode.store(dh->LookupModByName("MAO - Patch.esp") != nullptr);
+            // Tree mode: the patcher puts MAO's perks into the AVAlchemy
+            // constellation (player buys them with perk points); without it,
+            // RecomputeCapacity auto-grants them by skill threshold.
+            //
+            // MEO m51b (marth: "detect if the files are present"): NO PLUGIN-NAME
+            // GATE. The old check `LookupModByName("MAO - Patch.esp")` is the
+            // filename the standalone installer writes — but the Synthesis
+            // PIPELINE merges every patcher's records into one plugin named after
+            // the GROUP (Synthesis.esp / "<Modlist> - Synthesis.esp"), so that
+            // file never exists for a Synthesis user: tree mode was DEAD for all
+            // of them, the patcher HAD put the perks in the tree, and the DLL
+            // auto-granted them free anyway. Whether MAO's perk is in the WINNING
+            // AVAlchemy tree is the real question, and it doesn't care what the
+            // output plugin is named. Ask the engine's own AV table for the
+            // winning tree (NOT LookupByEditorID — ActorValueInfo doesn't store a
+            // runtime editorID, so that returns null for everyone without po3
+            // Tweaks; MEO ENGINE_NOTES §9).
+            g_treeMode.store(false);
+            if (auto* avl = RE::ActorValueList::GetSingleton()) {
+                if (const auto* avAlch = avl->GetActorValue(RE::ActorValue::kAlchemy)) {
+                    for (auto* p : g_perkForm) {  // any MAO perk in the tree vouches
+                        if (p && TreeContainsPerk(avAlch->perkTree, p)) {
+                            g_treeMode.store(true);
+                            break;
+                        }
+                    }
+                }
+            }
             // Fluid Motion: detect a drink-animation mod (plugin or SKSE dll);
             // absent -> the perk disables itself (marth 2026-07-16).
             const char* animHit = nullptr;
@@ -3905,7 +3951,7 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
             spdlog::info("[perks] resolved {}/{} MAO flag perks ({}/5 calibration ranks); "
                          "mode {}; capacity {} (0=missing -> holds co-saved)",
                          np, static_cast<int>(PK_COUNT), na,
-                         g_treeMode.load() ? "TREE (MAO - Patch.esp)" : "auto-grant",
+                         g_treeMode.load() ? "TREE (perks in winning AVAlchemy tree)" : "auto-grant",
                          g_capacityPerksResolved ? "live" : "held");
         }
         spdlog::info("[power] Open Field Kit spell: {}", g_fieldKitSpell ? "found" : "MISSING (is MAO.esp enabled?)");
