@@ -273,12 +273,56 @@ static partial class Commands
             ["median"] = Pctl(0.50),
         };
 
+        // ── QUEST-REFERENCE MAP (see Commands.QuestRefs.cs for why). Every
+        // quest whose conditions (alias / quest-dialogue / owned INFO) name a
+        // convertible ingredient or non-food potion, with those items. The DLL
+        // builds the reverse index and skips conversion while a referencing
+        // quest shows in the journal. UNFILTERED by design: the runtime journal
+        // predicate — not a patch-time heuristic — separates real collect
+        // quests from always-running dialogue frameworks.
+        var questRefs = CollectQuestItemRefs(lo, cache);
+        string EdidOf(FormKey fk) =>
+            cache.TryResolve<ISkyrimMajorRecordGetter>(fk, out var r) ? (r.EditorID ?? "") : "";
+        string DispOf(FormKey fk) =>
+            cache.TryResolve<IIngredientGetter>(fk, out var ig) ? (ig.Name?.String ?? "") :
+            cache.TryResolve<IIngestibleGetter>(fk, out var ag) ? (ag.Name?.String ?? "") : "";
+        var questJson = new List<object>();
+        var questItemForms = new HashSet<FormKey>();
+        int questItemRefs = 0;
+        foreach (var kv in questRefs.OrderBy(kv => kv.Key.ModKey.FileName.String, StringComparer.OrdinalIgnoreCase)
+                                    .ThenBy(kv => kv.Key.ID))
+        {
+            var itemsJson = new List<object>();
+            foreach (var f in kv.Value.OrderBy(f => f.ModKey.FileName.String, StringComparer.OrdinalIgnoreCase)
+                                      .ThenBy(f => f.ID))
+            {
+                questItemForms.Add(f);
+                questItemRefs++;
+                itemsJson.Add(new Dictionary<string, object>
+                {
+                    ["plugin"] = f.ModKey.FileName.String,
+                    ["fid"] = $"0x{f.ID:X6}",
+                    ["name"] = DispOf(f),
+                });
+            }
+            var qName = cache.TryResolve<IQuestGetter>(kv.Key, out var q) ? (q.Name?.String ?? "") : "";
+            questJson.Add(new Dictionary<string, object>
+            {
+                ["plugin"] = kv.Key.ModKey.FileName.String,
+                ["fid"] = $"0x{kv.Key.ID:X6}",
+                ["edid"] = EdidOf(kv.Key),
+                ["name"] = qName,
+                ["items"] = itemsJson,
+            });
+        }
+
         var doc = new Dictionary<string, object>
         {
             ["from"] = $"{ingr.Count} ingredients scored over {lo.ListedOrder.Count()} plugins",
             ["tierStats"] = tierStats,
             ["potionStats"] = potionStats,
             ["ladders"] = ladderJson,
+            ["questRefs"] = questJson,
             ["tiers"] = entries,
         };
         var dir = Path.GetDirectoryName(Path.GetFullPath(outPath));
@@ -299,6 +343,9 @@ static partial class Commands
             $"{rejects.Count} group(s) rejected by validation");
         Console.WriteLine($"quality anchor: {potionStats["anchor"]} gold (p{AnchorPercentile * 100:0} of " +
             $"{anchorVals.Count} no-food potions, pool p50 {potionStats["median"]}; emitted — the DLL consumes this)");
+        Console.WriteLine($"quest refs: {questRefs.Count} quests -> {questItemRefs} item ref(s), " +
+            $"{questItemForms.Count} distinct convertible form(s) (unfiltered; the DLL's journal " +
+            $"check discriminates at runtime)");
         // Sanity reference: report where the named Vampire Dust ingredient lands,
         // with its raw signals, so the tiering can be eyeballed. NOTE: the design
         // note's FormKey 0x0003AD5F is vanilla FROST SALTS, not Vampire Dust — so

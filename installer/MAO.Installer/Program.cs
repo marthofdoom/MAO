@@ -124,6 +124,8 @@ try
             double.Parse(positional.ElementAtOrDefault(5) ?? "4.0"),
             double.Parse(positional.ElementAtOrDefault(6) ?? "1.0"),
             (positional.ElementAtOrDefault(7) ?? "") == "shipped"),
+        "quest-dump" => Commands.QuestDump(loadOrder, cache, positional.ElementAtOrDefault(0) ?? ""),
+        "quest-scan" => Commands.QuestScan(loadOrder, cache, positional.ElementAtOrDefault(0) ?? ""),
         "write-tiers" => Commands.WriteTiers(loadOrder, cache, positional.ElementAtOrDefault(0) ?? "data/mao_tiers.json"),
         "write-patch" => Commands.WritePatch(loadOrder, cache, positional.ElementAtOrDefault(0) ?? "MAO - Patch.esp"),
         _ => Commands.Fail($"unknown command {cmd}"),

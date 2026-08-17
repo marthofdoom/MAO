@@ -72,7 +72,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "1.0.6";
+constexpr auto kPluginVersion = "1.0.7";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -967,6 +967,130 @@ void LoadLadders() {
                       "guarantee); re-run the MAO installer / Synthesis patcher",
                       ex.what());
     }
+}
+
+// ── INSTALLER QUEST-REFERENCE DATA (mao_tiers.json "questRefs").
+// "Collect N of ordinary ingredient X" quests (FreeformRiften10: 10 fire
+// salts for Balimund) do NOT quest-flag the item — IsQuestObject() stays
+// false, so the sink's quest-item guard can't see them. The quest watches the
+// player's count through GetItemCount CONDITIONS instead, and converting the
+// item on pickup soft-locks the quest. The patcher reads those conditions
+// offline (dialogue INFOs attributed to their owning quest, quest aliases,
+// quest DialogConditions — Commands.QuestRefs.cs) and emits
+// { quest -> [convertible items] }; this is the REVERSE index: item form ->
+// every quest referencing it. UNFILTERED at patch time by design:
+// always-running dialogue frameworks (follower/vendor mods) reference the
+// same items in barter lines, but they never DISPLAY a journal objective —
+// the runtime predicate (QuestShowsInJournal) is the discriminator.
+// Absent/stale/corrupt file: the map stays empty and the guard is inert —
+// kExclusions, the IsQuestItem flag check and the MCM conversion toggle
+// remain the manual fallbacks. Built once at kDataLoaded (the g_ingredientTier
+// pattern), read-only afterwards on the task thread.
+std::unordered_map<RE::FormID, std::vector<RE::TESQuest*>> g_questGuards;
+
+void LoadQuestGuards() {
+    g_questGuards.clear();
+    auto*         dh = RE::TESDataHandler::GetSingleton();
+    std::ifstream f("Data/SKSE/Plugins/MAO/mao_tiers.json");
+    if (!f || !dh) {
+        spdlog::info("[quest] no mao_tiers.json — journal quest guard inactive");
+        return;
+    }
+    try {
+        nlohmann::json j;
+        f >> j;
+        const auto qr = j.find("questRefs");
+        if (qr == j.end() || !qr->is_array()) {
+            spdlog::info("[quest] mao_tiers.json has no questRefs (older file) — journal quest "
+                         "guard INACTIVE; re-run the MAO installer / Synthesis patcher");
+            return;
+        }
+        std::size_t quests = 0, refs = 0, missQ = 0, missI = 0;
+        for (const auto& Q : *qr) {
+            const std::string qp = Q.value("plugin", std::string{});
+            const std::string qf = Q.value("fid", std::string{});
+            if (qp.empty() || qf.empty()) {
+                continue;
+            }
+            const RE::FormID qraw =
+                static_cast<RE::FormID>(std::strtoul(qf.c_str(), nullptr, 0)) & 0xFFFFFF;
+            auto* quest = dh->LookupForm<RE::TESQuest>(qraw, qp);
+            if (!quest) {
+                ++missQ;  // quest's plugin removed since patch: drop, never guess
+                continue;
+            }
+            bool any = false;
+            for (const auto& it : Q.value("items", nlohmann::json::array())) {
+                const std::string ip   = it.value("plugin", std::string{});
+                const std::string ifid = it.value("fid", std::string{});
+                if (ip.empty() || ifid.empty()) {
+                    continue;
+                }
+                const RE::FormID iraw =
+                    static_cast<RE::FormID>(std::strtoul(ifid.c_str(), nullptr, 0)) & 0xFFFFFF;
+                // The convertible set is ingredients + potions; resolve as either
+                // (the same two lookups the sink's branches key on).
+                RE::TESForm* form = dh->LookupForm<RE::IngredientItem>(iraw, ip);
+                if (!form) {
+                    form = dh->LookupForm<RE::AlchemyItem>(iraw, ip);
+                }
+                if (!form) {
+                    ++missI;  // unresolved (plugin removed): drop, never guess
+                    continue;
+                }
+                g_questGuards[form->GetFormID()].push_back(quest);
+                ++refs;
+                any = true;
+            }
+            if (any) {
+                ++quests;
+            }
+        }
+        spdlog::info("[quest] journal quest guard ACTIVE: {} item form(s) guarded by {} "
+                     "quest(s), {} reference(s) ({} quest(s) / {} item(s) unresolved)",
+                     g_questGuards.size(), quests, refs, missQ, missI);
+    } catch (const std::exception& ex) {
+        g_questGuards.clear();
+        spdlog::error("[quest] parse failed ({}) — journal quest guard inactive", ex.what());
+    }
+}
+
+// Does this quest currently SHOW in the player's journal? True exactly when it
+// is enabled (running) AND at least one objective is in the DISPLAYED state —
+// the state SetObjectiveDisplayed sets and the journal renders as an active
+// entry. Running alone is NOT the signal: FreeformRiften10 is
+// START_GAME_ENABLED (it runs from the first frame so Balimund's dialogue
+// works) and only displays "Collect 10 fire salts" at stage 10, while the
+// always-running frameworks whose barter lines reference the same items
+// (InigofollowerDialogue: zero objectives, ever) can never satisfy this.
+// Completing an objective flips it to kCompletedDisplayed (crossed out) and
+// turn-in stops the quest — either makes this false again, so the item
+// resumes converting the moment the journal no longer asks for it.
+// Called on the task thread (main) — where the engine mutates quest state.
+bool QuestShowsInJournal(RE::TESQuest* a_quest) {
+    if (!a_quest || !a_quest->IsEnabled()) {
+        return false;
+    }
+    for (auto* obj : a_quest->objectives) {
+        if (obj && obj->state == RE::QUEST_OBJECTIVE_STATE::kDisplayed) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The quest that currently blocks converting this form, if any.
+RE::TESQuest* JournalGuardFor(RE::FormID a_form) {
+    const auto it = g_questGuards.find(a_form);
+    if (it == g_questGuards.end()) {
+        return nullptr;
+    }
+    for (auto* q : it->second) {
+        if (QuestShowsInJournal(q)) {
+            return q;
+        }
+    }
+    return nullptr;
 }
 
 struct FlaskCost { std::uint32_t base = 0, catalyst = 0, apex = 0; };
@@ -2573,6 +2697,17 @@ public:
                     spdlog::info("[gather] QUEST ITEM '{}' — kept as item, no conversion", nameStr);
                     return;
                 }
+                // Journal-quest guard: an ORDINARY ingredient a currently-shown
+                // quest asks for (GetItemCount conditions — never quest-flagged,
+                // so the check above can't see it) must not dissolve either.
+                if (auto* gq = JournalGuardFor(ingr->GetFormID())) {
+                    const char* qn = gq->GetName();
+                    const char* qe = gq->GetFormEditorID();
+                    spdlog::info("[gather] JOURNAL QUEST '{}' wants '{}' — kept as item, "
+                                 "no conversion",
+                                 (qn && qn[0]) ? qn : ((qe && qe[0]) ? qe : "?"), nameStr);
+                    return;
+                }
                 player->RemoveItem(ingr, count, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
                 CreditPouch(tier, total);
                 spdlog::info("[gather] +{} {} essence <- {}x '{}' (value {}); pouch B={} C={} A={}",
@@ -2649,6 +2784,16 @@ public:
                 // potions the quest wants you to drink).
                 if (IsQuestItem(player, alch)) {
                     spdlog::info("[discover] QUEST ITEM '{}' — kept as item, no analysis", potName);
+                    return;
+                }
+                // Journal-quest guard: same as the ingredient path — a potion a
+                // currently-shown quest asks for by count must not be analysed.
+                if (auto* gq = JournalGuardFor(alch->GetFormID())) {
+                    const char* qn = gq->GetName();
+                    const char* qe = gq->GetFormEditorID();
+                    spdlog::info("[discover] JOURNAL QUEST '{}' wants '{}' — kept as item, "
+                                 "no analysis",
+                                 (qn && qn[0]) ? qn : ((qe && qe[0]) ? qe : "?"), potName);
                     return;
                 }
                 player->RemoveItem(alch, count, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
@@ -3769,6 +3914,7 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
         BuildEffectPotionTable();
         LoadLadders();  // after BOTH: family recipes resolve via g_effectRecipe, and the
                         // emitted quality anchor overrides the runtime fallback
+        LoadQuestGuards();  // independent of the economy tables — the journal quest guard
         InstallDrinkHook();
         StartRefillTimer();
         const auto gameVersion = REL::Module::get().version();
