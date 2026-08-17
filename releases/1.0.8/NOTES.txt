@@ -1,0 +1,2 @@
+Detect perk-tree mode by perk presence, not plugin name (fixes Synthesis-pipeline installs)
+built from native run 32050078162

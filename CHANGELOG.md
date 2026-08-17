@@ -7,6 +7,17 @@ Point fixes fold into their feature's entry unless load-bearing on their own.
 Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
 (build-stamped into the MCM Debug page by `MAO_GenerateESP.py`).
 
+## v1.0.8 — perk-tree mode detected reliably under Synthesis (2026-07-28)
+
+- The plugin decides whether its perks live in the alchemy tree (buy with perk
+  points) or should be granted by skill level. It was detecting this by looking
+  for a plugin literally named "MAO - Patch.esp" — the file the standalone
+  installer writes. Under the Synthesis PIPELINE the records are merged into a
+  plugin named after your group (Synthesis.esp), so that check always failed and
+  Synthesis users silently got their perks granted free instead of buying them.
+  Detection now checks whether MAO's perks are actually in the winning alchemy
+  tree, regardless of what the output plugin is named.
+
 ## v1.0.7 — don't dissolve ingredients an active quest wants (2026-07-28)
 
 - Ingredients (and potions) that a quest currently showing in your journal asks
