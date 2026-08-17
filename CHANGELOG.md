@@ -7,6 +7,21 @@ Point fixes fold into their feature's entry unless load-bearing on their own.
 Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
 (build-stamped into the MCM Debug page by `MAO_GenerateESP.py`).
 
+## v1.0.7 — don't dissolve ingredients an active quest wants (2026-07-28)
+
+- Ingredients (and potions) that a quest currently showing in your journal asks
+  you to COLLECT are no longer converted to essence. Example: while "Stoking the
+  Flames" is active, fire salts stay in your bags so you can turn them in; once
+  the quest completes they convert normally again.
+- These items aren't quest-flagged (so the existing guard couldn't see them) —
+  the requirement lives in the quest's dialogue conditions. The Synthesis patcher
+  now reads those offline and emits a quest->item map; the DLL skips conversion
+  while any referencing quest shows a journal objective. The MCM conversion
+  toggle remains as the manual fallback (e.g. quests that check counts only in
+  script, which can't be read statically).
+- REQUIRES A SYNTHESIS RE-RUN to populate the new data (older files log the guard
+  inactive and behave as before).
+
 ## v1.0.6 — description box hugs its text (2026-07-28)
 
 - The field-kit description box is now only as tall as the current description
