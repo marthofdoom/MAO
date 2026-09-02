@@ -72,7 +72,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "1.0.8";
+constexpr auto kPluginVersion = "1.0.9";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -500,6 +500,7 @@ bool IsApexRungLocked(RE::FormID a_form) {
 int  FindFlaskSlot(RE::FormID a_form);
 bool IsFlaskForm(RE::FormID a_form);
 void RenameFlask(std::size_t a_slot, RE::AlchemyItem* a_variant);
+void RefreshFlaskName(std::size_t a_slot);  // charge-count name update (no effect re-mirror)
 void RestoreFlaskPlaceholder(std::size_t a_slot);
 
 // ── Field Kit viewer state (M2). open/close is driven by the input hook and
@@ -576,6 +577,12 @@ std::atomic<bool> g_notify   = true;  // bNotify — per-pickup essence notifica
 // in ONE place rather than guarding every call site (ported from MEO m38d). MCM
 // re-reads on menu close, so toggling takes effect immediately.
 std::atomic<bool> g_enableLogging = true;
+// bChargeInName — append the live charge count to a configured flask's inventory
+// name, e.g. "Flask: Potion of Restore Health [2/3]" (marth). Default ON. The
+// count only changes at discrete events (drink/refill/configure), so the name is
+// refreshed there; an already-open inventory/favorites menu shows the new count
+// on its next rebuild, not mid-frame.
+std::atomic<bool> g_chargeInName = true;
 // iOpenHotkey — OPTIONAL keyboard opener, DirectInput scancode; 0 = disabled.
 // DEFAULT IS OFF (marth, v1.0.3): the power is the only opener. A baked-in K
 // silently collides with whatever else a load order binds there, and the user
@@ -1927,6 +1934,7 @@ void RefillFlasks(const char* a_trigger, std::uint32_t a_maxPerFlask = 0) {
                 }
             }
             if (added) {
+                RefreshFlaskName(i);  // reflect the new charge count in the flask's name
                 refilled += added;
                 ++slots;
             } else if (f.charges < g_chargesPerFlask) {
@@ -2222,6 +2230,9 @@ struct DrinkPotionHook {
                         remaining = static_cast<int>(g_flasks[slot].charges);
                     }
                 }
+                if (remaining >= 0) {
+                    RefreshFlaskName(slot);  // reflect the spent charge in the name
+                }
                 if (remaining >= 0 && coating) {
                     // Coating: apply to the equipped weapon(s) instead of drinking.
                     // TIME-based (DESIGN §5.2): 45s baseline, 120s with Corrosive
@@ -2232,6 +2243,7 @@ struct DrinkPotionHook {
                         if (g_flasks[slot].repPotion == variant) {
                             g_flasks[slot].charges++;
                         }
+                        RefreshFlaskName(slot);  // charge refunded — restore the count in the name
                         spdlog::info("[coat] flask slot {} — no weapon equipped; charge refunded",
                                      slot);
                         if (g_notify.load()) {
@@ -2362,6 +2374,8 @@ void ApplyIniLine(std::string a_line) {
         g_extSynthAllBuffs = (val == "1" || val == "true");
     } else if (key == "bEnableLogging") {
         g_enableLogging = !(val == "0" || val == "false");
+    } else if (key == "bChargeInName") {
+        g_chargeInName = !(val == "0" || val == "false");
     } else if (key == "iOpenHotkey") {
         g_openHotkey = static_cast<std::uint32_t>(std::strtoul(val.c_str(), nullptr, 0));
     } else if (key == "iOpenButtonGamepad") {
@@ -2418,6 +2432,7 @@ void ReadConfig() {
     g_notify.store(true);             // absent key = notifications on (default)
     g_extSynthAllBuffs.store(false);  // absent key = fortify-only (default OFF)
     g_enableLogging.store(true);      // absent key = logging on (default)
+    g_chargeInName.store(true);       // absent key = charge count in name (default ON)
     for (const char* path : { "Data/SKSE/Plugins/MAO.ini", "Data/MCM/Settings/MAO.ini" }) {
         std::ifstream f(path);
         std::string   line;
@@ -2486,14 +2501,46 @@ void RestoreFlaskPlaceholder(std::size_t a_slot) {
     }
 }
 
+// Compose a flask's inventory name, optionally with its live charge count
+// (bChargeInName). Charges/cap are read WITHOUT g_flasksLock: they are aligned
+// 32-bit values, so a read is never torn — worst case the name lags one event,
+// which is cosmetic. This also means it is safe to call from RefillFlasks (which
+// holds the lock) with no re-entrancy. The count is composed as an ARGUMENT to
+// std::format, never the format string, so a variant name with braces/percent is
+// literal text — nothing to escape (marth's question).
+std::string FlaskDisplayName(std::size_t a_slot, const char* a_variantName) {
+    const char* nm = (a_variantName && *a_variantName) ? a_variantName : "Alchemy";
+    if (!g_chargeInName.load()) {
+        return std::format("Flask: {}", nm);
+    }
+    const std::uint32_t ch  = (a_slot < g_flasks.size()) ? g_flasks[a_slot].charges : 0;
+    const std::uint32_t cap = g_chargesPerFlask;
+    return std::format("Flask: {} [{}/{}]", nm, ch, cap);
+}
+
+// Name-only refresh (no effect re-mirror) for the discrete events that change a
+// flask's charge count: drink, refill. Idempotent and cheap.
+void RefreshFlaskName(std::size_t a_slot) {
+    if (a_slot >= g_flaskForms.size() || !g_flaskForms[a_slot]) {
+        return;
+    }
+    const RE::FormID rep = (a_slot < g_flasks.size()) ? g_flasks[a_slot].repPotion : 0;
+    const char*      vn  = nullptr;
+    if (rep) {
+        if (auto* a = RE::TESForm::LookupByID<RE::AlchemyItem>(rep)) {
+            vn = a->GetName();
+        }
+    }
+    g_flaskForms[a_slot]->fullName = RE::BSFixedString(FlaskDisplayName(a_slot, vn).c_str());
+}
+
 void RenameFlask(std::size_t a_slot, RE::AlchemyItem* a_variant) {
     if (a_slot >= g_flaskForms.size() || !g_flaskForms[a_slot] || !a_variant) {
         return;
     }
     auto*       flask = g_flaskForms[a_slot];
     const char* vn    = a_variant->GetName();
-    flask->fullName =
-        RE::BSFixedString(std::format("Flask: {}", (vn && *vn) ? vn : "Alchemy").c_str());
+    flask->fullName   = RE::BSFixedString(FlaskDisplayName(a_slot, vn).c_str());
 
     // Mirror the variant's PRIMARY effect onto the flask's displayed effect so
     // the item card reads the real magnitude/duration instead of the baked
