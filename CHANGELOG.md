@@ -7,6 +7,20 @@ Point fixes fold into their feature's entry unless load-bearing on their own.
 Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
 (build-stamped into the MCM Debug page by `MAO_GenerateESP.py`).
 
+## v1.0.9 — flask charge count in name, MCM toggles bind on old saves (2026-08-31)
+
+- **Configured flasks show their live charge count in the inventory name**, e.g.
+  "Flask: Potion of Restore Health [2/3]", updating on drink and refill. MCM
+  toggle (Field Kit > Interface, default on) to turn it off.
+- **New MCM toggles now bind on existing saves.** A toggle added in an update was
+  absent from an existing character's settings and read as unset, so it wouldn't
+  move; MAO now seeds any missing settings with their defaults on load (your
+  existing choices are untouched). Fixes the charge-count, logging, and
+  Extended-Synthesis toggles for anyone updating mid-playthrough.
+- **Fixed the MCM quest record's subrecord order** so xEdit / Vortex / Synthesis
+  no longer reject MAO.esp (it was engine-valid but failed strict validation).
+  Gameplay is unchanged.
+
 ## v1.0.8 — perk-tree mode detected reliably under Synthesis (2026-07-28)
 
 - The plugin decides whether its perks live in the alchemy tree (buy with perk
