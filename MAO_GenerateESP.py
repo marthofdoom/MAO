@@ -156,8 +156,14 @@ def make_mcm_quest():
     # MCM Helper from this quest's plugin stem ("MAO"), so no property needed.
     vmad = VMADBuilder()
     vmad.add_script("MAO_MCM", [])
-    body = subrec('EDID', zstr("MAO_MCMQuest")) + subrec('FULL', zstr("MAO MCM")) \
-        + subrec('VMAD', vmad.build())
+    # INVARIANT #75 (ported from MFO v1.1.2 fix): VMAD must come immediately after
+    # EDID, BEFORE FULL — the vanilla Skyrim.esm QUST subrecord order is
+    # EDID, VMAD, FULL, DNAM, ... The game loads any order leniently (so the old
+    # EDID FULL VMAD played fine), but xEdit / Vortex / Synthesis validate STRICTLY
+    # and reject out-of-order subrecords ("unexpected (or out of order) subrecord"
+    # + a fatal EVariantTypeCastError that crashes xEdit — a real MFO user report).
+    body = subrec('EDID', zstr("MAO_MCMQuest")) + subrec('VMAD', vmad.build()) \
+        + subrec('FULL', zstr("MAO MCM"))
     body += subrec('DNAM', qust_dnam(0x0001)) + subrec('NEXT', b'') \
         + subrec('ANAM', struct.pack('<I', 0))
     return group('QUST', record('QUST', FID_MCM_QUEST, 0, body))

@@ -216,3 +216,13 @@ the portable one-sitting audit digest.
     so one flip restores the perk gate. Shipping with it false ships
     coatings ungated — flip it back when the installer-written tree is the
     delivery vehicle.
+38. **Hand-assembled record subrecords must emit in xEdit-valid order**
+    (`MAO_GenerateESP.py`, ported from MFO INVARIANT #75). Concatenating
+    `subrec()` blobs lets the maker pick the order; the GAME reads by type
+    regardless (so a wrong order loads fine and plays byte-identical), but
+    xEdit / Vortex / Synthesis validate STRICTLY and reject out-of-order
+    subrecords (xEdit: "unexpected (or out of order) subrecord" + a fatal
+    `EVariantTypeCastError` that crashes the tool — a real MFO v1.1.1 user
+    report). QUST order is `EDID, VMAD, FULL, DNAM, ...` — VMAD BEFORE FULL
+    (`make_mcm_quest`). NEVER guess: dump the vanilla record type from
+    Skyrim.esm. Failure (pre-1.0.9): MAO's QUST emitted EDID FULL VMAD.
