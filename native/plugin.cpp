@@ -2430,6 +2430,107 @@ void ApplyIniLine(std::string a_line) {
     }
 }
 
+// Seed missing MCM toggles into the player's settings store with their defaults,
+// so a toggle ADDED in an update binds on an EXISTING save. MCM Helper's live
+// store is the MO2 overwrite copy of Data/MCM/Settings/MAO.ini; an old save's
+// copy lacks any key added since, and MCM Helper reads an absent key as unset —
+// the control won't move and a downloaded update can't be hand-seeded. This
+// writes the missing keys with their defaults so the toggle reads as chosen
+// (marth: "set the toggle's position as if the player had chosen it").
+//
+// Append-only: never rewrites or reorders existing lines. Grouped by section
+// because MAO's settings span [Economy]/[Interface]/[Debug]/[General] and MCM
+// Helper reads each key from its DECLARED section (a re-emitted [Section] header
+// merges under SimpleIni). Fresh installs have no store yet — MCM Helper writes
+// it complete, so this no-ops. KEEP kD IN SYNC with data/MCM/Settings/MAO.ini.
+void EnsureMcmDefaults() {
+    constexpr const char* kPath = "Data/MCM/Settings/MAO.ini";
+    struct Def {
+        std::string_view sec, key, val;
+    };
+    static constexpr Def kD[] = {
+        { "Economy", "fEssenceTax", "1.300000" },   { "Economy", "fCostRate", "1.000000" },
+        { "Economy", "fCatalystQuality", "1.000000" }, { "Economy", "fApexQuality", "2.500000" },
+        { "Economy", "iApexTopRungs", "2" },         { "Economy", "iRefillSeconds", "300" },
+        { "Interface", "iMenuStyle", "0" },          { "Interface", "bNotify", "1" },
+        { "Interface", "bChargeInName", "1" },
+        { "Debug", "bEnableLogging", "1" },          { "Debug", "bDebugPerks", "0" },
+        { "Debug", "bPerkAlch1", "0" },  { "Debug", "bPerkAlch2", "0" },
+        { "Debug", "bPerkAlch3", "0" },  { "Debug", "bPerkAlch4", "0" },
+        { "Debug", "bPerkAlch5", "0" },  { "Debug", "bPerkCapstone", "0" },
+        { "Debug", "bPerkBenefactor", "0" }, { "Debug", "bPerkExperimenter", "0" },
+        { "Debug", "bPerkPhysician", "0" },  { "Debug", "bPerkPoisoner", "0" },
+        { "Debug", "bPerkGreenThumb", "0" }, { "Debug", "bPerkSnakeblood", "0" },
+        { "Debug", "bPerkConcPoison", "0" },
+        { "General", "bConversionEnabled", "1" },    { "General", "bExtSynthAllBuffs", "0" },
+    };
+    std::ifstream in(kPath, std::ios::binary);
+    if (!in) {
+        return;  // no store yet -> MCM Helper creates it complete
+    }
+    std::vector<std::string> lines;
+    std::string              line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        lines.push_back(line);
+    }
+    in.close();
+    // PRESENT = a line (after leading ws) begins with the exact key then ws/'='.
+    auto present = [&lines](std::string_view a_key) {
+        for (const auto& l : lines) {
+            const std::size_t b = l.find_first_not_of(" \t");
+            if (b == std::string::npos) {
+                continue;
+            }
+            std::string_view sv(l);
+            sv.remove_prefix(b);
+            if (sv.size() >= a_key.size() && sv.compare(0, a_key.size(), a_key) == 0) {
+                std::size_t a = a_key.size();
+                while (a < sv.size() && (sv[a] == ' ' || sv[a] == '\t')) {
+                    ++a;
+                }
+                if (a < sv.size() && sv[a] == '=') {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+    constexpr std::string_view kSecs[] = { "Economy", "Interface", "Debug", "General" };
+    std::string                add;
+    int                        n = 0;
+    for (std::string_view sec : kSecs) {
+        std::string block;
+        for (const auto& d : kD) {
+            if (d.sec == sec && !present(d.key)) {
+                block.append(d.key);
+                block.append(" = ");
+                block.append(d.val);
+                block.push_back('\n');
+                ++n;
+            }
+        }
+        if (!block.empty()) {
+            add.push_back('[');
+            add.append(sec);
+            add.append("]\n");
+            add.append(block);
+        }
+    }
+    if (n == 0) {
+        return;
+    }
+    std::ofstream out(kPath, std::ios::binary | std::ios::app);
+    if (!out) {
+        return;
+    }
+    out << "\n" << add;  // leading blank line: never glue onto the store's last line
+    out.close();
+    spdlog::info("[config] MCM self-heal: seeded {} missing MCM setting(s) into the store", n);
+}
+
 void ReadConfig() {
     // Reset the debug override each read so an MCM key that's absent (default)
     // reverts to off rather than sticking from a previous pass.
@@ -3920,6 +4021,7 @@ void RevertCallback(SKSE::SerializationInterface*) {
 void OnMessage(SKSE::MessagingInterface::Message* a_message) {
     switch (a_message->type) {
     case SKSE::MessagingInterface::kDataLoaded: {
+        EnsureMcmDefaults();  // seed new toggles into an existing save's store before anyone reads it
         ReadConfig();
         auto* holder = RE::ScriptEventSourceHolder::GetSingleton();
         holder->AddEventSink<RE::TESContainerChangedEvent>(ContainerSink::GetSingleton());
