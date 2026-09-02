@@ -276,6 +276,7 @@ int RankFromMask(std::uint32_t a_mask) {
     }
     return r;
 }
+void RefreshFlaskName(std::size_t a_slot);  // fwd: RecomputeCapacity refreshes names on cap change
 // BFS the perk-tree node graph for a specific perk (ported verbatim from MEO
 // m51b). Used to detect TREE mode by PRESENCE of MAO's perks in the winning
 // AVAlchemy tree — never by a plugin name (see the g_treeMode assignment).
@@ -377,6 +378,12 @@ void RecomputeCapacity(const char* a_why) {
         for (auto& f : g_flasks) {  // never leave a flask above its new cap
             f.charges = std::min(f.charges, charges);
         }
+    }
+    // The cap (and a clamp of charges) just changed, so a "[x/cap]" flask name is
+    // now stale (review #1). Refresh all slots — cheap (<=6), lock-free read,
+    // idempotent; covers the "open" path that has no following SyncFlaskItems.
+    for (std::size_t i = 0; i < g_flaskForms.size(); ++i) {
+        RefreshFlaskName(i);
     }
     spdlog::info("[perks] {}{}: Calibration rank {}, Crucible {}, ApexStab {}, FieldExtract {} "
                  "-> {} flasks / {} charges",
