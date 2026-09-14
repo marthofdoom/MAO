@@ -538,6 +538,12 @@ std::atomic<int> g_fieldChanges{ 0 };  // reconfigurations used this field sessi
 // dissolves the very ingredients the flasks want — ingredient mode wants pickup off.
 std::atomic<bool> g_autoConvertPickup{ true };
 std::atomic<bool> g_ingredientMode{ false };
+// Per-ReadConfig-pass: was an explicit new mode key parsed? The legacy
+// bConversionEnabled mapping applies only to a flag NOT set by its own key this
+// pass, so the retired key can never clobber a newer one regardless of file line
+// order (Fable review #4). Reset at the top of ReadConfig; single-threaded there.
+bool g_sawAutoConvertKey = false;
+bool g_sawIngredientKey  = false;
 
 // Defined with the ingredient-mode machinery below; the kit opener refreshes
 // the menu's ingredient-count snapshot.
@@ -1533,6 +1539,18 @@ struct ConvertEntry {
 std::mutex                g_convertLock;
 std::vector<ConvertEntry> g_convertList;
 
+// Essence a whole stack yields, INCLUDING the Field Extraction (Experimenter)
+// +10% — the exact formula the pickup sink uses (:3002), so the station convert
+// pays the same as auto-converting the same ingredient. One helper feeds both the
+// display snapshot and the destructive action, so they can never disagree.
+std::uint32_t IngredientEssenceYield(int a_value, Tier a_tier, std::uint32_t a_count) {
+    std::uint32_t total = YieldFor(a_value, a_tier) * a_count;
+    if (g_hasExperimenter.load()) {
+        total = std::max(1u, static_cast<std::uint32_t>(std::lround(total * 1.10)));
+    }
+    return total;
+}
+
 void RefreshConvertList() {
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (!player) {
@@ -1555,7 +1573,8 @@ void RefreshConvertList() {
             continue;
         }
         const Tier          tier  = TierOfForm(ingr);
-        const std::uint32_t yield = YieldFor(ingr->value, tier) * static_cast<std::uint32_t>(cnt);
+        const std::uint32_t yield = IngredientEssenceYield(ingr->value, tier,
+                                                           static_cast<std::uint32_t>(cnt));
         fresh.push_back(
             { ingr->GetFormID(), static_cast<std::uint32_t>(cnt), yield, tier, std::move(name) });
     }
@@ -1565,38 +1584,57 @@ void RefreshConvertList() {
     g_convertList.swap(fresh);
 }
 
-// Convert one ingredient stack to essence (task thread). Re-checks the guards on
-// the task thread — never trust the render-time snapshot for a destructive op.
-void ConvertIngredientStack(RE::FormID a_form, std::uint32_t a_count) {
+// Convert one ingredient stack to essence (task thread). Re-checks the guards AND
+// re-reads the live count on the task thread — never trust the render-time
+// snapshot for a destructive op (Fable review #1: crediting the stale snapshot
+// count while RemoveItem clamps to what's held overcredits essence). Returns the
+// essence actually credited (0 if nothing converted); a_notify=false suppresses
+// the per-stack HUD toast so the Convert-ALL path can show one summary instead.
+std::uint32_t ConvertIngredientStack(RE::FormID a_form, std::uint32_t a_count, bool a_notify) {
     if (a_count == 0) {
-        return;
+        return 0;
     }
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (!player) {
-        return;
+        return 0;
     }
     auto* base = RE::TESForm::LookupByID(a_form);
     auto* ingr = base ? base->As<RE::IngredientItem>() : nullptr;
     if (!ingr) {
-        return;
+        return 0;
     }
     const char*       cname = ingr->GetName();
     const std::string name  = (cname && *cname) ? cname : "?";
     if (IsExcluded(name) || IsQuestItem(player, ingr) || JournalGuardFor(a_form)) {
         spdlog::info("[convert] '{}' is quest/excluded — skipped", name);
-        return;
+        return 0;
+    }
+    // Clamp to the LIVE count (a flask-configure or a double-click can have spent
+    // some since the snapshot was taken).
+    std::uint32_t live = 0;
+    for (const auto& [obj, cnt] : player->GetInventoryCounts(
+             [a_form](RE::TESBoundObject& o) { return o.GetFormID() == a_form; })) {
+        if (cnt > 0) {
+            live = static_cast<std::uint32_t>(cnt);
+            break;
+        }
+    }
+    const std::uint32_t n = std::min(a_count, live);
+    if (n == 0) {
+        return 0;
     }
     const Tier          tier  = TierOfForm(ingr);
-    const std::uint32_t total = YieldFor(ingr->value, tier) * a_count;
-    player->RemoveItem(ingr, static_cast<std::int32_t>(a_count), RE::ITEM_REMOVE_REASON::kRemove,
-                       nullptr, nullptr);
+    const std::uint32_t total = IngredientEssenceYield(ingr->value, tier, n);
+    player->RemoveItem(ingr, static_cast<std::int32_t>(n), RE::ITEM_REMOVE_REASON::kRemove, nullptr,
+                       nullptr);
     CreditPouch(tier, total);
     spdlog::info("[convert] +{} {} essence <- {}x '{}'; pouch B={} C={} A={}", total, TierName(tier),
-                 a_count, name, g_pouch.base.load(), g_pouch.catalyst.load(), g_pouch.apex.load());
-    if (g_notify) {
+                 n, name, g_pouch.base.load(), g_pouch.catalyst.load(), g_pouch.apex.load());
+    if (a_notify && g_notify) {
         RE::DebugNotification(
             std::format("+{} {} Essence ({})", total, TierName(tier), name).c_str());
     }
+    return total;
 }
 
 // Render-side affordability from the snapshot (never touches the inventory).
@@ -1661,6 +1699,9 @@ bool SpendIngredients(RE::AlchemyItem* a_variant, std::uint32_t a_charges) {
     const FlaskCost eq = VariantCost(a_variant) * a_charges;
     AwardAlchemyXP(static_cast<float>(eq.base + eq.catalyst + eq.apex) * kAlchemyXpPerEssence);
     RefreshHeldIngredients();
+    if (g_menu.station.load()) {
+        RefreshConvertList();  // the station Convert list must reflect the ingredients just spent
+    }
     return true;
 }
 
@@ -2471,13 +2512,19 @@ void ApplyIniLine(std::string a_line) {
         // flags so an old settings file still works — ON = essence mode
         // (auto-convert, essence flasks); OFF = old ingredient mode (keep items,
         // ingredient flasks). The new keys, parsed if present, override.
-        const bool on   = !(val == "0" || val == "false");
-        g_autoConvertPickup = on;
-        g_ingredientMode    = !on;
+        const bool on = !(val == "0" || val == "false");
+        if (!g_sawAutoConvertKey) {
+            g_autoConvertPickup = on;
+        }
+        if (!g_sawIngredientKey) {
+            g_ingredientMode = !on;
+        }
     } else if (key == "bAutoConvertPickup") {
-        g_autoConvertPickup = !(val == "0" || val == "false");
+        g_autoConvertPickup   = !(val == "0" || val == "false");
+        g_sawAutoConvertKey   = true;
     } else if (key == "bIngredientMode") {
-        g_ingredientMode = (val == "1" || val == "true");
+        g_ingredientMode     = (val == "1" || val == "true");
+        g_sawIngredientKey   = true;
     } else if (key == "bNotify") {
         g_notify = !(val == "0" || val == "false");
     } else if (key == "bExtSynthAllBuffs") {
@@ -2626,7 +2673,11 @@ void EnsureMcmDefaults() {
                     while (a < sv.size() && (sv[a] == ' ' || sv[a] == '\t')) {
                         ++a;
                     }
-                    return std::string(sv.substr(a));
+                    std::string_view v = sv.substr(a);
+                    while (!v.empty() && (v.back() == ' ' || v.back() == '\t' || v.back() == '\r')) {
+                        v.remove_suffix(1);  // trim trailing ws (Fable #6: "0 " must read as OFF)
+                    }
+                    return std::string(v);
                 }
             }
         }
@@ -2685,6 +2736,8 @@ void ReadConfig() {
     g_perkWantMask.store(0);
     g_autoConvertPickup.store(true);  // absent key = auto-convert on pickup (default)
     g_ingredientMode.store(false);    // absent key = flasks fueled by essence (default)
+    g_sawAutoConvertKey = false;      // reset legacy-mapping order guard (Fable #4)
+    g_sawIngredientKey  = false;
     g_notify.store(true);             // absent key = notifications on (default)
     g_extSynthAllBuffs.store(false);  // absent key = fortify-only (default OFF)
     g_enableLogging.store(true);      // absent key = logging on (default)
@@ -3384,19 +3437,42 @@ namespace menuhook {
             if (g_convertList.empty()) {
                 ImGui::TextDisabled("No ingredients to convert.");
             } else {
-                if (ImGui::Selectable("  Convert ALL ingredients##convall")) {
-                    std::vector<std::pair<RE::FormID, std::uint32_t>> all;
-                    all.reserve(g_convertList.size());
-                    for (const auto& e : g_convertList) {
-                        all.emplace_back(e.form, e.count);
-                    }
-                    SKSE::GetTaskInterface()->AddTask([all]() {
-                        for (const auto& [f, c] : all) {
-                            ConvertIngredientStack(f, c);
+                // Convert ALL needs a confirm (Fable review #2): a one-click dump
+                // of every ingredient is a footgun in ingredient mode (it dissolves
+                // your flask fuel). First click ARMS; a second click within 4s
+                // executes.
+                static std::uint64_t s_confirmAllMs = 0;
+                const std::uint64_t  now   = NowMs();
+                const bool           armed = (now - s_confirmAllMs) < 4000;
+                if (ImGui::Selectable(armed ? "  Convert ALL — click again to CONFIRM##convall"
+                                            : "  Convert ALL ingredients##convall")) {
+                    if (!armed) {
+                        s_confirmAllMs = now;  // arm; require a second, deliberate click
+                    } else {
+                        s_confirmAllMs = 0;
+                        std::vector<std::pair<RE::FormID, std::uint32_t>> all;
+                        all.reserve(g_convertList.size());
+                        for (const auto& e : g_convertList) {
+                            all.emplace_back(e.form, e.count);
                         }
-                        RefreshConvertList();
-                        RefreshHeldIngredients();
-                    });
+                        SKSE::GetTaskInterface()->AddTask([all]() {
+                            std::uint32_t total = 0;
+                            int           done  = 0;
+                            for (const auto& [f, c] : all) {
+                                if (const std::uint32_t got = ConvertIngredientStack(f, c, false)) {
+                                    total += got;
+                                    ++done;
+                                }
+                            }
+                            RefreshConvertList();
+                            RefreshHeldIngredients();
+                            if (total > 0 && g_notify) {  // ONE summary toast, not one per stack
+                                RE::DebugNotification(
+                                    std::format("+{} Essence ({} stacks converted)", total, done)
+                                        .c_str());
+                            }
+                        });
+                    }
                 }
                 ImGui::BeginChild("convlist",
                                   ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 6.0f),
@@ -3409,7 +3485,7 @@ namespace menuhook {
                         const RE::FormID    f = e.form;
                         const std::uint32_t c = e.count;
                         SKSE::GetTaskInterface()->AddTask([f, c]() {
-                            ConvertIngredientStack(f, c);
+                            ConvertIngredientStack(f, c, true);
                             RefreshConvertList();
                             RefreshHeldIngredients();
                         });

@@ -25,18 +25,26 @@ Flask-style alchemy preparation for Skyrim SE. All single-use potions are remove
 
 To eliminate inventory paralysis and endless ingredient sorting, harvesting flora or looting creatures bypasses standard inventory items. The native layer intercepts the harvest event and increments a flat currency counter stored in the player's abstracted **Alchemical Pouch**.
 
-**The two economies (the conversion toggle, shipped v0.18–v0.21).** The MCM
-toggle `bConversionEnabled` selects the kit's entire currency, live:
+**The two economies (v1.0.10: split into two independent MCM toggles; was the
+single `bConversionEnabled` in v0.18–v0.21).**
 
-* **ON — essence mode (default, everything above):** pickups convert to pouch
-  essence; flask fills and refills spend essence per the §2 cost model.
-* **OFF — ingredient mode:** nothing converts; ingredients and potions stay
-  as items. A flask charge instead costs its variant's **recipe ingredients**
-  (the cheapest source pair the essence model prices from), consumed from the
-  player's bags — pairs scale by concentration on the same thresholds as the
-  essence surcharges, so the two economies are mirror images. The pouch
-  persists untouched while OFF. Blueprint learning (§4) is mode-independent:
-  in ingredient mode a picked-up potion is *studied* (learned, +XP) but kept.
+* **`bAutoConvertPickup` (default ON) — auto-convert on pickup:** picked-up /
+  harvested ingredients & potions convert to pouch essence automatically. OFF:
+  they stay as items; you bank essence on demand via the **station Convert list**
+  (the field kit at an alchemy station lists your ingredients → convert one stack
+  or all to essence, honoring the same quest guards as the sink). This is the
+  manual conversion path for players who want to keep their ingredients.
+* **`bIngredientMode` (default OFF) — flask fuel:** ON, a flask charge costs its
+  variant's **recipe ingredients** (the cheapest source pair the essence model
+  prices from), consumed from the player's bags — the two economies are mirror
+  images. OFF, flasks spend pouch essence per the §2 cost model.
+
+The flags are INDEPENDENT. In ingredient mode set auto-convert OFF, or pickup
+dissolves the very ingredients the flasks want (documented footgun). The legacy
+`bConversionEnabled` is still read as a fallback and migrated on existing saves
+(ON → essence mode; OFF → keep-items + ingredient flasks). Blueprint learning
+(§4) is mode-independent: a picked-up potion is *studied* (learned, +XP) but kept
+whenever auto-convert is off.
 
 A second planned toggle selects the **learning mode** (finding vs recipe
 items, §4 + 1.0 roadmap); discovery code keeps that trigger pluggable.

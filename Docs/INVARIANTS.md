@@ -127,16 +127,24 @@ the portable one-sitting audit digest.
 
 ## Gathering & the economy
 
-21. **ContainerSink is the SOLE essence-credit point; HarvestSink tags and
+21. **ContainerSink is the automatic essence-credit point; HarvestSink tags and
     must NEVER credit** (:1294-1296, :1424-1444). A harvest fires BOTH
     events — crediting in both doubles every harvest (the P0 double-credit
     guard; designed-in, keep it that way when the harvest-tag perks land).
-22. **The conversion toggle gates the ENTIRE sink at its head — one
-    early-out, never scattered checks** (:1304-1306, cece4ec). When OFF,
-    ingredients and potions stay ordinary items and NOTHING is consumed;
-    flasks, the kit, perks and the drink hook are explicitly unaffected. A
-    partial gate (credit without consume, or consume without credit) eats
-    items for nothing.
+    v1.0.10: the station Convert list (`ConvertIngredientStack`) is a SECOND,
+    deliberate consume+credit point — it must use the SAME yield helper
+    (`IngredientEssenceYield`, incl. the Experimenter +10%) and the SAME guards,
+    and re-read the LIVE count before crediting (never the render snapshot, or it
+    overcredits vs. `RemoveItem`'s clamp).
+22. **`g_autoConvertPickup` gates the ENTIRE pickup sink at its head — one
+    early-out, never scattered checks** (v1.0.10 rename of the old
+    bConversionEnabled gate; cece4ec). When OFF, picked-up ingredients and
+    potions stay ordinary items and NOTHING is auto-consumed (you convert on
+    demand at a station instead); flasks, the kit, perks and the drink hook are
+    unaffected. The SEPARATE `g_ingredientMode` flag selects flask fuel (essence
+    vs. recipe ingredients) — do not conflate them (they were one flag pre-1.0.10
+    and that coupling was the bug). A partial gate (credit without consume, or
+    consume without credit) eats items for nothing.
 23. **Credit only items ENTERING the player** (`newContainer == kPlayerID`,
     positive count :1308-1312). The credit task calls `RemoveItem`; without
     the direction filter the sink re-triggers on its own removal — an
