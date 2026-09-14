@@ -7,6 +7,21 @@ Point fixes fold into their feature's entry unless load-bearing on their own.
 Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
 (build-stamped into the MCM Debug page by `MAO_GenerateESP.py`).
 
+## v1.0.10 — split conversion/ingredient modes + station convert list (2026-09-13)
+
+- **The single "Convert ingredients" toggle is now two independent toggles.**
+  - **Auto-convert ingredients on pickup** (default on) — harvested/looted
+    ingredients dissolve into essence automatically, or stay as items when off.
+  - **Ingredient mode** (default off) — flasks are fueled by real recipe
+    ingredients from your bags (the potion-creation flavor) instead of essence.
+  Previously one flag did both jobs, so you couldn't have one without the other.
+  Existing saves are migrated: if you were in the old "ingredient mode", you stay
+  in it (auto-convert off + ingredient mode on) rather than being reset.
+- **New "Convert to essence" list at alchemy stations.** With auto-convert off,
+  using an alchemy station shows a list of your ingredients — convert one stack
+  or all of them to essence on demand. Honors the same quest safety as auto-
+  convert, so it never dissolves an ingredient an active quest needs.
+
 ## v1.0.9 — flask charge count in name, MCM toggles bind on old saves (2026-08-31)
 
 - **Configured flasks show their live charge count in the inventory name**, e.g.

@@ -13,13 +13,23 @@
 					"type": "header"
 				},
 				{
-					"id": "bConversionEnabled:General",
-					"text": "Convert ingredients to essence",
+					"id": "bAutoConvertPickup:General",
+					"text": "Auto-convert ingredients on pickup",
 					"type": "toggle",
-					"help": "When ON, harvested and picked-up ingredients (and potions) are consumed into essence. When OFF, they stay in your inventory as normal items and nothing is converted. Flasks, the field kit, and perks are unaffected. Applies when you close the menu.",
+					"help": "ON: harvested and picked-up ingredients (and potions) are consumed into essence automatically. OFF: they stay in your inventory as normal items — use an alchemy station's 'Convert to essence' list to bank essence on demand. Applies when you close the menu.",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
 						"defaultValue": true
+					}
+				},
+				{
+					"id": "bIngredientMode:General",
+					"text": "Ingredient mode (flasks use recipe ingredients)",
+					"type": "toggle",
+					"help": "ON: flasks are fueled by the real recipe ingredients from your bags (the potion-creation flavor) instead of abstract essence. Independent of auto-convert — but turn auto-convert OFF in this mode, or pickup dissolves the very ingredients your flasks need. Applies when you close the menu.",
+					"valueOptions": {
+						"sourceType": "ModSettingBool",
+						"defaultValue": false
 					}
 				},
 				{
@@ -182,9 +192,9 @@
 				{
 					"text": "Version",
 					"type": "text",
-					"help": "MAO version, stamped from the build (1.0.9). Matches the MAO.dll built from the same commit.",
+					"help": "MAO version, stamped from the build (1.0.10). Matches the MAO.dll built from the same commit.",
 					"valueOptions": {
-						"value": "v1.0.9"
+						"value": "v1.0.10"
 					}
 				},
 				{
