@@ -1,0 +1,2 @@
+Split auto-convert by item type; quest/unique potion guards
+built from native run 35949101779
