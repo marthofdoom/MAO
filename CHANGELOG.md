@@ -22,6 +22,10 @@ Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
   it, so behavior is unchanged until you split them yourself.
 - The station "Convert to essence" list now shows whenever **ingredient**
   auto-convert is off (it converts ingredients), independent of the potion toggle.
+- **Quest potions are no longer studied when kept.** With potion auto-convert
+  off, a quest potion (e.g. Vaermina's Torpor) used to have its blueprint learned
+  and become a flask variant; it is now skipped by the same quest checks that
+  already protected the auto-convert path.
 
 ## v1.0.10 — split conversion/ingredient modes + station convert list (2026-09-13)
 

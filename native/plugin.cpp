@@ -3128,13 +3128,36 @@ public:
                 // KEEP + LEARN: the potion stays as an item, but studying it still
                 // unlocks its blueprint (+discovery XP) — discovery must not depend on
                 // the toggle, or a keep-potions player could never learn a variant.
+                // Quest potions are never studied (same guard set as the analyze
+                // path below): a quest's potion must not become a flask variant.
                 if (!alch->effects.empty() && alch->effects[0] && alch->effects[0]->baseEffect) {
                     const RE::FormID potForm   = alch->GetFormID();
                     const bool       ephemeral = (potForm & 0xFF000000) == 0xFF000000;
-                    if (!ephemeral) {
-                        const char*       nm = alch->GetName();
+                    const char*      nm        = alch->GetName();
+                    if (nm && IsExcluded(nm)) {
+                        spdlog::info("[discover] EXCLUDED '{}' ({:08X}) — kept, not studied", nm,
+                                     a_event->baseObj);
+                    } else if (!ephemeral) {
                         const std::string potName(nm ? nm : "potion");
-                        SKSE::GetTaskInterface()->AddTask([potForm, potName]() {
+                        SKSE::GetTaskInterface()->AddTask([alch, potForm, potName]() {
+                            auto* player = RE::PlayerCharacter::GetSingleton();
+                            if (!player) {
+                                return;
+                            }
+                            if (IsQuestItem(player, alch)) {
+                                spdlog::info("[discover] QUEST ITEM '{}' — kept, not studied",
+                                             potName);
+                                return;
+                            }
+                            if (auto* gq = JournalGuardFor(potForm)) {
+                                const char* qn = gq->GetName();
+                                const char* qe = gq->GetFormEditorID();
+                                spdlog::info("[discover] JOURNAL QUEST '{}' wants '{}' — kept, "
+                                             "not studied",
+                                             (qn && qn[0]) ? qn : ((qe && qe[0]) ? qe : "?"),
+                                             potName);
+                                return;
+                            }
                             bool learned = false;
                             {
                                 std::scoped_lock lk(g_discoveredLock);
