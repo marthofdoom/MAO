@@ -7,6 +7,22 @@ Point fixes fold into their feature's entry unless load-bearing on their own.
 Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
 (build-stamped into the MCM Debug page by `MAO_GenerateESP.py`).
 
+## v1.0.11 — separate auto-convert for ingredients vs. potions (2026-09-23)
+
+- **Auto-convert on pickup is now split by item type — two independent toggles**
+  (Field Kit > General), so you can dissolve one and hoard the other:
+  - **Auto-convert ingredients on pickup** (default on) — harvested/looted
+    ingredients dissolve into essence, or stay as items when off.
+  - **Auto-convert potions on pickup** (default on) — looted potions/poisons are
+    analyzed into essence + a blueprint, or stay as drink/sell items when off. A
+    kept potion is still STUDIED (blueprint learned, no essence), so you keep
+    discovering variants either way.
+  Previously one "auto-convert on pickup" flag governed both. Existing saves are
+  migrated: whatever your old auto-convert setting was, both new toggles inherit
+  it, so behavior is unchanged until you split them yourself.
+- The station "Convert to essence" list now shows whenever **ingredient**
+  auto-convert is off (it converts ingredients), independent of the potion toggle.
+
 ## v1.0.10 — split conversion/ingredient modes + station convert list (2026-09-13)
 
 - **The single "Convert ingredients" toggle is now two independent toggles.**

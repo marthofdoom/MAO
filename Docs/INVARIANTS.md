@@ -136,15 +136,20 @@ the portable one-sitting audit digest.
     (`IngredientEssenceYield`, incl. the Experimenter +10%) and the SAME guards,
     and re-read the LIVE count before crediting (never the render snapshot, or it
     overcredits vs. `RemoveItem`'s clamp).
-22. **`g_autoConvertPickup` gates the ENTIRE pickup sink at its head — one
-    early-out, never scattered checks** (v1.0.10 rename of the old
-    bConversionEnabled gate; cece4ec). When OFF, picked-up ingredients and
-    potions stay ordinary items and NOTHING is auto-consumed (you convert on
-    demand at a station instead); flasks, the kit, perks and the drink hook are
-    unaffected. The SEPARATE `g_ingredientMode` flag selects flask fuel (essence
-    vs. recipe ingredients) — do not conflate them (they were one flag pre-1.0.10
+22. **Auto-convert is gated PER ITEM TYPE, one early-out inside each type block —
+    never scattered checks** (v1.0.11 split the single `g_autoConvertPickup` head
+    gate; itself a v1.0.10 rename of the old bConversionEnabled gate). The sink
+    checks `g_autoConvertIngredients` at the top of the ingredient block and
+    `g_autoConvertPotions` at the top of the potion block. When a type's flag is
+    OFF, that type stays an ordinary item and NOTHING of it is auto-consumed (you
+    convert ingredients on demand at a station; potions are kept but still studied
+    — blueprint learned, no essence, so discovery never depends on the toggle);
+    the other type is unaffected, as are flasks, the kit, perks and the drink hook.
+    The SEPARATE `g_ingredientMode` flag selects flask fuel (essence vs. recipe
+    ingredients) — do not conflate any of the three (they were one flag pre-1.0.10
     and that coupling was the bug). A partial gate (credit without consume, or
-    consume without credit) eats items for nothing.
+    consume without credit) eats items for nothing. The station Convert list keys
+    off `g_autoConvertIngredients` only (it converts ingredients).
 23. **Credit only items ENTERING the player** (`newContainer == kPlayerID`,
     positive count :1308-1312). The credit task calls `RemoveItem`; without
     the direction filter the sink re-triggers on its own removal — an

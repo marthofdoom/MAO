@@ -72,7 +72,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "1.0.10";
+constexpr auto kPluginVersion = "1.0.11";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -527,23 +527,31 @@ MenuState g_menu;
 constexpr int    kFieldChangeLimit = 1;
 std::atomic<int> g_fieldChanges{ 0 };  // reconfigurations used this field session
 
-// TWO ORTHOGONAL MODE FLAGS (v1.0.10; split from the old single bConversionEnabled,
-// which conflated them). They are INDEPENDENT — each does exactly one job.
-//   g_autoConvertPickup: picked-up / harvested ingredients & potions auto-dissolve
-//     into essence (ON) vs. stay as normal items (OFF). When OFF you keep your
-//     ingredients but can still bank essence on demand via the station Convert list.
+// THREE ORTHOGONAL MODE FLAGS. They are INDEPENDENT — each does exactly one job.
+//   g_autoConvertIngredients: picked-up / harvested INGREDIENTS auto-dissolve into
+//     essence (ON) vs. stay as normal items (OFF). When OFF you keep them but can
+//     still bank essence on demand via the station Convert list.
+//   g_autoConvertPotions: looted POTIONS/poisons are analyzed into essence + a
+//     blueprint (ON) vs. kept as items (OFF) — kept potions are still STUDIED
+//     (blueprint learned, no essence), so discovery never depends on the toggle.
 //   g_ingredientMode: flasks are fueled by real recipe INGREDIENTS from your bags
 //     (ON, the potion-creation flavor) vs. abstract ESSENCE (OFF).
-// Note the footgun (documented, not enforced): auto-convert ON + ingredient mode ON
-// dissolves the very ingredients the flasks want — ingredient mode wants pickup off.
-std::atomic<bool> g_autoConvertPickup{ true };
+// v1.0.10 split the old single bConversionEnabled into auto-convert + ingredient
+// mode; v1.0.11 split auto-convert itself into the ingredient and potion halves,
+// so a player can dissolve potions while hoarding ingredients (or the reverse).
+// Note the footgun (documented, not enforced): auto-convert-ingredients ON +
+// ingredient mode ON dissolves the very ingredients the flasks want.
+std::atomic<bool> g_autoConvertIngredients{ true };
+std::atomic<bool> g_autoConvertPotions{ true };
 std::atomic<bool> g_ingredientMode{ false };
-// Per-ReadConfig-pass: was an explicit new mode key parsed? The legacy
-// bConversionEnabled mapping applies only to a flag NOT set by its own key this
-// pass, so the retired key can never clobber a newer one regardless of file line
-// order (Fable review #4). Reset at the top of ReadConfig; single-threaded there.
-bool g_sawAutoConvertKey = false;
-bool g_sawIngredientKey  = false;
+// Per-ReadConfig-pass: was an explicit new mode key parsed? A retired key's mapping
+// (bConversionEnabled → all three; bAutoConvertPickup → both auto-convert halves)
+// applies only to a flag NOT set by its own key this pass, so an older key can never
+// clobber a newer one regardless of file line order (Fable review #4). Reset at the
+// top of ReadConfig; single-threaded there.
+bool g_sawAutoConvertIngrKey = false;
+bool g_sawAutoConvertPotKey  = false;
+bool g_sawIngredientKey      = false;
 
 // Defined with the ingredient-mode machinery below; the kit opener refreshes
 // the menu's ingredient-count snapshot.
@@ -2508,20 +2516,36 @@ void ApplyIniLine(std::string a_line) {
     const std::string key = trim(a_line.substr(0, eq));
     const std::string val = trim(a_line.substr(eq + 1));
     if (key == "bConversionEnabled") {
-        // LEGACY (pre-1.0.10): one flag drove both jobs. Map it onto the two new
-        // flags so an old settings file still works — ON = essence mode
-        // (auto-convert, essence flasks); OFF = old ingredient mode (keep items,
-        // ingredient flasks). The new keys, parsed if present, override.
+        // LEGACY (pre-1.0.10): one flag drove every job. Map it onto all three new
+        // flags so an old settings file still works — ON = essence mode (auto-convert
+        // both, essence flasks); OFF = old ingredient mode (keep everything,
+        // ingredient flasks). Any newer key, parsed if present, overrides (saw-flags).
         const bool on = !(val == "0" || val == "false");
-        if (!g_sawAutoConvertKey) {
-            g_autoConvertPickup = on;
+        if (!g_sawAutoConvertIngrKey) {
+            g_autoConvertIngredients = on;
+        }
+        if (!g_sawAutoConvertPotKey) {
+            g_autoConvertPotions = on;
         }
         if (!g_sawIngredientKey) {
             g_ingredientMode = !on;
         }
     } else if (key == "bAutoConvertPickup") {
-        g_autoConvertPickup   = !(val == "0" || val == "false");
-        g_sawAutoConvertKey   = true;
+        // LEGACY (1.0.10): one flag drove BOTH auto-convert halves. Map it onto the
+        // two split keys; the split keys, if present, override (saw-flags).
+        const bool on = !(val == "0" || val == "false");
+        if (!g_sawAutoConvertIngrKey) {
+            g_autoConvertIngredients = on;
+        }
+        if (!g_sawAutoConvertPotKey) {
+            g_autoConvertPotions = on;
+        }
+    } else if (key == "bAutoConvertIngredients") {
+        g_autoConvertIngredients = !(val == "0" || val == "false");
+        g_sawAutoConvertIngrKey  = true;
+    } else if (key == "bAutoConvertPotions") {
+        g_autoConvertPotions     = !(val == "0" || val == "false");
+        g_sawAutoConvertPotKey   = true;
     } else if (key == "bIngredientMode") {
         g_ingredientMode     = (val == "1" || val == "true");
         g_sawIngredientKey   = true;
@@ -2612,7 +2636,8 @@ void EnsureMcmDefaults() {
         { "Debug", "bPerkPhysician", "0" },  { "Debug", "bPerkPoisoner", "0" },
         { "Debug", "bPerkGreenThumb", "0" }, { "Debug", "bPerkSnakeblood", "0" },
         { "Debug", "bPerkConcPoison", "0" },
-        { "General", "bAutoConvertPickup", "1" },    { "General", "bIngredientMode", "0" },
+        { "General", "bAutoConvertIngredients", "1" }, { "General", "bAutoConvertPotions", "1" },
+        { "General", "bIngredientMode", "0" },
         { "General", "bExtSynthAllBuffs", "0" },
     };
     std::ifstream in(kPath, std::ios::binary);
@@ -2649,12 +2674,15 @@ void EnsureMcmDefaults() {
         }
         return false;
     };
-    // MIGRATION (v1.0.10): the retired bConversionEnabled drove BOTH new flags.
-    // If an existing store still has it and NOT the new keys, seed the new keys
-    // DERIVED from its value instead of raw defaults, so a player deliberately in
-    // the old "ingredient mode" (bConversionEnabled=0 = keep items + ingredient
-    // flasks) stays that way (auto-convert OFF + ingredient ON). Essence-mode
-    // users (=1 or absent) get the plain defaults.
+    // MIGRATION: seed the split keys DERIVED from a retired key instead of raw
+    // defaults, so a deliberate choice survives an update.
+    //   • bAutoConvertIngredients/bAutoConvertPotions (v1.0.11 split): if a store has
+    //     the retired bAutoConvertPickup (1.0.10) but neither split key, both inherit
+    //     its value; else if the even older bConversionEnabled is present, both
+    //     inherit that (=0 kept everything). Fresh stores get the defaults (both ON).
+    //   • bIngredientMode (v1.0.10 split): derived from bConversionEnabled when that
+    //     retired key is present and the 1.0.10 key was never written (=0 = old
+    //     ingredient mode → ingredient ON). Essence-mode/fresh users get the default.
     auto valueOf = [&lines](std::string_view a_key) -> std::string {
         for (const auto& l : lines) {
             const std::size_t b = l.find_first_not_of(" \t");
@@ -2684,7 +2712,13 @@ void EnsureMcmDefaults() {
         return {};
     };
     std::string migAuto = "1", migIngr = "0";  // defaults if no legacy key
-    if (present("bConversionEnabled") && !present("bAutoConvertPickup")) {
+    if (present("bAutoConvertPickup")) {
+        // 1.0.10 store: the two split keys inherit the single auto-convert flag.
+        const std::string v = valueOf("bAutoConvertPickup");
+        migAuto = (v == "0" || v == "false") ? "0" : "1";
+    } else if (present("bConversionEnabled")) {
+        // pre-1.0.10 store (never saw 1.0.10): the one flag drove everything, so the
+        // split auto-convert keys AND ingredient mode all derive from it.
         const std::string v  = valueOf("bConversionEnabled");
         const bool        on = !(v == "0" || v == "false");
         migAuto = on ? "1" : "0";
@@ -2698,7 +2732,7 @@ void EnsureMcmDefaults() {
         for (const auto& d : kD) {
             if (d.sec == sec && !present(d.key)) {
                 std::string_view v = d.val;
-                if (d.key == "bAutoConvertPickup") {
+                if (d.key == "bAutoConvertIngredients" || d.key == "bAutoConvertPotions") {
                     v = migAuto;
                 } else if (d.key == "bIngredientMode") {
                     v = migIngr;
@@ -2734,10 +2768,12 @@ void ReadConfig() {
     // reverts to off rather than sticking from a previous pass.
     g_perkDebug.store(false);
     g_perkWantMask.store(0);
-    g_autoConvertPickup.store(true);  // absent key = auto-convert on pickup (default)
-    g_ingredientMode.store(false);    // absent key = flasks fueled by essence (default)
-    g_sawAutoConvertKey = false;      // reset legacy-mapping order guard (Fable #4)
-    g_sawIngredientKey  = false;
+    g_autoConvertIngredients.store(true);  // absent key = ingredients auto-convert (default)
+    g_autoConvertPotions.store(true);      // absent key = potions auto-convert (default)
+    g_ingredientMode.store(false);         // absent key = flasks fueled by essence (default)
+    g_sawAutoConvertIngrKey = false;       // reset legacy-mapping order guards (Fable #4)
+    g_sawAutoConvertPotKey  = false;
+    g_sawIngredientKey      = false;
     g_notify.store(true);             // absent key = notifications on (default)
     g_extSynthAllBuffs.store(false);  // absent key = fortify-only (default OFF)
     g_enableLogging.store(true);      // absent key = logging on (default)
@@ -2753,11 +2789,12 @@ void ReadConfig() {
     // flip the spdlog level rather than guard every call site. This last [config]
     // line still prints (it's above the level flip) so the log always records why
     // it went quiet.
-    spdlog::info("[config] autoConvertPickup={} ingredientMode={} bNotify={} extSynthAllBuffs={} "
-                 "logging={} iOpenHotkey=0x{:X} debugPerks={} wantMask=0x{:X}",
-                 g_autoConvertPickup.load(), g_ingredientMode.load(), g_notify.load(),
-                 g_extSynthAllBuffs.load(), g_enableLogging.load(), g_openHotkey.load(),
-                 g_perkDebug.load(), g_perkWantMask.load());
+    spdlog::info("[config] autoConvertIngr={} autoConvertPot={} ingredientMode={} bNotify={} "
+                 "extSynthAllBuffs={} logging={} iOpenHotkey=0x{:X} debugPerks={} wantMask=0x{:X}",
+                 g_autoConvertIngredients.load(), g_autoConvertPotions.load(),
+                 g_ingredientMode.load(), g_notify.load(), g_extSynthAllBuffs.load(),
+                 g_enableLogging.load(), g_openHotkey.load(), g_perkDebug.load(),
+                 g_perkWantMask.load());
     spdlog::set_level(g_enableLogging.load() ? spdlog::level::info : spdlog::level::off);
 }
 
@@ -2953,83 +2990,10 @@ public:
     }
     RE::BSEventNotifyControl ProcessEvent(const RE::TESContainerChangedEvent* a_event,
                                           RE::BSTEventSource<RE::TESContainerChangedEvent>*) override {
-        if (!g_autoConvertPickup.load()) {
-            // AUTO-CONVERT OFF: ingredients/potions stay as items (you keep them;
-            // convert on demand via the station Convert list). Two side effects
-            // remain: an ingredient pickup freshens the menu's affordability
-            // snapshot, and a potion pickup still LEARNS its blueprint ("finding"
-            // — you studied it) without consuming it or crediting essence.
-            // Discovery must not depend on auto-convert or a keep-items player
-            // could never learn a new variant.
-            if (a_event && a_event->baseObj && a_event->newContainer == kPlayerID &&
-                a_event->itemCount > 0) {
-                if (auto* f = RE::TESForm::LookupByID(a_event->baseObj)) {
-                    if (f->Is(RE::FormType::Ingredient)) {
-                        // Pouch Expansion, ingredient-mode analog (Fable v0.22.0
-                        // finding 3): items are this mode's currency, so a flora
-                        // harvest sifts out +1 EXTRA of the harvested ingredient
-                        // (15%). Safe from echo-procs: the tag is consumed on
-                        // match, so the granted copy's own event finds no tag.
-                        RE::FormID expectTag = a_event->baseObj;
-                        const bool fromFlora =
-                            NowMs() - g_lastHarvestMs.load() < 2000 &&
-                            g_lastHarvestForm.compare_exchange_strong(expectTag, 0);
-                        if (fromFlora && g_hasPouchExp.load() && RollPercent(15)) {
-                            auto* ingr2 = f->As<RE::IngredientItem>();
-                            SKSE::GetTaskInterface()->AddTask([ingr2]() {
-                                auto* player = RE::PlayerCharacter::GetSingleton();
-                                if (!player || !ingr2) {
-                                    return;
-                                }
-                                player->AddObjectToContainer(ingr2, nullptr, 1, nullptr);
-                                const char* n = ingr2->GetName();
-                                spdlog::info("[gather] Pouch Expansion (ingredient mode): +1 '{}'",
-                                             n ? n : "?");
-                                if (g_notify.load()) {
-                                    RE::DebugNotification(
-                                        std::format("+1 {} (Pouch Expansion)", n ? n : "ingredient")
-                                            .c_str());
-                                }
-                                RefreshHeldIngredients();
-                            });
-                        } else {
-                            SKSE::GetTaskInterface()->AddTask([]() { RefreshHeldIngredients(); });
-                        }
-                    } else if (auto* alch = f->As<RE::AlchemyItem>();
-                               alch && !alch->IsFood() && !IsFlaskForm(a_event->baseObj) &&
-                               !alch->effects.empty() && alch->effects[0] &&
-                               alch->effects[0]->baseEffect) {
-                        const RE::FormID potForm   = alch->GetFormID();
-                        const bool       ephemeral = (potForm & 0xFF000000) == 0xFF000000;
-                        if (!ephemeral) {
-                            const char*       nm = alch->GetName();
-                            const std::string potName(nm ? nm : "potion");
-                            SKSE::GetTaskInterface()->AddTask([potForm, potName]() {
-                                bool learned = false;
-                                {
-                                    std::scoped_lock lk(g_discoveredLock);
-                                    learned = g_discovered.insert(potForm).second;
-                                }
-                                if (learned) {
-                                    AwardAlchemyXP(kDiscoverXp);
-                                    spdlog::info("[discover] '{}' studied (ingredient mode — "
-                                                 "item kept, no essence)",
-                                                 potName);
-                                    if (g_notify.load()) {
-                                        RE::DebugNotification(
-                                            std::format("Discovered: {}", potName).c_str());
-                                    }
-                                }
-                            });
-                        }
-                    }
-                }
-            }
-            return RE::BSEventNotifyControl::kContinue;
-        }
-        // Only credit items ENTERING the player. Removals (our own included)
-        // have newContainer != player and are ignored — so RemoveItem below
-        // can't re-trigger us (no loop).
+        // Only ITEMS entering the player matter. Removals (our own RemoveItem
+        // included) have newContainer != player and are ignored, so the conversions
+        // below can't re-trigger us (no loop). Each item type checks its OWN
+        // auto-convert toggle (v1.0.11): ingredients and potions convert independently.
         if (!a_event || !a_event->baseObj || a_event->newContainer != kPlayerID ||
             a_event->itemCount <= 0) {
             return RE::BSEventNotifyControl::kContinue;
@@ -3040,8 +3004,42 @@ public:
         }
         const int count = a_event->itemCount;
 
-        // ── Ingredient → essence (M1 gathering) ──
+        // ── Ingredients ── (M1 gathering). Auto-convert gated by its OWN toggle.
         if (auto* ingr = form->As<RE::IngredientItem>()) {
+            if (!g_autoConvertIngredients.load()) {
+                // KEEP: the ingredient stays in your bags (convert on demand via the
+                // station Convert list). Two side effects remain — freshen the menu's
+                // affordability snapshot, and honor the Pouch Expansion ingredient-mode
+                // analog (Fable v0.22.0 finding 3): items are the currency, so a flora
+                // harvest sifts out +1 EXTRA of the harvested ingredient (15%). The tag
+                // is consumed on match, so the granted copy's own event finds no tag.
+                RE::FormID keepTag = a_event->baseObj;
+                const bool keepFlora =
+                    NowMs() - g_lastHarvestMs.load() < 2000 &&
+                    g_lastHarvestForm.compare_exchange_strong(keepTag, 0);
+                if (keepFlora && g_hasPouchExp.load() && RollPercent(15)) {
+                    SKSE::GetTaskInterface()->AddTask([ingr]() {
+                        auto* player = RE::PlayerCharacter::GetSingleton();
+                        if (!player || !ingr) {
+                            return;
+                        }
+                        player->AddObjectToContainer(ingr, nullptr, 1, nullptr);
+                        const char* n = ingr->GetName();
+                        spdlog::info("[gather] Pouch Expansion (keep ingredients): +1 '{}'",
+                                     n ? n : "?");
+                        if (g_notify.load()) {
+                            RE::DebugNotification(
+                                std::format("+1 {} (Pouch Expansion)", n ? n : "ingredient")
+                                    .c_str());
+                        }
+                        RefreshHeldIngredients();
+                    });
+                } else {
+                    SKSE::GetTaskInterface()->AddTask([]() { RefreshHeldIngredients(); });
+                }
+                return RE::BSEventNotifyControl::kContinue;
+            }
+            // CONVERT → essence.
             const char*      cname = ingr->GetName();
             std::string_view name  = cname ? cname : "";
             if (IsExcluded(name)) {
@@ -3124,6 +3122,36 @@ public:
             // A flask item landing in the player's bags (grant) must NOT be
             // analysed/destroyed.
             if (IsFlaskForm(a_event->baseObj)) {
+                return RE::BSEventNotifyControl::kContinue;
+            }
+            if (!g_autoConvertPotions.load()) {
+                // KEEP + LEARN: the potion stays as an item, but studying it still
+                // unlocks its blueprint (+discovery XP) — discovery must not depend on
+                // the toggle, or a keep-potions player could never learn a variant.
+                if (!alch->effects.empty() && alch->effects[0] && alch->effects[0]->baseEffect) {
+                    const RE::FormID potForm   = alch->GetFormID();
+                    const bool       ephemeral = (potForm & 0xFF000000) == 0xFF000000;
+                    if (!ephemeral) {
+                        const char*       nm = alch->GetName();
+                        const std::string potName(nm ? nm : "potion");
+                        SKSE::GetTaskInterface()->AddTask([potForm, potName]() {
+                            bool learned = false;
+                            {
+                                std::scoped_lock lk(g_discoveredLock);
+                                learned = g_discovered.insert(potForm).second;
+                            }
+                            if (learned) {
+                                AwardAlchemyXP(kDiscoverXp);
+                                spdlog::info("[discover] '{}' studied (item kept, no essence)",
+                                             potName);
+                                if (g_notify.load()) {
+                                    RE::DebugNotification(
+                                        std::format("Discovered: {}", potName).c_str());
+                                }
+                            }
+                        });
+                    }
+                }
                 return RE::BSEventNotifyControl::kContinue;
             }
             // Quest potions (e.g. Vaermina's Torpor, which the player must DRINK)
@@ -3424,12 +3452,13 @@ namespace menuhook {
         }
         ImGui::Spacing();
 
-        // ── Convert to essence (station only, auto-convert OFF) ──
-        // The manual conversion path (marth): you keep ingredients on pickup and
-        // deposit them here at a station to bank essence on demand. Reads the
-        // render-safe g_convertList snapshot; the convert action re-checks guards
-        // on the task thread (ConvertIngredientStack).
-        if (g_menu.station.load() && !g_autoConvertPickup.load()) {
+        // ── Convert to essence (station only, ingredient auto-convert OFF) ──
+        // The manual conversion path (marth): you keep INGREDIENTS on pickup and
+        // deposit them here at a station to bank essence on demand. Gated on the
+        // ingredient toggle only (this list is ingredients). Reads the render-safe
+        // g_convertList snapshot; the convert action re-checks guards on the task
+        // thread (ConvertIngredientStack).
+        if (g_menu.station.load() && !g_autoConvertIngredients.load()) {
             ImGui::TextDisabled("CONVERT TO ESSENCE  —  banked  B %u  C %u  A %u",
                                 g_pouch.base.load(), g_pouch.catalyst.load(), g_pouch.apex.load());
             ImGui::Separator();

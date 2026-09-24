@@ -13,10 +13,20 @@
 					"type": "header"
 				},
 				{
-					"id": "bAutoConvertPickup:General",
+					"id": "bAutoConvertIngredients:General",
 					"text": "Auto-convert ingredients on pickup",
 					"type": "toggle",
-					"help": "ON: harvested and picked-up ingredients (and potions) are consumed into essence automatically. OFF: they stay in your inventory as normal items — use an alchemy station's 'Convert to essence' list to bank essence on demand. Applies when you close the menu.",
+					"help": "ON: harvested and picked-up ingredients are consumed into essence automatically. OFF: they stay in your inventory as normal items — use an alchemy station's 'Convert to essence' list to bank essence on demand. Independent of potion auto-convert. Applies when you close the menu.",
+					"valueOptions": {
+						"sourceType": "ModSettingBool",
+						"defaultValue": true
+					}
+				},
+				{
+					"id": "bAutoConvertPotions:General",
+					"text": "Auto-convert potions on pickup",
+					"type": "toggle",
+					"help": "ON: looted potions and poisons are analyzed into essence and a blueprint automatically. OFF: they stay as normal items you can drink or sell — but are still STUDIED (blueprint learned, no essence), so you keep discovering variants either way. Independent of ingredient auto-convert. Applies when you close the menu.",
 					"valueOptions": {
 						"sourceType": "ModSettingBool",
 						"defaultValue": true
@@ -192,9 +202,9 @@
 				{
 					"text": "Version",
 					"type": "text",
-					"help": "MAO version, stamped from the build (1.0.10). Matches the MAO.dll built from the same commit.",
+					"help": "MAO version, stamped from the build (1.0.11). Matches the MAO.dll built from the same commit.",
 					"valueOptions": {
-						"value": "v1.0.10"
+						"value": "v1.0.11"
 					}
 				},
 				{

@@ -46,11 +46,12 @@ def main():
 
     # Group missing keys by their seed section, preserving seed order.
     # The DLL's EnsureMcmDefaults OWNS these keys: it migrates them from a retired
-    # key (bConversionEnabled -> bAutoConvertPickup/bIngredientMode) on an existing
-    # store. If this script pre-seeds their raw defaults, the DLL sees them present
-    # and skips the migration, silently resetting a deliberate ingredient-mode
-    # player to essence mode (Fable review #5). Leave them to the DLL.
-    DLL_MIGRATED = {"bAutoConvertPickup", "bIngredientMode"}
+    # key on an existing store (bConversionEnabled -> all three; bAutoConvertPickup
+    # -> the two split auto-convert keys). If this script pre-seeds their raw
+    # defaults, the DLL sees them present and skips the migration, silently resetting
+    # a deliberate keep-items / ingredient-mode player (Fable review #5). Leave them
+    # to the DLL.
+    DLL_MIGRATED = {"bAutoConvertIngredients", "bAutoConvertPotions", "bIngredientMode"}
     missing = [(sec, k, v) for sec, k, v in seed if k not in have and k not in DLL_MIGRATED]
     if not missing:
         print("merge: nothing to add")
