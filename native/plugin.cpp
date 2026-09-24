@@ -1153,6 +1153,59 @@ RE::TESQuest* JournalGuardFor(RE::FormID a_form) {
     return nullptr;
 }
 
+// ── Loot-pool guard (potions) ── marth 2026-09-23: "If it's not in the loot pool at
+// all, it likely should be excluded." A potion no leveled list (loot, merchant
+// stock, NPC/death items) can ever produce is a quest or unique item — Vaermina's
+// Torpor, the White Phial, a mod's reward elixir — and must be neither analyzed nor
+// studied, even when no quest flag or journal entry marks it. Both potion paths in
+// ContainerSink call this. The failure mode is benign: a false positive just stays an
+// ordinary item.
+// Built lazily on first use (game thread), so LVLI entries other plugins inject at
+// kDataLoaded are seen. Walks each list's DIRECT entries; every list is visited, so
+// nesting needs no recursion (and a self-referencing mod list can't loop us).
+// Runtime-created (0xFF) forms — potions brewed elsewhere — are never in a list and
+// are exempt: they still convert to essence as before.
+std::unordered_set<RE::FormID> g_lootPool;
+std::once_flag                 g_lootPoolOnce;
+bool InLootPool(RE::FormID a_form) {
+    if ((a_form & 0xFF000000) == 0xFF000000) {
+        return true;
+    }
+    std::call_once(g_lootPoolOnce, []() {
+        auto* dh = RE::TESDataHandler::GetSingleton();
+        if (!dh) {
+            return;
+        }
+        for (auto* lvli : dh->GetFormArray<RE::TESLevItem>()) {
+            if (!lvli) {
+                continue;
+            }
+            for (const auto& entry : lvli->entries) {
+                if (entry.form && entry.form->Is(RE::FormType::AlchemyItem)) {
+                    g_lootPool.insert(entry.form->GetFormID());
+                }
+            }
+        }
+        // One-time audit line per unlisted potion, so a test pass can eyeball the
+        // list for false positives (a real loot potion that only reaches the world
+        // some other way).
+        std::size_t unlisted = 0;
+        for (auto* alch : dh->GetFormArray<RE::AlchemyItem>()) {
+            if (alch && !alch->IsFood() && !IsFlaskForm(alch->GetFormID()) &&
+                !g_lootPool.contains(alch->GetFormID())) {
+                const char* n = alch->GetName();
+                spdlog::info("[lootpool] not in any leveled list: '{}' ({:08X})",
+                             n ? n : "?", alch->GetFormID());
+                ++unlisted;
+            }
+        }
+        spdlog::info("[lootpool] {} potion(s) in leveled lists; {} unlisted (quest/unique "
+                     "— never analyzed or studied)",
+                     g_lootPool.size(), unlisted);
+    });
+    return g_lootPool.contains(a_form);
+}
+
 struct FlaskCost { std::uint32_t base = 0, catalyst = 0, apex = 0; };
 
 void AddTier(FlaskCost& c, Tier t, std::uint32_t amt) {
@@ -3158,6 +3211,12 @@ public:
                                              potName);
                                 return;
                             }
+                            if (!InLootPool(potForm)) {
+                                spdlog::info("[discover] '{}' is in no leveled list (quest/unique) "
+                                             "— kept, not studied",
+                                             potName);
+                                return;
+                            }
                             bool learned = false;
                             {
                                 std::scoped_lock lk(g_discoveredLock);
@@ -3224,6 +3283,13 @@ public:
                     spdlog::info("[discover] JOURNAL QUEST '{}' wants '{}' — kept as item, "
                                  "no analysis",
                                  (qn && qn[0]) ? qn : ((qe && qe[0]) ? qe : "?"), potName);
+                    return;
+                }
+                // Loot-pool guard: a potion no leveled list produces is quest/unique.
+                if (!InLootPool(potForm)) {
+                    spdlog::info("[discover] '{}' is in no leveled list (quest/unique) — kept "
+                                 "as item, no analysis",
+                                 potName);
                     return;
                 }
                 player->RemoveItem(alch, count, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);

@@ -157,7 +157,12 @@ the portable one-sitting audit digest.
 24. **Quest ingredients never dissolve** (`kExclusions` :446, checked
     :1324). Converting Crimson Nirnroot bricks "A Return To Your Roots" —
     the P0 exclusion; broaden it (quest-item flag + generated set) rather
-    than deleting it.
+    than deleting it. Potions carry the same guard set on BOTH potion paths
+    (analyze and keep-and-study), plus a fourth: the **loot-pool guard**
+    (`InLootPool`, v1.0.11) — a potion no leveled list produces is quest/unique
+    and is never analyzed or studied. Runtime-created (0xFF) forms are exempt.
+    Walk list entries directly, never `GetContainedForms()` (it recurses with no
+    cycle guard).
 25. **Food is not a potion; a flask grant is not a discovery** (:1360,
     :1363-1367). Without the `IsFlaskForm` guard the sink analyzes and
     DESTROYS the flask item the mod just granted.

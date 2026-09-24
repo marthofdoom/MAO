@@ -22,10 +22,15 @@ Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
   it, so behavior is unchanged until you split them yourself.
 - The station "Convert to essence" list now shows whenever **ingredient**
   auto-convert is off (it converts ingredients), independent of the potion toggle.
-- **Quest potions are no longer studied when kept.** With potion auto-convert
-  off, a quest potion (e.g. Vaermina's Torpor) used to have its blueprint learned
-  and become a flask variant; it is now skipped by the same quest checks that
-  already protected the auto-convert path.
+- **Quest and unique potions are protected more thoroughly.**
+  - With potion auto-convert off, a quest potion (e.g. Vaermina's Torpor) used to
+    have its blueprint learned and become a flask variant. It now gets the same
+    quest checks the auto-convert path already had.
+  - New: a potion that appears in **no leveled list** (loot, merchant stock, NPC
+    inventories) is treated as a quest or unique item and is never converted or
+    studied, even when nothing flags it as a quest item. Potions brewed at a
+    workbench still convert as before. MAO.log lists every such potion once per
+    session (`[lootpool]`), so any false positive is easy to spot.
 
 ## v1.0.10 — split conversion/ingredient modes + station convert list (2026-09-13)
 
