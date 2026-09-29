@@ -72,7 +72,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "1.0.11";
+constexpr auto kPluginVersion = "1.0.12";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -1206,6 +1206,317 @@ bool InLootPool(RE::FormID a_form) {
     return g_lootPool.contains(a_form);
 }
 
+// ── LoTD museum awareness ── marth 2026-09-28: "museum wanted ingredients (at least
+// one) stay in inventory and don't convert." PORTED FROM MFO (native/logistics/
+// Lotd.cpp, its L1 detection + snapshot, verified there against LOTD 6.9.0 Tuxborn and
+// 6.10.0 Authoria — identical local IDs). LOTD has no DLL; its interface is data +
+// Papyrus. We read the museum's slot table ONCE per rebuild from the DBM_MuseumAPI
+// script object on the MAIN thread (post-load / new game / LOTD's own ModEvents) into
+// an immutable snapshot. A slot is OPEN (still wanted) while every one of its display
+// refs is disabled — LOTD enables a display when it fills it.
+// MuseumReserve(base) = how many of a base the PLAYER should hold for the museum:
+// open slots accepting it, minus copies already waiting museum-side (DropoffCrate,
+// the display drop-off). The pickup sink keeps up to that many; the station Convert
+// list never offers them. Inert without LOTD 6.x. Nothing is saved.
+namespace museum {
+constexpr std::string_view kLotdPlugin    = "LegacyoftheDragonborn.esm";
+constexpr RE::FormID       kQuestApi      = 0x138793;  // QUST DBM_MuseumUtility (script DBM_MuseumAPI)
+constexpr RE::FormID       kGlobMajor     = 0x0B3A1F;  // GLOB DBM_VersionMajor
+constexpr RE::FormID       kRefDropoff    = 0x1772AA;  // REFR DropoffCrate (persistent, Hall of Heroes)
+constexpr RE::FormID       kRefAutoSort   = 0x07EF00;  // REFR display drop-off (persistent)
+constexpr RE::FormID       kFlstExclude   = 0x2940ED;  // FLST DBM_ExcludeList ("never display")
+constexpr RE::FormID       kFlstProtected = 0x161D0B;  // FLST DBM_ProtectedItems (quest items)
+constexpr const char*      kApiScript     = "DBM_MuseumAPI";
+
+struct Slot {
+    std::vector<RE::FormID> displays;  // a single display ref, or a group's alternatives
+    std::vector<RE::FormID> accepted;  // inventory bases that fill it (any one)
+};
+struct Snapshot {
+    std::vector<Slot>                                   slots;
+    std::unordered_map<RE::FormID, std::vector<std::uint32_t>> slotsFor;  // base -> slot indices
+};
+std::atomic<bool>               g_detected{ false };
+RE::FormID                      g_quest = 0, g_dropoff = 0, g_autosort = 0, g_exclude = 0,
+                                g_protected = 0;  // written once at kDataLoaded
+std::mutex                      g_snapMx;
+std::shared_ptr<const Snapshot> g_snap;  // guarded by g_snapMx
+std::atomic<bool>               g_rebuildQueued{ false };
+
+std::shared_ptr<const Snapshot> Current() {
+    std::scoped_lock lk(g_snapMx);
+    return g_snap;
+}
+// A FormList's entries IN INDEX ORDER, nulls KEPT (display and item lists pair by
+// position; ForEachForm skips nulls and would shift the pairing), script-added last.
+std::vector<RE::TESForm*> Entries(const RE::BGSListForm* a_list) {
+    std::vector<RE::TESForm*> out;
+    if (!a_list) {
+        return out;
+    }
+    for (auto* f : a_list->forms) {
+        out.push_back(f);
+    }
+    if (a_list->scriptAddedTempForms) {
+        for (const auto id : *a_list->scriptAddedTempForms) {
+            out.push_back(RE::TESForm::LookupByID(id));
+        }
+    }
+    return out;
+}
+// MAO only converts ingredients and potions, so only those bases are recorded.
+void AddAccepted(RE::TESForm* a_item, std::vector<RE::FormID>& a_out,
+                 const RE::BGSListForm* a_exclude, const RE::BGSListForm* a_protected) {
+    auto add = [&](RE::TESForm* f) {
+        if (!f || !(f->Is(RE::FormType::Ingredient) || f->Is(RE::FormType::AlchemyItem))) {
+            return;
+        }
+        if ((a_exclude && a_exclude->HasForm(f)) || (a_protected && a_protected->HasForm(f))) {
+            return;
+        }
+        if (std::find(a_out.begin(), a_out.end(), f->GetFormID()) == a_out.end()) {
+            a_out.push_back(f->GetFormID());
+        }
+    };
+    if (!a_item) {
+        return;
+    }
+    if (auto* fl = a_item->As<RE::BGSListForm>()) {  // "any one of these"
+        for (auto* f : Entries(fl)) {
+            add(f);
+        }
+    } else {
+        add(a_item);
+    }
+}
+bool SlotOpen(const Slot& a_slot) {
+    for (auto id : a_slot.displays) {
+        auto* r = RE::TESForm::LookupByID<RE::TESObjectREFR>(id);
+        if (!r || !r->IsDisabled()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// MAIN THREAD: the Papyrus VM read.
+void Rebuild(const char* a_reason) {
+    g_rebuildQueued.store(false);
+    if (!g_detected.load()) {
+        return;
+    }
+    auto* quest  = RE::TESForm::LookupByID<RE::TESQuest>(g_quest);
+    auto* vm     = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+    auto* policy = vm ? vm->GetObjectHandlePolicy1() : nullptr;  // 3.7.0 name (MFO's newer lib: GetObjectHandlePolicy)
+    if (!quest || !policy) {
+        spdlog::warn("[lotd] snapshot ({}): no VM / museum quest — not built", a_reason);
+        return;
+    }
+    const RE::VMHandle h =
+        policy->GetHandleForObject(static_cast<RE::VMTypeID>(quest->GetFormType()), quest);
+    RE::BSTSmartPointer<RE::BSScript::Object> obj;
+    if (h == policy->EmptyHandle() || !vm->FindBoundObject(h, kApiScript, obj) || !obj) {
+        // New game before the script binds: LOTD's MCMRefresh triggers the real read.
+        spdlog::info("[lotd] snapshot ({}): {} not bound yet — waiting for LOTD's MCMRefresh",
+                     a_reason, kApiScript);
+        return;
+    }
+    auto* exclude  = RE::TESForm::LookupByID<RE::BGSListForm>(g_exclude);
+    auto* protectd = RE::TESForm::LookupByID<RE::BGSListForm>(g_protected);
+    auto  listArray = [&](const char* a_prop) -> RE::BSTSmartPointer<RE::BSScript::Array> {
+        const auto* v = obj->GetProperty(a_prop);
+        if (!v || !(v->IsArray() || v->IsNoneArray())) {
+            return nullptr;
+        }
+        return v->GetArray();
+    };
+    auto listAt = [](const RE::BSTSmartPointer<RE::BSScript::Array>& a_arr,
+                     std::uint32_t a_i) -> RE::BGSListForm* {
+        if (!a_arr || a_i >= a_arr->size()) {
+            return nullptr;
+        }
+        const auto& v = (*a_arr)[a_i];
+        if (!(v.IsObject() || v.IsNoneObject())) {
+            return nullptr;
+        }
+        return v.Unpack<RE::BGSListForm*>();
+    };
+    static constexpr const char* kDisplayProps[4] = { "SectionDisplayLists", "SectionDisplayLists2",
+                                                      "SectionDisplayLists3", "SectionDisplayLists4" };
+    static constexpr const char* kItemProps[4]    = { "SectionDisplayItems", "SectionDisplayItems2",
+                                                      "SectionDisplayItems3", "SectionDisplayItems4" };
+    auto snap = std::make_shared<Snapshot>();
+    for (int set = 0; set < 4; ++set) {
+        const auto dispArr = listArray(kDisplayProps[set]);
+        const auto itemArr = listArray(kItemProps[set]);
+        if (!dispArr || !itemArr) {
+            continue;
+        }
+        for (std::uint32_t s = 0; s < dispArr->size(); ++s) {
+            auto* dispList = listAt(dispArr, s);
+            auto* itemList = listAt(itemArr, s);
+            if (!dispList || !itemList) {
+                continue;
+            }
+            const auto disps = Entries(dispList);
+            const auto items = Entries(itemList);
+            for (std::size_t i = 0; i < disps.size(); ++i) {
+                RE::TESForm* d    = disps[i];
+                RE::TESForm* item = i < items.size() ? items[i] : nullptr;
+                Slot         slot;
+                if (auto* group = d ? d->As<RE::BGSListForm>() : nullptr) {
+                    // A group: sub-display k pairs with entry k of the item FLST (or
+                    // the one item for all of them) — DBMDisplayAutoSorter's rule.
+                    const auto sub       = Entries(group);
+                    auto*      itemGroup = item ? item->As<RE::BGSListForm>() : nullptr;
+                    const auto subItems  = itemGroup ? Entries(itemGroup) : std::vector<RE::TESForm*>{};
+                    for (std::size_t k = 0; k < sub.size(); ++k) {
+                        auto* ref = sub[k] ? sub[k]->As<RE::TESObjectREFR>() : nullptr;
+                        if (!ref) {
+                            continue;
+                        }
+                        slot.displays.push_back(ref->GetFormID());
+                        AddAccepted(itemGroup ? (k < subItems.size() ? subItems[k] : nullptr) : item,
+                                    slot.accepted, exclude, protectd);
+                    }
+                } else if (auto* ref = d ? d->As<RE::TESObjectREFR>() : nullptr) {
+                    slot.displays.push_back(ref->GetFormID());
+                    AddAccepted(item, slot.accepted, exclude, protectd);
+                }
+                if (slot.displays.empty() || slot.accepted.empty()) {
+                    continue;  // not an ingredient/potion slot
+                }
+                const auto idx = static_cast<std::uint32_t>(snap->slots.size());
+                for (auto b : slot.accepted) {
+                    snap->slotsFor[b].push_back(idx);
+                }
+                snap->slots.push_back(std::move(slot));
+            }
+        }
+    }
+    std::uint32_t open = 0;
+    std::string   sample;
+    for (const auto& sl : snap->slots) {
+        if (SlotOpen(sl)) {
+            if (open < 12) {
+                auto* b = RE::TESForm::LookupByID(sl.accepted.front());
+                const char* n = b ? b->GetName() : nullptr;
+                sample += std::format("{}'{}'", open ? ", " : "", (n && *n) ? n : "?");
+            }
+            ++open;
+        }
+    }
+    const auto slotsN = snap->slots.size();
+    const auto basesN = snap->slotsFor.size();
+    {
+        std::scoped_lock lk(g_snapMx);
+        g_snap = std::move(snap);
+    }
+    spdlog::info("[lotd] snapshot ({}): {} ingredient/potion display slot(s), {} distinct base(s); "
+                 "{} still WANTED by the museum{}{}",
+                 a_reason, slotsN, basesN, open, open ? ": " : "", sample);
+}
+void RequestRebuild(const char* a_reason) {
+    if (!g_detected.load() || g_rebuildQueued.exchange(true)) {
+        return;  // one queued rebuild at a time
+    }
+    std::string why = a_reason;
+    SKSE::GetTaskInterface()->AddTask([why]() { Rebuild(why.c_str()); });
+}
+// LOTD's SKSE ModEvents: MCMRefresh = every patch has registered its displays;
+// DisplayListUpdate / DisplaySortComplete = displays were added or filled.
+class ModEventSink final : public RE::BSTEventSink<SKSE::ModCallbackEvent> {
+public:
+    static ModEventSink* GetSingleton() {
+        static ModEventSink s;
+        return &s;
+    }
+    RE::BSEventNotifyControl ProcessEvent(const SKSE::ModCallbackEvent* a_ev,
+                                          RE::BSTEventSource<SKSE::ModCallbackEvent>*) override {
+        if (a_ev && g_detected.load()) {
+            const std::string_view name = a_ev->eventName.c_str() ? a_ev->eventName.c_str() : "";
+            if (name == "MCMRefresh" || name == "DBM DisplayListUpdate" ||
+                name == "DBM DisplaySortComplete") {
+                RequestRebuild(a_ev->eventName.c_str());
+            }
+        }
+        return RE::BSEventNotifyControl::kContinue;
+    }
+};
+
+// kDataLoaded, main thread.
+void Detect() {
+    auto* dh = RE::TESDataHandler::GetSingleton();
+    if (!dh || !dh->LookupLoadedModByName(kLotdPlugin)) {
+        spdlog::info("[lotd] Legacy of the Dragonborn absent — museum awareness off");
+        return;
+    }
+    auto*     quest = dh->LookupForm<RE::TESQuest>(kQuestApi, kLotdPlugin);
+    auto*     major = dh->LookupForm<RE::TESGlobal>(kGlobMajor, kLotdPlugin);
+    const int maj   = major ? static_cast<int>(major->value) : -1;
+    if (!quest || maj < 6) {
+        spdlog::warn("[lotd] LegacyoftheDragonborn.esm loaded but layout UNSUPPORTED (museum quest {}, "
+                     "major version {}) — museum awareness stays OFF (needs LOTD 6.x)",
+                     quest ? "ok" : "MISSING", maj);
+        return;
+    }
+    auto id     = [](RE::TESForm* f) { return f ? f->GetFormID() : 0u; };
+    g_quest     = quest->GetFormID();
+    g_dropoff   = id(dh->LookupForm(kRefDropoff, kLotdPlugin));
+    g_autosort  = id(dh->LookupForm(kRefAutoSort, kLotdPlugin));
+    g_exclude   = id(dh->LookupForm<RE::BGSListForm>(kFlstExclude, kLotdPlugin));
+    g_protected = id(dh->LookupForm<RE::BGSListForm>(kFlstProtected, kLotdPlugin));
+    g_detected.store(true);
+    if (auto* src = SKSE::GetModCallbackEventSource()) {
+        src->AddEventSink(ModEventSink::GetSingleton());
+    }
+    spdlog::info("[lotd] detected Legacy of the Dragonborn v{} — museum-wanted ingredients are "
+                 "kept (one per open display)",
+                 maj);
+}
+
+// MAIN THREAD. How many of a_base the player should hold for the museum: open slots
+// that accept it, minus copies already waiting museum-side. 0 without LOTD / snapshot.
+std::uint32_t Reserve(RE::FormID a_base) {
+    if (!g_detected.load()) {
+        return 0;
+    }
+    const auto snap = Current();
+    if (!snap) {
+        return 0;
+    }
+    const auto it = snap->slotsFor.find(a_base);
+    if (it == snap->slotsFor.end()) {
+        return 0;
+    }
+    std::int32_t need = 0;
+    for (auto idx : it->second) {
+        if (SlotOpen(snap->slots[idx])) {
+            ++need;
+        }
+    }
+    if (need == 0) {
+        return 0;
+    }
+    auto countIn = [a_base](RE::FormID a_ref) -> std::int32_t {
+        auto* r = a_ref ? RE::TESForm::LookupByID<RE::TESObjectREFR>(a_ref) : nullptr;
+        if (!r) {
+            return 0;
+        }
+        // noInit: never initialize an unloaded container's inventory just to read it.
+        for (const auto& [obj, n] : r->GetInventoryCounts(
+                 [a_base](RE::TESBoundObject& o) { return o.GetFormID() == a_base; }, true)) {
+            if (n > 0) {
+                return n;
+            }
+        }
+        return 0;
+    };
+    need -= countIn(g_dropoff) + countIn(g_autosort);
+    return need > 0 ? static_cast<std::uint32_t>(need) : 0;
+}
+}  // namespace museum
+
 struct FlaskCost { std::uint32_t base = 0, catalyst = 0, apex = 0; };
 
 void AddTier(FlaskCost& c, Tier t, std::uint32_t amt) {
@@ -1551,6 +1862,10 @@ std::uint32_t HeldCount(RE::TESObjectREFR* a_ref, RE::TESBoundObject* a_obj) {
             total += static_cast<std::uint32_t>(cnt);
         }
     }
+    // Ingredient-mode flasks never spend the copies the LoTD museum still wants.
+    if (a_ref->IsPlayerRef() && a_obj->Is(RE::FormType::Ingredient)) {
+        total -= std::min(total, museum::Reserve(a_obj->GetFormID()));
+    }
     return total;
 }
 
@@ -1570,7 +1885,12 @@ void RefreshHeldIngredients() {
     for (const auto& [obj, cnt] : player->GetInventoryCounts(
              [](RE::TESBoundObject& o) { return o.Is(RE::FormType::Ingredient); })) {
         if (obj && cnt > 0) {
-            fresh[obj->GetFormID()] = static_cast<std::uint32_t>(cnt);
+            // Spendable = held minus the LoTD museum's reserve (matches HeldCount).
+            const auto have = static_cast<std::uint32_t>(cnt);
+            const auto res  = museum::Reserve(obj->GetFormID());
+            if (have > res) {
+                fresh[obj->GetFormID()] = have - res;
+            }
         }
     }
     std::scoped_lock lk(g_heldLock);
@@ -1633,11 +1953,15 @@ void RefreshConvertList() {
         if (IsExcluded(name) || IsQuestItem(player, ingr) || JournalGuardFor(ingr->GetFormID())) {
             continue;
         }
+        // LoTD museum: the copies an open display still wants are never offered.
+        const std::uint32_t reserve = museum::Reserve(ingr->GetFormID());
+        if (static_cast<std::uint32_t>(cnt) <= reserve) {
+            continue;
+        }
+        const std::uint32_t avail = static_cast<std::uint32_t>(cnt) - reserve;
         const Tier          tier  = TierOfForm(ingr);
-        const std::uint32_t yield = IngredientEssenceYield(ingr->value, tier,
-                                                           static_cast<std::uint32_t>(cnt));
-        fresh.push_back(
-            { ingr->GetFormID(), static_cast<std::uint32_t>(cnt), yield, tier, std::move(name) });
+        const std::uint32_t yield = IngredientEssenceYield(ingr->value, tier, avail);
+        fresh.push_back({ ingr->GetFormID(), avail, yield, tier, std::move(name) });
     }
     std::sort(fresh.begin(), fresh.end(),
               [](const ConvertEntry& a, const ConvertEntry& b) { return a.name < b.name; });
@@ -1680,6 +2004,9 @@ std::uint32_t ConvertIngredientStack(RE::FormID a_form, std::uint32_t a_count, b
             break;
         }
     }
+    // Never convert the copies the LoTD museum still wants (at least one).
+    const std::uint32_t reserve = museum::Reserve(a_form);
+    live = live > reserve ? live - reserve : 0;
     const std::uint32_t n = std::min(a_count, live);
     if (n == 0) {
         return 0;
@@ -3138,14 +3465,44 @@ public:
                                  (qn && qn[0]) ? qn : ((qe && qe[0]) ? qe : "?"), nameStr);
                     return;
                 }
-                player->RemoveItem(ingr, count, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
-                CreditPouch(tier, total);
+                // LoTD museum: keep what an open display still wants (at least one),
+                // counting copies the player already held before this pickup. The rest
+                // converts as usual.
+                std::uint32_t conv   = static_cast<std::uint32_t>(count);
+                std::uint32_t credit = total;
+                if (const std::uint32_t reserve = museum::Reserve(ingr->GetFormID())) {
+                    std::int32_t held = 0;
+                    for (const auto& [obj, n] : player->GetInventoryCounts(
+                             [ingr](RE::TESBoundObject& o) { return &o == ingr; })) {
+                        held = n;
+                    }
+                    const std::uint32_t before = held > count ? static_cast<std::uint32_t>(held - count) : 0;
+                    const std::uint32_t keep =
+                        std::min(conv, reserve > before ? reserve - before : 0u);
+                    if (keep) {
+                        conv -= keep;
+                        spdlog::info("[gather] MUSEUM wants '{}' — kept {} (display still open)",
+                                     nameStr, keep);
+                        if (g_notify) {
+                            RE::DebugNotification(
+                                std::format("{} kept for the museum", nameStr).c_str());
+                        }
+                        if (conv == 0) {
+                            RefreshHeldIngredients();
+                            return;
+                        }
+                        credit = IngredientEssenceYield(value, tier, conv);
+                    }
+                }
+                player->RemoveItem(ingr, static_cast<std::int32_t>(conv),
+                                   RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+                CreditPouch(tier, credit);
                 spdlog::info("[gather] +{} {} essence <- {}x '{}' (value {}); pouch B={} C={} A={}",
-                             total, TierName(tier), count, nameStr, value,
+                             credit, TierName(tier), conv, nameStr, value,
                              g_pouch.base.load(), g_pouch.catalyst.load(), g_pouch.apex.load());
                 if (g_notify) {
                     RE::DebugNotification(
-                        std::format("+{} {} Essence ({})", total, TierName(tier), nameStr).c_str());
+                        std::format("+{} {} Essence ({})", credit, TierName(tier), nameStr).c_str());
                 }
                 // Pouch Expansion (DESIGN §5.2): 15% chance a flora harvest also
                 // yields a matching Tier II Catalyst essence.
@@ -4509,6 +4866,7 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
         LoadLadders();  // after BOTH: family recipes resolve via g_effectRecipe, and the
                         // emitted quality anchor overrides the runtime fallback
         LoadQuestGuards();  // independent of the economy tables — the journal quest guard
+        museum::Detect();   // LoTD museum awareness (inert without LOTD 6.x)
         InstallDrinkHook();
         StartRefillTimer();
         const auto gameVersion = REL::Module::get().version();
@@ -4523,7 +4881,11 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
     case SKSE::MessagingInterface::kNewGame:
         // Player exists here (after LoadCallback/Revert). Grant the power if
         // absent; retries every load, so a mid-save ESP enable still lands.
-        SKSE::GetTaskInterface()->AddTask([]() {
+        SKSE::GetTaskInterface()->AddTask([newGame = a_message->type ==
+                                                     SKSE::MessagingInterface::kNewGame]() {
+            // The museum's open displays are save state: re-read them every load. On a
+            // new game the API script may not be bound yet; LOTD's MCMRefresh rebuilds.
+            museum::Rebuild(newGame ? "new game" : "post-load");
             GrantFieldKitPower();
             RecomputeCapacity("load");  // authoritative capacity BEFORE we sync items,
             SyncFlaskItems();           // so a shrunk kit doesn't grant now-dead slots

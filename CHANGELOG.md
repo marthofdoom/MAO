@@ -7,6 +7,22 @@ Point fixes fold into their feature's entry unless load-bearing on their own.
 Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
 (build-stamped into the MCM Debug page by `MAO_GenerateESP.py`).
 
+## v1.0.12 — Legacy of the Dragonborn museum awareness (2026-09-28)
+
+- **Ingredients your LoTD museum still needs are kept, not converted.** When
+  Legacy of the Dragonborn (6.x) is installed, picking up an ingredient that an
+  unfilled museum display wants keeps one copy in your inventory (one per open
+  display, counting copies you already carry or have already shipped to the
+  museum); anything beyond that converts to essence as usual. A notification says
+  "<ingredient> kept for the museum". Once the display is filled, that
+  ingredient converts normally again.
+- The alchemy station's **Convert to essence** list never offers (or converts)
+  those museum copies either, so "Convert ALL" can't eat them. In ingredient
+  mode, flasks don't spend them either.
+- Detection reads the museum's own display table (the method MFO uses), so
+  displays added by LoTD patches and add-ons are covered. Without LoTD nothing
+  changes. MAO.log reports what it found under `[lotd]`.
+
 ## v1.0.11 — separate auto-convert for ingredients vs. potions (2026-09-23)
 
 - **Auto-convert on pickup is now split by item type — two independent toggles**

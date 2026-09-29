@@ -163,6 +163,13 @@ the portable one-sitting audit digest.
     and is never analyzed or studied. Runtime-created (0xFF) forms are exempt.
     Walk list entries directly, never `GetContainedForms()` (it recurses with no
     cycle guard).
+    **LoTD museum reserve** (`museum::Reserve`, v1.0.12, ported from MFO Lotd.cpp):
+    an ingredient an OPEN museum display wants (every display ref of the slot still
+    disabled) is kept up to the open-slot count minus copies already held or waiting
+    museum-side (DropoffCrate, display drop-off); both the pickup sink and the station
+    Convert list honor it. The slot table is read from the DBM_MuseumAPI script on the
+    MAIN thread only (post-load / new game / LOTD ModEvents); open-ness is re-checked
+    live per query, so a fill needs no rebuild.
 25. **Food is not a potion; a flask grant is not a discovery** (:1360,
     :1363-1367). Without the `IsFlaskForm` guard the sink analyzes and
     DESTROYS the flask item the mod just granted.
