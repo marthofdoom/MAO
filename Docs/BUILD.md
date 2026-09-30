@@ -71,6 +71,13 @@ CrashLogger installed). The Deck has **no keyboard** — the viewer opens from t
 gamepad (`iOpenButtonGamepad`, default `0x20` = Back/View). `MAO.log` lands under
 `compatdata/489830/pfx/.../My Games/Skyrim Special Edition/SKSE/`.
 
+**Field Kit window memory.** The kit moves only by its header strip (it has no
+title bar, so ImGui's title-bar-only flag does not apply; the window is `NoMove`
+and the strip is hit-tested by hand). It resizes from any edge. Its position and
+size persist in `Data/SKSE/Plugins/MAO_UI.ini` (`version=1`, `winX/Y/W/H` as
+display fractions), written on close only if changed. Delete the file to reset to
+centred. It is a sidecar, never the co-save or the MCM store.
+
 ## ESP + MCM assets (built locally, not in CI)
 
 - **ESP:** `python3 MAO_GenerateESP.py [out_dir]` generates `MAO.esp` byte-by-byte

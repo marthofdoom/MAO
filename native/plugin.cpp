@@ -53,6 +53,8 @@
 #include <filesystem>
 #include <atomic>
 #include <cctype>
+#include <charconv>
+#include <cstdio>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -3481,6 +3483,120 @@ namespace menuhook {
         }
     }
 
+    // ── REMEMBERED WINDOW RECT ─────────────────────────────────────────────
+    // The Field Kit's pos/size live in Data/SKSE/Plugins/MAO_UI.ini as FRACTIONS
+    // of the display (resolution independent), game-root-relative like MAO.ini so
+    // MO2's VFS lands it in overwrite. RENDER THREAD ONLY: read once lazily at the
+    // first open, written synchronously when the kit closes and only if the rect
+    // changed (tiny file, temp + rename so a crash cannot leave half a file). Not
+    // the co-save, not the MCM store. Ported from MFO's MFO_UI.ini.
+    constexpr const char* kUiPath = "Data/SKSE/Plugins/MAO_UI.ini";
+    struct WinMem {
+        bool  loaded = false;  // read attempted
+        bool  have   = false;  // stored rect valid
+        float x = 0, y = 0, w = 0, h = 0;      // fractions to restore
+        bool  dirty = false;   // live rect differs from the saved baseline
+        float lx = 0, ly = 0, lw = 0, lh = 0;  // live fractions
+    };
+    WinMem s_mem;
+
+    bool ParseUiFloat(const std::string& a_v, float& a_out) {
+        float       f = 0;
+        const char* b = a_v.data();
+        const char* e = b + a_v.size();
+        const auto  r = std::from_chars(b, e, f);
+        if (r.ec != std::errc() || r.ptr != e || !std::isfinite(f)) {
+            return false;
+        }
+        a_out = f;
+        return true;
+    }
+
+    void LoadWinMem() {
+        s_mem.loaded = true;
+        std::ifstream in(kUiPath);
+        if (!in) {
+            return;
+        }
+        float       v[4]   = {};
+        bool        got[4] = {};
+        int         ver    = 0;
+        std::string line;
+        auto        trim = [](const std::string& t) {
+            const auto a = t.find_first_not_of(" \t\r\n\xEF\xBB\xBF");
+            if (a == std::string::npos) {
+                return std::string();
+            }
+            return t.substr(a, t.find_last_not_of(" \t\r\n") - a + 1);
+        };
+        static const char* names[4] = {"winX", "winY", "winW", "winH"};
+        while (std::getline(in, line)) {
+            const auto eq = line.find('=');
+            if (eq == std::string::npos) {
+                continue;
+            }
+            const std::string k = trim(line.substr(0, eq)), val = trim(line.substr(eq + 1));
+            for (int i = 0; i < 4; ++i) {
+                if (k == names[i]) {
+                    got[i] = ParseUiFloat(val, v[i]);
+                }
+            }
+            if (k == "version") {
+                float f;
+                if (ParseUiFloat(val, f)) {
+                    ver = static_cast<int>(f);
+                }
+            }
+        }
+        if (ver != 1 || !(got[0] && got[1] && got[2] && got[3])) {
+            return;
+        }
+        // Out of range -> centred default.
+        if (v[0] < 0.0f || v[0] > 1.0f || v[1] < 0.0f || v[1] > 1.0f || v[2] < 0.05f ||
+            v[2] > 1.0f || v[3] < 0.05f || v[3] > 1.0f) {
+            return;
+        }
+        s_mem.x = v[0]; s_mem.y = v[1]; s_mem.w = v[2]; s_mem.h = v[3];
+        s_mem.have = true;
+    }
+
+    void SaveWinMem() {
+        char buf[256];
+        std::snprintf(buf, sizeof(buf), "version=1\nwinX=%.5f\nwinY=%.5f\nwinW=%.5f\nwinH=%.5f\n",
+                      s_mem.lx, s_mem.ly, s_mem.lw, s_mem.lh);
+        const std::string tmp = std::string(kUiPath) + ".tmp";
+        {
+            std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+            if (!out) {
+                spdlog::warn("[menu] could not write {}", tmp);
+                return;
+            }
+            out << buf;
+            out.close();
+            if (out.fail()) {
+                spdlog::warn("[menu] short write to {}", tmp);
+                return;
+            }
+        }
+        std::error_code ec;
+        std::filesystem::rename(tmp, kUiPath, ec);  // replaces an existing file
+        if (ec) {
+            spdlog::warn("[menu] rename {} failed: {}", tmp, ec.message());
+            return;
+        }
+        s_mem.x = s_mem.lx; s_mem.y = s_mem.ly; s_mem.w = s_mem.lw; s_mem.h = s_mem.lh;
+        s_mem.have  = true;
+        s_mem.dirty = false;
+    }
+
+    // Called EVERY frame from the Present thunk (render thread). Writes the
+    // remembered rect once the kit has closed. Cheap when nothing changed.
+    void FlushMenuWindowMemory(bool a_open) {
+        if (!a_open && s_mem.dirty) {
+            SaveWinMem();
+        }
+    }
+
     // The interactive Field Kit: essence stores, flask slots, and known
     // blueprints. Click a flask, then a blueprint, to configure it (P1c).
     void DrawFieldKit() {
@@ -3501,23 +3617,65 @@ namespace menuhook {
         if (fBody) {
             ImGui::PushFont(fBody);
         }
-        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
-                                ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-        // Sized to match MEO's socketing window (marth): 0.62 x 0.68 of the
-        // display (was 0.40 x 0.62 — too small beside its sibling). Resizable by
-        // dragging any edge; ImGui keeps the chosen size for the session.
-        ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x * 0.62f, io.DisplaySize.y * 0.68f),
-                                 ImGuiCond_Appearing);
+        if (!s_mem.loaded) {
+            LoadWinMem();
+        }
+        if (s_mem.have) {
+            // Restore the remembered rect: size from fractions clamped to the
+            // constraint range, then the position clamped so the whole window (so
+            // the whole header) stays on this display.
+            const float w = std::clamp(s_mem.w * io.DisplaySize.x, 640.0f,
+                                       std::max(640.0f, io.DisplaySize.x));
+            const float h = std::clamp(s_mem.h * io.DisplaySize.y, 420.0f,
+                                       std::max(420.0f, io.DisplaySize.y));
+            const float x = std::clamp(s_mem.x * io.DisplaySize.x, 0.0f,
+                                       std::max(0.0f, io.DisplaySize.x - w));
+            const float y = std::clamp(s_mem.y * io.DisplaySize.y, 0.0f,
+                                       std::max(0.0f, io.DisplaySize.y - h));
+            ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Appearing);
+            ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Appearing);
+        } else {
+            ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
+                                    ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+            // Sized to match MEO's socketing window (marth): 0.62 x 0.68 of the
+            // display. Resizable from any edge; Appearing (never Always) so a
+            // resize sticks, and MAO_UI.ini carries it across restarts.
+            ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x * 0.62f, io.DisplaySize.y * 0.68f),
+                                     ImGuiCond_Appearing);
+        }
         ImGui::SetNextWindowSizeConstraints(ImVec2(640.0f, 420.0f),
                                             ImVec2(io.DisplaySize.x, io.DisplaySize.y));
         if (!ImGui::Begin("MAO Field Kit", nullptr,
                           ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
-                              ImGuiWindowFlags_NoTitleBar)) {
+                              ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove)) {
             ImGui::End();
             if (fBody) {
                 ImGui::PopFont();
             }
             return;
+        }
+        // Remember the live rect (fractions of the display). The first frame of an
+        // open is the baseline (what we just set), so merely opening never dirties
+        // the file; any later move/resize does.
+        if (io.DisplaySize.x > 0.0f && io.DisplaySize.y > 0.0f) {
+            const ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
+            const float  fx = wp.x / io.DisplaySize.x, fy = wp.y / io.DisplaySize.y;
+            const float  fw = ws.x / io.DisplaySize.x, fh = ws.y / io.DisplaySize.y;
+            const bool   differs = std::fabs(fx - s_mem.lx) > 0.0005f ||
+                                   std::fabs(fy - s_mem.ly) > 0.0005f ||
+                                   std::fabs(fw - s_mem.lw) > 0.0005f ||
+                                   std::fabs(fh - s_mem.lh) > 0.0005f;
+            const bool matchesSaved =
+                s_mem.have && std::fabs(fx - s_mem.x) <= 0.0005f &&
+                std::fabs(fy - s_mem.y) <= 0.0005f && std::fabs(fw - s_mem.w) <= 0.0005f &&
+                std::fabs(fh - s_mem.h) <= 0.0005f;
+            if (ImGui::IsWindowAppearing()) {
+                s_mem.lx = fx; s_mem.ly = fy; s_mem.lw = fw; s_mem.lh = fh;
+                s_mem.dirty = false;
+            } else if (differs) {
+                s_mem.lx = fx; s_mem.ly = fy; s_mem.lw = fw; s_mem.lh = fh;
+                s_mem.dirty = !matchesSaved;
+            }
         }
         {  // centered title in the display face + accent color
             if (fHead) {
@@ -3528,6 +3686,33 @@ namespace menuhook {
             ImGui::PushStyleColor(ImGuiCol_Text, skin.accent);
             ImGui::TextUnformatted(skin.title);
             ImGui::PopStyleColor();
+            // Header-strip drag. The window is NoTitleBar + NoMove, so the body can
+            // never move it (ConfigWindowsMoveFromTitleBarOnly does not apply
+            // without a title bar). The strip is the window's top edge down past
+            // the title text, hit-tested in SCREEN space (scroll-proof) with no
+            // widget, so it adds no nav item and the pad/keyboard walk is unchanged.
+            // The press must start on the strip over empty space (no item under it).
+            static bool s_dragging = false;
+            const ImVec2 wp        = ImGui::GetWindowPos();
+            const float  stripH    = ImGui::GetStyle().WindowPadding.y + ImGui::GetTextLineHeight() +
+                                 ImGui::GetStyle().ItemSpacing.y;
+            const ImVec2 sMin = wp, sMax(wp.x + ImGui::GetWindowWidth(), wp.y + stripH);
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::IsWindowHovered() &&
+                !ImGui::IsAnyItemHovered() && ImGui::IsMouseHoveringRect(sMin, sMax, false)) {
+                s_dragging = true;
+            }
+            if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                s_dragging = false;
+            }
+            if (s_dragging) {
+                // Keep a slice of the header on screen so it can always be grabbed back.
+                const ImVec2 ws = ImGui::GetWindowSize();
+                const float  nx = std::clamp(wp.x + io.MouseDelta.x, 64.0f - ws.x,
+                                             std::max(64.0f - ws.x, io.DisplaySize.x - 64.0f));
+                const float  ny = std::clamp(wp.y + io.MouseDelta.y, 0.0f,
+                                             std::max(0.0f, io.DisplaySize.y - stripH));
+                ImGui::SetWindowPos(ImVec2(nx, ny));
+            }
             if (fHead) {
                 ImGui::PopFont();
             }
@@ -3880,6 +4065,7 @@ namespace menuhook {
             ImGui::CreateContext();
             auto& io       = ImGui::GetIO();
             io.IniFilename = nullptr;  // never write imgui.ini into the game dir
+            io.ConfigWindowsResizeFromEdges = true;  // explicit guard (ImGui default); the kit resizes from any edge
             io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
             io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
             // Bake real typefaces at backbuffer scale (the default bitmap font
@@ -3925,6 +4111,7 @@ namespace menuhook {
     struct DXGIPresentHook {
         static void thunk(std::uint32_t a_p1) {
             func(a_p1);
+            FlushMenuWindowMemory(g_menu.open.load());  // save the rect once the kit has closed
             if (!g_d3dReady.load() || !g_menu.open.load()) {
                 return;
             }

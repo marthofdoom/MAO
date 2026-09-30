@@ -7,6 +7,10 @@ Point fixes fold into their feature's entry unless load-bearing on their own.
 Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
 (build-stamped into the MCM Debug page by `MAO_GenerateESP.py`).
 
+## Unreleased
+
+- **The Field Kit remembers where you put it.** Drag the header strip at the top to move the window. The body no longer drags, so sliders and lists are safe. Drag any edge or corner to resize it. The window reopens at the position and size you left it, even after you restart the game. It is saved in `Data/SKSE/Plugins/MAO_UI.ini`. Delete that file to go back to the centred default. If your resolution changes, the window is kept on screen.
+
 ## v1.0.11 — separate auto-convert for ingredients vs. potions (2026-09-23)
 
 - **Auto-convert on pickup is now split by item type — two independent toggles**
