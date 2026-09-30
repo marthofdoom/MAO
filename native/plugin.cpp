@@ -59,6 +59,7 @@
 #include <cstdlib>
 #include <format>
 #include <fstream>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -1206,6 +1207,80 @@ bool InLootPool(RE::FormID a_form) {
     return g_lootPool.contains(a_form);
 }
 
+// ── The MAIN-THREAD PUMP ── PORTED FROM MFO (native/MainThread.cpp, ENGINE_NOTES §0.37).
+// In this runtime SKSE::GetTaskInterface()->AddTask does NOT run on the main thread: its
+// queue drains inside Job_Post_process on a BSJobs::JobThread (MFO proved it from crash
+// stacks). AddTask means "run soon on a WORKER". Inventory transfers are worker-safe, but
+// anything that must read live engine state a worker can't safely touch — here, the
+// Papyrus VM read of LOTD's DBM_MuseumAPI and LOTD's museum containers — goes through
+// this queue, drained from inside the PLAYER's per-frame Update vfunc (main thread, once
+// per frame, in post order). Not installed on VR (unverified index): Post becomes a no-op.
+namespace mainthread {
+std::mutex                         g_mx;
+std::vector<std::function<void()>> g_queue;  // guarded by g_mx
+std::atomic<bool>                  g_live{ false };
+
+struct PlayerUpdateHook {
+    static void thunk(RE::PlayerCharacter* a_this, float a_delta) {
+        func(a_this, a_delta);  // the engine's own frame FIRST, always
+        // SWAP-THEN-RUN: a drained fn may Post() again without deadlocking; the
+        // repost runs next frame.
+        std::vector<std::function<void()>> batch;
+        {
+            std::scoped_lock lk(g_mx);
+            if (g_queue.empty()) {
+                return;  // the every-frame path: one lock, no work
+            }
+            batch.swap(g_queue);
+        }
+        static bool s_first = true;  // main-thread only
+        if (s_first) {
+            s_first = false;
+            spdlog::info("[mainthread] first drain: {} fn(s) ran inside player Update — pump "
+                         "is live on the main thread",
+                         batch.size());
+        }
+        for (auto& fn : batch) {
+            if (fn) {
+                fn();
+            }
+        }
+    }
+    static inline REL::Relocation<decltype(thunk)> func;
+    // Actor::Update(float) — pinned CommonLibSSE-NG 3.7.0 include/RE/A/Actor.h:367 "// 0AD".
+    // NOT DrinkPotion's 0x10F. Written in the player's primary vtable: player only.
+    static constexpr std::size_t idx = 0x0AD;
+};
+
+bool IsLive() { return g_live.load(); }
+void Post(std::function<void()> a_fn) {
+    if (!a_fn || !g_live.load()) {
+        return;  // VR / not installed: dropped, never queued forever
+    }
+    std::scoped_lock lk(g_mx);
+    g_queue.push_back(std::move(a_fn));
+}
+// Revert: a fn posted before a load must not run against the next session.
+void Clear() {
+    std::scoped_lock lk(g_mx);
+    g_queue.clear();
+}
+void Install() {
+    if (REL::Module::IsVR()) {
+        spdlog::warn("[mainthread] VR runtime — Update vtable index unverified; pump NOT installed");
+        return;
+    }
+    if (g_live.load()) {
+        return;
+    }
+    REL::Relocation<std::uintptr_t> vtbl{ RE::PlayerCharacter::VTABLE[0] };
+    PlayerUpdateHook::func = vtbl.write_vfunc(PlayerUpdateHook::idx, PlayerUpdateHook::thunk);
+    g_live.store(true);
+    spdlog::info("[mainthread] player Update vfunc hook installed (PlayerCharacter idx 0x{:X})",
+                 PlayerUpdateHook::idx);
+}
+}  // namespace mainthread
+
 // ── LoTD museum awareness ── marth 2026-09-28: "museum wanted ingredients (at least
 // one) stay in inventory and don't convert." PORTED FROM MFO (native/logistics/
 // Lotd.cpp, its L1 detection + snapshot, verified there against LOTD 6.9.0 Tuxborn and
@@ -1235,6 +1310,14 @@ struct Slot {
 struct Snapshot {
     std::vector<Slot>                                   slots;
     std::unordered_map<RE::FormID, std::vector<std::uint32_t>> slotsFor;  // base -> slot indices
+    // Copies already waiting museum-side (DropoffCrate + the display drop-off), counted on
+    // the MAIN thread at rebuild — never read those containers from a worker (MFO review
+    // round 1 carve-out). Stale between rebuilds only until LOTD sorts (its sort fires
+    // DBM DisplaySortComplete -> rebuild) or the next load. Stale-low (a copy deposited
+    // since) keeps an extra copy — harmless. Stale-high (a copy taken BACK out of those
+    // containers) can let a still-wanted copy convert until then — accepted, rare (Opus
+    // review 2026-09-30, SEV-4).
+    std::unordered_map<RE::FormID, std::int32_t> museumSide;
 };
 std::atomic<bool>               g_detected{ false };
 RE::FormID                      g_quest = 0, g_dropoff = 0, g_autosort = 0, g_exclude = 0,
@@ -1394,6 +1477,20 @@ void Rebuild(const char* a_reason) {
             }
         }
     }
+    for (RE::FormID refId : { g_dropoff, g_autosort }) {
+        auto* r = refId ? RE::TESForm::LookupByID<RE::TESObjectREFR>(refId) : nullptr;
+        if (!r) {
+            continue;
+        }
+        // noInit: never initialize an unloaded container's inventory just to read it.
+        for (const auto& [bobj, n] : r->GetInventoryCounts(
+                 [&snap](RE::TESBoundObject& o) { return snap->slotsFor.contains(o.GetFormID()); },
+                 true)) {
+            if (bobj && n > 0) {
+                snap->museumSide[bobj->GetFormID()] += n;
+            }
+        }
+    }
     std::uint32_t open = 0;
     std::string   sample;
     for (const auto& sl : snap->slots) {
@@ -1420,8 +1517,22 @@ void RequestRebuild(const char* a_reason) {
     if (!g_detected.load() || g_rebuildQueued.exchange(true)) {
         return;  // one queued rebuild at a time
     }
+    if (!mainthread::IsLive()) {
+        g_rebuildQueued.store(false);  // VR: no pump -> no VM read off the main thread
+        return;
+    }
     std::string why = a_reason;
-    SKSE::GetTaskInterface()->AddTask([why]() { Rebuild(why.c_str()); });
+    mainthread::Post([why]() { Rebuild(why.c_str()); });
+}
+// Revert (main thread): the museum's state belongs to the save being left.
+void Reset() {
+    {
+        std::scoped_lock lk(g_snapMx);
+        g_snap.reset();
+    }
+    // mainthread::Clear() just dropped any queued rebuild; without this the flag would
+    // stay set and block every later rebuild.
+    g_rebuildQueued.store(false);
 }
 // LOTD's SKSE ModEvents: MCMRefresh = every patch has registered its displays;
 // DisplayListUpdate / DisplaySortComplete = displays were added or filled.
@@ -1466,6 +1577,12 @@ void Detect() {
     g_autosort  = id(dh->LookupForm(kRefAutoSort, kLotdPlugin));
     g_exclude   = id(dh->LookupForm<RE::BGSListForm>(kFlstExclude, kLotdPlugin));
     g_protected = id(dh->LookupForm<RE::BGSListForm>(kFlstProtected, kLotdPlugin));
+    if (!mainthread::IsLive()) {
+        spdlog::warn("[lotd] Legacy of the Dragonborn v{} found, but the main-thread pump is not "
+                     "installed (VR?) — museum awareness stays OFF (its reads need the main thread)",
+                     maj);
+        return;
+    }
     g_detected.store(true);
     if (auto* src = SKSE::GetModCallbackEventSource()) {
         src->AddEventSink(ModEventSink::GetSingleton());
@@ -1475,8 +1592,9 @@ void Detect() {
                  maj);
 }
 
-// MAIN THREAD. How many of a_base the player should hold for the museum: open slots
-// that accept it, minus copies already waiting museum-side. 0 without LOTD / snapshot.
+// How many of a_base the player should hold for the museum: open slots that accept it,
+// minus copies already waiting museum-side (cached at rebuild). Worker-safe: reads only
+// the immutable snapshot and each display ref's disabled flag. 0 without LOTD / snapshot.
 std::uint32_t Reserve(RE::FormID a_base) {
     if (!g_detected.load()) {
         return 0;
@@ -1498,21 +1616,9 @@ std::uint32_t Reserve(RE::FormID a_base) {
     if (need == 0) {
         return 0;
     }
-    auto countIn = [a_base](RE::FormID a_ref) -> std::int32_t {
-        auto* r = a_ref ? RE::TESForm::LookupByID<RE::TESObjectREFR>(a_ref) : nullptr;
-        if (!r) {
-            return 0;
-        }
-        // noInit: never initialize an unloaded container's inventory just to read it.
-        for (const auto& [obj, n] : r->GetInventoryCounts(
-                 [a_base](RE::TESBoundObject& o) { return o.GetFormID() == a_base; }, true)) {
-            if (n > 0) {
-                return n;
-            }
-        }
-        return 0;
-    };
-    need -= countIn(g_dropoff) + countIn(g_autosort);
+    if (const auto ms = snap->museumSide.find(a_base); ms != snap->museumSide.end()) {
+        need -= ms->second;
+    }
     return need > 0 ? static_cast<std::uint32_t>(need) : 0;
 }
 }  // namespace museum
@@ -4747,6 +4853,8 @@ void LoadCallback(SKSE::SerializationInterface* a_intfc) {
 
 void RevertCallback(SKSE::SerializationInterface*) {
     g_newerCoSave.store(false);  // re-armed per load; LoadCallback may set it again
+    mainthread::Clear();  // nothing posted before a load may run against the next session
+    museum::Reset();
     {
         std::scoped_lock lk(g_coatingLock);  // coating clock is runtime-only
         g_coatingExpiryMs = 0;
@@ -4866,7 +4974,8 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
         LoadLadders();  // after BOTH: family recipes resolve via g_effectRecipe, and the
                         // emitted quality anchor overrides the runtime fallback
         LoadQuestGuards();  // independent of the economy tables — the journal quest guard
-        museum::Detect();   // LoTD museum awareness (inert without LOTD 6.x)
+        mainthread::Install();  // before museum::Detect — its VM reads need the main thread
+        museum::Detect();       // LoTD museum awareness (inert without LOTD 6.x)
         InstallDrinkHook();
         StartRefillTimer();
         const auto gameVersion = REL::Module::get().version();
@@ -4881,11 +4990,13 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message) {
     case SKSE::MessagingInterface::kNewGame:
         // Player exists here (after LoadCallback/Revert). Grant the power if
         // absent; retries every load, so a mid-save ESP enable still lands.
-        SKSE::GetTaskInterface()->AddTask([newGame = a_message->type ==
-                                                     SKSE::MessagingInterface::kNewGame]() {
-            // The museum's open displays are save state: re-read them every load. On a
-            // new game the API script may not be bound yet; LOTD's MCMRefresh rebuilds.
-            museum::Rebuild(newGame ? "new game" : "post-load");
+        // The museum's open displays are save state: re-read them every load, on the MAIN
+        // thread via the pump (AddTask drains on a worker). On a new game the API script
+        // may not be bound yet; LOTD's MCMRefresh triggers the real read.
+        museum::RequestRebuild(a_message->type == SKSE::MessagingInterface::kNewGame
+                                   ? "new game"
+                                   : "post-load");
+        SKSE::GetTaskInterface()->AddTask([]() {
             GrantFieldKitPower();
             RecomputeCapacity("load");  // authoritative capacity BEFORE we sync items,
             SyncFlaskItems();           // so a shrunk kit doesn't grant now-dead slots
