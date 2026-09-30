@@ -3552,7 +3552,9 @@ namespace menuhook {
             return;
         }
         // Out of range -> centred default.
-        if (v[0] < 0.0f || v[0] > 1.0f || v[1] < 0.0f || v[1] > 1.0f || v[2] < 0.05f ||
+        // x/y may be slightly negative (the drag lets the window slide partly off an
+        // edge); the restore path clamps the whole window back onto the display.
+        if (v[0] < -1.0f || v[0] > 1.0f || v[1] < -1.0f || v[1] > 1.0f || v[2] < 0.05f ||
             v[2] > 1.0f || v[3] < 0.05f || v[3] > 1.0f) {
             return;
         }
@@ -3561,6 +3563,16 @@ namespace menuhook {
     }
 
     void SaveWinMem() {
+        // Any failure clears dirty (retried only after the next real change) and
+        // warns once, so a read-only dir cannot cost file I/O + a log line per frame.
+        static bool s_warned = false;
+        auto        fail = [&](const std::string& a_msg) {
+            s_mem.dirty = false;
+            if (!s_warned) {
+                s_warned = true;
+                spdlog::warn("[menu] {}", a_msg);
+            }
+        };
         char buf[256];
         std::snprintf(buf, sizeof(buf), "version=1\nwinX=%.5f\nwinY=%.5f\nwinW=%.5f\nwinH=%.5f\n",
                       s_mem.lx, s_mem.ly, s_mem.lw, s_mem.lh);
@@ -3568,20 +3580,22 @@ namespace menuhook {
         {
             std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
             if (!out) {
-                spdlog::warn("[menu] could not write {}", tmp);
+                fail("could not write " + tmp);
                 return;
             }
             out << buf;
             out.close();
             if (out.fail()) {
-                spdlog::warn("[menu] short write to {}", tmp);
+                fail("short write to " + tmp);
                 return;
             }
         }
         std::error_code ec;
         std::filesystem::rename(tmp, kUiPath, ec);  // replaces an existing file
         if (ec) {
-            spdlog::warn("[menu] rename {} failed: {}", tmp, ec.message());
+            fail("rename " + tmp + " failed: " + ec.message());
+            std::error_code rec;
+            std::filesystem::remove(tmp, rec);  // no orphan .tmp
             return;
         }
         s_mem.x = s_mem.lx; s_mem.y = s_mem.ly; s_mem.w = s_mem.lw; s_mem.h = s_mem.lh;
