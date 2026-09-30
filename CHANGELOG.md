@@ -7,7 +7,7 @@ Point fixes fold into their feature's entry unless load-bearing on their own.
 Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
 (build-stamped into the MCM Debug page by `MAO_GenerateESP.py`).
 
-## v1.0.12 — Legacy of the Dragonborn museum awareness (2026-09-28)
+## v1.0.12 — Legacy of the Dragonborn museum awareness, Field Kit window memory (2026-09-30)
 
 - **Ingredients your LoTD museum still needs are kept, not converted.** When
   Legacy of the Dragonborn (6.x) is installed, picking up an ingredient that an
@@ -22,6 +22,8 @@ Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
 - Detection reads the museum's own display table (the method MFO uses), so
   displays added by LoTD patches and add-ons are covered. Without LoTD nothing
   changes. MAO.log reports what it found under `[lotd]`.
+- **The Field Kit remembers where you put it.** Drag the header strip at the top to move the window. The body no longer drags, so sliders and lists are safe. Drag any edge or corner to resize it. The window reopens at the position and size you left it, even after you restart the game. It is saved in `Data/SKSE/Plugins/MAO_UI.ini`. Delete that file to go back to the centred default. If your resolution changes, the window is kept on screen.
+
 
 ## v1.0.11 — separate auto-convert for ingredients vs. potions (2026-09-23)
 
