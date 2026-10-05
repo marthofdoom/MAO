@@ -3962,6 +3962,14 @@ namespace menuhook {
         float lx = 0, ly = 0, lw = 0, lh = 0;  // live fractions
     };
     WinMem s_mem;
+    bool   s_loggedMoveThisOpen = false;  // diagnostic: one "rect changed" line per open
+
+    // Diagnostic: absolute form of kUiPath for log lines (falls back to the relative path).
+    std::string UiAbsPath() {
+        std::error_code ec;
+        const auto      p = std::filesystem::absolute(kUiPath, ec);
+        return ec ? std::string(kUiPath) : p.string();
+    }
 
     bool ParseUiFloat(const std::string& a_v, float& a_out) {
         float       f = 0;
@@ -3979,6 +3987,8 @@ namespace menuhook {
         s_mem.loaded = true;
         std::ifstream in(kUiPath);
         if (!in) {
+            spdlog::info("[menu] window memory: none (file missing) at {} - using centred default",
+                         UiAbsPath());
             return;
         }
         float       v[4]   = {};
@@ -4012,6 +4022,8 @@ namespace menuhook {
             }
         }
         if (ver != 1 || !(got[0] && got[1] && got[2] && got[3])) {
+            spdlog::info("[menu] window memory: none ({}) at {} - using centred default",
+                         ver != 1 ? "version" : "invalid", UiAbsPath());
             return;
         }
         // Out of range -> centred default.
@@ -4019,10 +4031,14 @@ namespace menuhook {
         // edge); the restore path clamps the whole window back onto the display.
         if (v[0] < -1.0f || v[0] > 1.0f || v[1] < -1.0f || v[1] > 1.0f || v[2] < 0.05f ||
             v[2] > 1.0f || v[3] < 0.05f || v[3] > 1.0f) {
+            spdlog::info("[menu] window memory: none (invalid) at {} - using centred default",
+                         UiAbsPath());
             return;
         }
         s_mem.x = v[0]; s_mem.y = v[1]; s_mem.w = v[2]; s_mem.h = v[3];
         s_mem.have = true;
+        spdlog::info("[menu] window memory: loaded {{{:.5f},{:.5f},{:.5f},{:.5f}}} from {}", v[0], v[1],
+                     v[2], v[3], UiAbsPath());
     }
 
     void SaveWinMem() {
@@ -4064,11 +4080,21 @@ namespace menuhook {
         s_mem.x = s_mem.lx; s_mem.y = s_mem.ly; s_mem.w = s_mem.lw; s_mem.h = s_mem.lh;
         s_mem.have  = true;
         s_mem.dirty = false;
+        spdlog::info("[menu] window memory: saved to {}", UiAbsPath());
     }
 
     // Called EVERY frame from the Present thunk (render thread). Writes the
     // remembered rect once the kit has closed. Cheap when nothing changed.
     void FlushMenuWindowMemory(bool a_open) {
+        static bool s_prevOpen = false;
+        if (s_prevOpen && !a_open) {
+            spdlog::info("[menu] window memory: kit closed, dirty={}, live=({:.4f},{:.4f},{:.4f},{:.4f})",
+                         s_mem.dirty, s_mem.lx, s_mem.ly, s_mem.lw, s_mem.lh);
+        }
+        s_prevOpen = a_open;
+        if (!a_open) {
+            s_loggedMoveThisOpen = false;
+        }
         if (!a_open && s_mem.dirty) {
             SaveWinMem();
         }
@@ -4152,6 +4178,11 @@ namespace menuhook {
             } else if (differs) {
                 s_mem.lx = fx; s_mem.ly = fy; s_mem.lw = fw; s_mem.lh = fh;
                 s_mem.dirty = !matchesSaved;
+                if (!s_loggedMoveThisOpen) {
+                    s_loggedMoveThisOpen = true;
+                    spdlog::info("[menu] window memory: rect changed -> dirty={} (have={}, appearing={})",
+                                 s_mem.dirty, s_mem.have, ImGui::IsWindowAppearing());
+                }
             }
         }
         {  // centered title in the display face + accent color
