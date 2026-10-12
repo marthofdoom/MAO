@@ -1533,7 +1533,7 @@ void OnContainerClosed() {
     if (!g_detected.load()) {
         return;
     }
-    const auto ref = RE::ContainerMenu::GetTargetRefHandle().get();
+    const auto ref = RE::TESObjectREFR::LookupByHandle(RE::ContainerMenu::GetTargetRefHandle());
     if (!ref) {
         return;
     }
