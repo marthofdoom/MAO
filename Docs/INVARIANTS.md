@@ -164,10 +164,12 @@ the portable one-sitting audit digest.
     Walk list entries directly, never `GetContainedForms()` (it recurses with no
     cycle guard).
     **LoTD museum reserve** (`museum::Reserve`, v1.0.12, ported from MFO Lotd.cpp):
-    an ingredient an OPEN museum display wants (every display ref of the slot still
+    an ingredient or potion an OPEN museum display wants (every display ref of the slot still
     disabled) is kept up to the open-slot count minus copies already held or waiting
-    museum-side (DropoffCrate, display drop-off); both the pickup sink and the station
-    Convert list honor it. The slot table is read from the DBM_MuseumAPI script on the
+    museum-side (DropoffCrate, display drop-off); both the ingredient pickup sink, the potion
+    analyze path (a potion a display wants keeps its reserved copies and is still
+    learned) and the station Convert list honor it. An item leaving the DropoffCrate
+    or display drop-off requests a rebuild and is never auto-converted. The slot table is read from the DBM_MuseumAPI script on the
     MAIN thread only (post-load / new game / LOTD ModEvents); open-ness is re-checked
     live per query, so a fill needs no rebuild.
 25. **Food is not a potion; a flask grant is not a discovery** (:1360,

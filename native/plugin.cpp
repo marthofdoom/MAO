@@ -1317,8 +1317,8 @@ struct Snapshot {
     // round 1 carve-out). Stale between rebuilds only until LOTD sorts (its sort fires
     // DBM DisplaySortComplete -> rebuild) or the next load. Stale-low (a copy deposited
     // since) keeps an extra copy — harmless. Stale-high (a copy taken BACK out of those
-    // containers) can let a still-wanted copy convert until then — accepted, rare (Opus
-    // review 2026-09-30, SEV-4).
+    // containers) is closed by ContainerSink: an item leaving the DropoffCrate or the
+    // display drop-off requests a rebuild (OnTakenFromMuseum).
     std::unordered_map<RE::FormID, std::int32_t> museumSide;
 };
 std::atomic<bool>               g_detected{ false };
@@ -1526,6 +1526,21 @@ void RequestRebuild(const char* a_reason) {
     std::string why = a_reason;
     mainthread::Post([why]() { Rebuild(why.c_str()); });
 }
+// True when a_container is the DropoffCrate or the display drop-off. Plain FormID compare.
+bool IsMuseumSide(RE::FormID a_container) {
+    return g_detected.load() && a_container &&
+           (a_container == g_dropoff || a_container == g_autosort);
+}
+// An item left a museum-side container (container-changed event): the cached museumSide
+// count is now stale-high, so re-read the snapshot. Logged once per session.
+void OnTakenFromMuseum(RE::FormID a_container) {
+    static std::atomic<bool> logged{ false };
+    if (!logged.exchange(true)) {
+        spdlog::info("[lotd] item taken out of museum container {:08X} — requesting snapshot rebuild",
+                     a_container);
+    }
+    RequestRebuild("taken from museum container");
+}
 // Revert (main thread): the museum's state belongs to the save being left.
 void Reset() {
     {
@@ -1589,7 +1604,7 @@ void Detect() {
     if (auto* src = SKSE::GetModCallbackEventSource()) {
         src->AddEventSink(ModEventSink::GetSingleton());
     }
-    spdlog::info("[lotd] detected Legacy of the Dragonborn v{} — museum-wanted ingredients are "
+    spdlog::info("[lotd] detected Legacy of the Dragonborn v{} — museum-wanted ingredients and potions are "
                  "kept (one per open display)",
                  maj);
 }
@@ -3492,6 +3507,13 @@ public:
         }
         const int count = a_event->itemCount;
 
+        // Taken back out of the museum's DropoffCrate / display drop-off: the player did
+        // that deliberately, so do NOT auto-convert it; just refresh the museum count.
+        if (museum::IsMuseumSide(a_event->oldContainer)) {
+            museum::OnTakenFromMuseum(a_event->oldContainer);
+            return RE::BSEventNotifyControl::kContinue;
+        }
+
         // ── Ingredients ── (M1 gathering). Auto-convert gated by its OWN toggle.
         if (auto* ingr = form->As<RE::IngredientItem>()) {
             if (!g_autoConvertIngredients.load()) {
@@ -3573,6 +3595,20 @@ public:
                                  (qn && qn[0]) ? qn : ((qe && qe[0]) ? qe : "?"), nameStr);
                     return;
                 }
+                // Pouch Expansion (DESIGN §5.2): 15% chance a flora harvest also
+                // yields a matching Tier II Catalyst essence.
+                // Rolled BEFORE the museum reserve below: a harvest kept whole for the
+                // museum returns early and must still get its proc.
+                if (fromFlora && g_hasPouchExp.load() && RollPercent(15)) {
+                    const std::uint32_t bonus = YieldFor(value, Tier::Catalyst);
+                    CreditPouch(Tier::Catalyst, bonus);
+                    spdlog::info("[gather] Pouch Expansion proc: +{} Catalyst ({})", bonus,
+                                 nameStr);
+                    if (g_notify.load()) {
+                        RE::DebugNotification(
+                            std::format("+{} Catalyst Essence (Pouch Expansion)", bonus).c_str());
+                    }
+                }
                 // LoTD museum: keep what an open display still wants (at least one),
                 // counting copies the player already held before this pickup. The rest
                 // converts as usual.
@@ -3611,18 +3647,6 @@ public:
                 if (g_notify) {
                     RE::DebugNotification(
                         std::format("+{} {} Essence ({})", credit, TierName(tier), nameStr).c_str());
-                }
-                // Pouch Expansion (DESIGN §5.2): 15% chance a flora harvest also
-                // yields a matching Tier II Catalyst essence.
-                if (fromFlora && g_hasPouchExp.load() && RollPercent(15)) {
-                    const std::uint32_t bonus = YieldFor(value, Tier::Catalyst);
-                    CreditPouch(Tier::Catalyst, bonus);
-                    spdlog::info("[gather] Pouch Expansion proc: +{} Catalyst ({})", bonus,
-                                 nameStr);
-                    if (g_notify.load()) {
-                        RE::DebugNotification(
-                            std::format("+{} Catalyst Essence (Pouch Expansion)", bonus).c_str());
-                    }
                 }
             });
             return RE::BSEventNotifyControl::kContinue;
@@ -3695,6 +3719,8 @@ public:
                                     RE::DebugNotification(
                                         std::format("Discovered: {}", potName).c_str());
                                 }
+                            } else {
+                                spdlog::info("[discover] '{}' kept (known variant)", potName);
                             }
                         });
                     }
@@ -3724,11 +3750,11 @@ public:
             // — VariantCost is the per-charge cost, in the variant's own tier
             // split. Finding or buying a potion always funds one refill of it.
             const RE::FormID    potForm = alch->GetFormID();
-            const FlaskCost     fc      = VariantCost(alch) * static_cast<std::uint32_t>(count);
+            const FlaskCost     fcOne   = VariantCost(alch);
             const char*         pcName  = alch->GetName();
             const std::string   potName(pcName ? pcName : "potion");
             const std::string   bpName(bpCName ? bpCName : "");
-            SKSE::GetTaskInterface()->AddTask([alch, count, bpKey, potForm, fc, potName,
+            SKSE::GetTaskInterface()->AddTask([alch, count, bpKey, potForm, fcOne, potName,
                                                bpName]() {
                 auto* player = RE::PlayerCharacter::GetSingleton();
                 if (!player) {
@@ -3757,7 +3783,53 @@ public:
                                  potName);
                     return;
                 }
-                player->RemoveItem(alch, count, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+                // LoTD museum: a potion an open display wants (unique/displayed only,
+                // never a common potion) keeps its reserved copies; the rest analyzes.
+                std::int32_t conv = count;
+                if (const std::uint32_t reserve = museum::Reserve(potForm)) {
+                    std::int32_t held = 0;
+                    for (const auto& [obj, n] : player->GetInventoryCounts(
+                             [alch](RE::TESBoundObject& o) { return &o == alch; })) {
+                        held = n;
+                    }
+                    const std::uint32_t before = held > count ? static_cast<std::uint32_t>(held - count) : 0;
+                    const std::int32_t  keep   = static_cast<std::int32_t>(
+                        std::min(static_cast<std::uint32_t>(count),
+                                 reserve > before ? reserve - before : 0u));
+                    if (keep) {
+                        conv -= keep;
+                        spdlog::info("[discover] MUSEUM wants '{}' — kept {} (display still open)",
+                                     potName, keep);
+                        if (g_notify) {
+                            RE::DebugNotification(
+                                std::format("{} kept for the museum", potName).c_str());
+                        }
+                        if (conv == 0) {
+                            // Kept whole: still learn the variant (discovery must not depend
+                            // on what happens to the item), but no removal, no essence.
+                            const bool eph = (potForm & 0xFF000000) == 0xFF000000;
+                            bool learnedKept = false;
+                            if (bpKey && !eph) {
+                                std::scoped_lock lk(g_discoveredLock);
+                                learnedKept = g_discovered.insert(potForm).second;
+                            }
+                            if (learnedKept) {
+                                AwardAlchemyXP(kDiscoverXp);
+                                spdlog::info("[discover] '{}' studied (item kept for the museum)",
+                                             potName);
+                                if (g_notify) {
+                                    RE::DebugNotification(
+                                        std::format("Discovered: {}", potName).c_str());
+                                }
+                            } else {
+                                spdlog::info("[discover] '{}' kept (known variant)", potName);
+                            }
+                            return;
+                        }
+                    }
+                }
+                const FlaskCost fc = fcOne * static_cast<std::uint32_t>(conv);
+                player->RemoveItem(alch, conv, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
                 bool learned = false;
                 // Skip runtime-created (0xFF) forms — a potion crafted at a
                 // bench is ephemeral; persisting its FormID would dangle or be
