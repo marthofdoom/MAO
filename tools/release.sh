@@ -68,9 +68,12 @@ cp "$STAGE/esp/MAO.esp" "$STAGE/MAO.esp"; rm -rf "$STAGE/esp"
 cp data/SKSE/Plugins/MAO.ini "$STAGE/SKSE/Plugins/MAO.ini"
 cp data/SKSE/Plugins/MAO/fonts/head.ttf data/SKSE/Plugins/MAO/fonts/body.ttf \
    data/SKSE/Plugins/MAO/fonts/sans.ttf "$STAGE/SKSE/Plugins/MAO/fonts/"
-mkdir -p "$STAGE/MCM/Config/MAO" "$STAGE/MCM/Settings" "$STAGE/Scripts"
+mkdir -p "$STAGE/MCM/Config/MAO" "$STAGE/Scripts"
 cp data/MCM/Config/MAO/config.json "$STAGE/MCM/Config/MAO/"
-cp data/MCM/Settings/MAO.ini "$STAGE/MCM/Settings/"
+# MCM/Settings/MAO.ini is deliberately NOT shipped. It is the user's own MCM
+# Helper store: a zip that carries it overwrites every updating user's saved
+# settings. A fresh install needs none: MCM Helper creates the store, and the
+# plugin treats an absent store as normal. The assert after the zip keeps it out.
 cp data/Scripts/MAO_MCM.pex "$STAGE/Scripts/"
 
 cp assets/MAO-README.txt "$STAGE/MAO-README.txt"           # in-zip readme (Nexus users)
@@ -91,13 +94,17 @@ EOF
 for req in "SKSE/Plugins/MAO.dll" "SKSE/Plugins/MAO.ini" \
            "SKSE/Plugins/MAO/fonts/head.ttf" "SKSE/Plugins/MAO/fonts/body.ttf" \
            "SKSE/Plugins/MAO/fonts/sans.ttf" "MAO.esp" \
-           "MCM/Config/MAO/config.json" "MCM/Settings/MAO.ini" \
+           "MCM/Config/MAO/config.json" \
            "Scripts/MAO_MCM.pex" "fomod/info.xml" "MAO-README.txt" "MAO.synth"; do
     [[ -f "$STAGE/$req" ]] || { echo "ERROR: release incomplete — missing $req" >&2; exit 1; }
 done
 
 mkdir -p "$DEST"
 ( cd "$STAGE" && zip -qr - . ) > "$ZIP"
+if unzip -Z1 "$ZIP" | grep -q '^MCM/Settings/'; then
+    echo "ERROR: ${ZIP} contains MCM/Settings/ -- it would overwrite users' MCM settings." >&2
+    rm -f "$ZIP"; exit 1
+fi
 cp assets/MAO.synth "$DEST/MAO.synth"          # static Synthesis onboarding file
 printf '%s\n' "$VER" > "$DEST/VERSION"
 { [[ -n "$DESC" ]] && printf '%s\n' "$DESC"; printf 'built from native run %s\n' "$RUN_ID"; } > "$DEST/NOTES.txt"

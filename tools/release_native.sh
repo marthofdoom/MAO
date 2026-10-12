@@ -83,6 +83,10 @@ done
 
 mkdir -p "$DEST"
 ( cd "$STAGE" && zip -qr - . ) > "$ZIP"
+if unzip -Z1 "$ZIP" | grep -q '^MCM/Settings/'; then
+    echo "ERROR: ${ZIP} contains MCM/Settings/ -- it would overwrite users' MCM settings." >&2
+    rm -f "$ZIP"; exit 1
+fi
 printf '%s\n' "$VER" > "$DEST/VERSION"
 [[ -n "$DESC" ]] && printf '%s\n' "$DESC" > "$DEST/NOTES.txt"
 printf 'built from native run %s\n' "$RUN_ID" >> "$DEST/NOTES.txt"
