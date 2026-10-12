@@ -4718,6 +4718,14 @@ namespace menuhook {
                 g_cursorX = (g_bbW > 0.0f ? g_bbW : io.DisplaySize.x) * 0.5f;
                 g_cursorY = (g_bbH > 0.0f ? g_bbH : io.DisplaySize.y) * 0.5f;
                 io.AddMousePosEvent(g_cursorX, g_cursorY);
+            } else if (g_cursorX >= 0.0f) {
+                // ONE cursor position source. ImGui_ImplWin32_NewFrame (above) has
+                // already queued the OS cursor (its GetCursorPos fallback runs every
+                // frame: no WndProc feeds the backend a WM_MOUSEMOVE) behind the
+                // raw-delta position the input sink queued, so the drawn cursor and
+                // the click point flipped between two positions (double cursor +
+                // misclicks). Re-assert the raw-delta position LAST.
+                io.AddMousePosEvent(g_cursorX, g_cursorY);
             }
             ImGui::NewFrame();
             DrawFieldKit();
