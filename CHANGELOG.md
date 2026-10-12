@@ -7,6 +7,17 @@ Point fixes fold into their feature's entry unless load-bearing on their own.
 Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
 (build-stamped into the MCM Debug page by `MAO_GenerateESP.py`).
 
+## v1.0.13 — controller navigation no longer gets stuck (2026-10-12)
+
+- **The D-pad now moves freely between the kit's lists.** The convert list,
+  the variant list and the description box no longer trap the controller
+  cursor. It no longer gets stuck after you convert or configure.
+- **Focus comes back on its own.** If you click outside the kit with the
+  trackpad, the next D-pad or A press hands control back to the kit.
+- **MAO now reads the controller only through its own input path.** The
+  overlay no longer polls the pad separately, so switching between keyboard
+  and gamepad mode on Steam Deck can't silence it.
+
 ## v1.0.12 — Legacy of the Dragonborn museum awareness, Field Kit window memory (2026-10-12)
 
 - **Ingredients your LoTD museum still needs are kept, not converted.** When

@@ -46,7 +46,8 @@
 
 #include <imgui.h>
 #include <imgui_impl_dx11.h>
-#include <imgui_impl_win32.h>
+#include <imgui_internal.h>  // ImGuiContext (NavWindow/NavId) for the controller-focus recovery
+#include "imgui_impl_win32.h"
 
 #include <algorithm>
 #include <array>
@@ -75,7 +76,7 @@
 
 namespace {
 
-constexpr auto kPluginVersion = "1.0.12";
+constexpr auto kPluginVersion = "1.0.13";
 
 constexpr std::uint32_t kSerID         = 'MAO1';
 constexpr std::uint32_t kRecPouch      = 'POCH';
@@ -563,12 +564,20 @@ void RefreshConvertList();  // station Convert-to-essence list snapshot
 
 // Open/close the Field Kit. When opened from a station, closing forces the
 // player up out of the furniture (the vanilla crafting menu was hidden).
+// Left-stick -> D-pad edge state for the input hook. Namespace scope so
+// OpenFieldKit can clear it (a direction held while the kit was closed must not
+// stay "held" and swallow the next edge).
+bool g_stickHeld[4] = { false, false, false, false };
+
 void OpenFieldKit(bool a_station) {
     if (!a_station) {
         g_fieldChanges.store(0);  // fresh field trip
     }
     g_menu.station.store(a_station);
     g_menu.cursorInit.store(true);
+    for (auto& h : g_stickHeld) {
+        h = false;
+    }
     g_menu.open.store(true);
     // Diagnostic (Bug B — "field change empties other flasks"): dump every slot's
     // charge state at open so a repro shows exactly which slots held what.
@@ -4243,6 +4252,27 @@ namespace menuhook {
             }
             return;
         }
+        // Controller-focus recovery. A trackpad click outside the kit (or any
+        // other focus loss) leaves NavWindow null/elsewhere and the D-pad then
+        // drives nothing. On a nav key with focus lost, pull focus back here.
+        ImGuiContext& gg = *ImGui::GetCurrentContext();
+        static bool   s_navAliveLastFrame = false;
+        const bool    navKey = ImGui::IsKeyPressed(ImGuiKey_GamepadDpadUp, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadDpadDown, false) ||
+                            ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight, false) ||
+                            ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false) || ImGui::IsKeyPressed(ImGuiKey_UpArrow, false) ||
+                            ImGui::IsKeyPressed(ImGuiKey_DownArrow, false);
+        const bool recovering = navKey && (!gg.NavWindow || gg.NavWindow->RootWindow != ImGui::GetCurrentWindow());
+        if (navKey) {
+            spdlog::info("[menu] nav: key hasPad={} navWin=\"{}\" child={} navId={:08X} lastAlive={} curVis={} -> {}",
+                         (io.BackendFlags & ImGuiBackendFlags_HasGamepad) != 0,
+                         gg.NavWindow ? gg.NavWindow->Name : "null",
+                         gg.NavWindow && (gg.NavWindow->Flags & ImGuiWindowFlags_ChildWindow) != 0, gg.NavId,
+                         s_navAliveLastFrame, gg.NavCursorVisible, recovering ? "refocus kit" : "ok");
+        }
+        if (recovering) {
+            ImGui::SetWindowFocus();
+            ImGui::SetNavCursorVisible(true);
+        }
         // Remember the live rect (fractions of the display). The first frame of an
         // open is the baseline (what we just set), so merely opening never dirties
         // the file; any later move/resize does.
@@ -4376,7 +4406,7 @@ namespace menuhook {
                 }
                 ImGui::BeginChild("convlist",
                                   ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 6.0f),
-                                  ImGuiChildFlags_Borders);
+                                  ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened);
                 for (const auto& e : g_convertList) {
                     if (e.kept) {  // reserved for the museum: greyed, not clickable
                         ImGui::TextDisabled("  %-28.60s  (kept for museum)", e.name.c_str());
@@ -4466,7 +4496,11 @@ namespace menuhook {
                 // re-measured to its content below.
                 static float      s_descH = ImGui::GetTextLineHeightWithSpacing() * 2.0f;
                 const float       footerH = ImGui::GetFrameHeightWithSpacing() * 2.2f;
-                ImGui::BeginChild("variants", ImVec2(0, -(s_descH + footerH)));
+                // NavFlattened on all three children: a non-flattened child is a nav
+                // trap (only nav-cancel leaves it, and B/Esc close the kit here),
+                // total when it holds no enabled item (variants after the field
+                // change, a convert list of only "(kept for museum)" rows).
+                ImGui::BeginChild("variants", ImVec2(0, -(s_descH + footerH)), ImGuiChildFlags_NavFlattened);
                 // Sort by TYPE with commonly-used categories up top (marth),
                 // instead of g_discovered's hash order. Category from the
                 // primary effect's name; within a category, cluster by effect
@@ -4620,7 +4654,7 @@ namespace menuhook {
                 s_descH           = std::clamp(st.WindowPadding.y * 2.0f + nameH + bodyH,
                                      st.WindowPadding.y * 2.0f + lineH,
                                      st.WindowPadding.y * 2.0f + lineH * 8.0f);
-                ImGui::BeginChild("desc", ImVec2(0, s_descH), ImGuiChildFlags_Borders);
+                ImGui::BeginChild("desc", ImVec2(0, s_descH), ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened);
                 if (descAlch) {
                     if (descName) {
                         ImGui::PushStyleColor(ImGuiCol_Text, skin.accent);
@@ -4636,6 +4670,16 @@ namespace menuhook {
         }
         ImGui::Separator();
         ImGui::TextDisabled("Pad: D-pad/stick move, A select, B close.  KB: arrows, Enter, Esc.");
+        {
+            static ImGuiWindow* s_lastNavWin = nullptr;
+            const bool          aliveDrop    = s_navAliveLastFrame && !gg.NavIdIsAlive;
+            if (gg.NavWindow != s_lastNavWin || aliveDrop) {
+                spdlog::info("[menu] nav: focus -> win=\"{}\" navId={:08X} alive={}",
+                             gg.NavWindow ? gg.NavWindow->Name : "null", gg.NavId, gg.NavIdIsAlive);
+                s_lastNavWin = gg.NavWindow;
+            }
+            s_navAliveLastFrame = gg.NavIdIsAlive;
+        }
         ImGui::End();
         if (fBody) {
             ImGui::PopFont();
@@ -4726,6 +4770,7 @@ namespace menuhook {
             // it from move events, so the first click before any mouse move
             // would otherwise land at an invalid position.
             if (g_menu.cursorInit.exchange(false)) {
+                io.ClearInputKeys();  // drop any key/button state carried over from before the open
                 g_cursorX = (g_bbW > 0.0f ? g_bbW : io.DisplaySize.x) * 0.5f;
                 g_cursorY = (g_bbH > 0.0f ? g_bbH : io.DisplaySize.y) * 0.5f;
                 io.AddMousePosEvent(g_cursorX, g_cursorY);
@@ -4799,10 +4844,9 @@ namespace menuhook {
                 if (e->eventType == RE::INPUT_EVENT_TYPE::kThumbstick && wasOpen) {
                     auto* th = static_cast<RE::ThumbstickEvent*>(e);
                     if (th->IsLeft()) {
-                        static bool held[4] = { false, false, false, false };
                         auto        edge    = [&](int a_i, bool a_on, ImGuiKey a_k) {
-                            if (held[a_i] != a_on) {
-                                held[a_i] = a_on;
+                            if (g_stickHeld[a_i] != a_on) {
+                                g_stickHeld[a_i] = a_on;
                                 io.AddKeyEvent(a_k, a_on);
                             }
                         };
