@@ -1526,6 +1526,22 @@ void RequestRebuild(const char* a_reason) {
     std::string why = a_reason;
     mainthread::Post([why]() { Rebuild(why.c_str()); });
 }
+// A container menu closed (main thread): if it was the DropoffCrate or the display
+// drop-off, the player may have taken copies back out, so the cached museumSide count
+// is stale-high. Re-read the snapshot.
+void OnContainerClosed() {
+    if (!g_detected.load()) {
+        return;
+    }
+    const auto ref = RE::ContainerMenu::GetTargetRefHandle().get();
+    if (!ref) {
+        return;
+    }
+    const auto id = ref->GetFormID();
+    if ((g_dropoff && id == g_dropoff) || (g_autosort && id == g_autosort)) {
+        RequestRebuild("container menu closed");
+    }
+}
 // Revert (main thread): the museum's state belongs to the save being left.
 void Reset() {
     {
@@ -3573,6 +3589,20 @@ public:
                                  (qn && qn[0]) ? qn : ((qe && qe[0]) ? qe : "?"), nameStr);
                     return;
                 }
+                // Pouch Expansion (DESIGN §5.2): 15% chance a flora harvest also
+                // yields a matching Tier II Catalyst essence.
+                // Rolled BEFORE the museum reserve below: a harvest kept whole for the
+                // museum returns early and must still get its proc.
+                if (fromFlora && g_hasPouchExp.load() && RollPercent(15)) {
+                    const std::uint32_t bonus = YieldFor(value, Tier::Catalyst);
+                    CreditPouch(Tier::Catalyst, bonus);
+                    spdlog::info("[gather] Pouch Expansion proc: +{} Catalyst ({})", bonus,
+                                 nameStr);
+                    if (g_notify.load()) {
+                        RE::DebugNotification(
+                            std::format("+{} Catalyst Essence (Pouch Expansion)", bonus).c_str());
+                    }
+                }
                 // LoTD museum: keep what an open display still wants (at least one),
                 // counting copies the player already held before this pickup. The rest
                 // converts as usual.
@@ -3611,18 +3641,6 @@ public:
                 if (g_notify) {
                     RE::DebugNotification(
                         std::format("+{} {} Essence ({})", credit, TierName(tier), nameStr).c_str());
-                }
-                // Pouch Expansion (DESIGN §5.2): 15% chance a flora harvest also
-                // yields a matching Tier II Catalyst essence.
-                if (fromFlora && g_hasPouchExp.load() && RollPercent(15)) {
-                    const std::uint32_t bonus = YieldFor(value, Tier::Catalyst);
-                    CreditPouch(Tier::Catalyst, bonus);
-                    spdlog::info("[gather] Pouch Expansion proc: +{} Catalyst ({})", bonus,
-                                 nameStr);
-                    if (g_notify.load()) {
-                        RE::DebugNotification(
-                            std::format("+{} Catalyst Essence (Pouch Expansion)", bonus).c_str());
-                    }
                 }
             });
             return RE::BSEventNotifyControl::kContinue;
@@ -3695,6 +3713,8 @@ public:
                                     RE::DebugNotification(
                                         std::format("Discovered: {}", potName).c_str());
                                 }
+                            } else {
+                                spdlog::info("[discover] '{}' kept (known variant)", potName);
                             }
                         });
                     }
@@ -3724,11 +3744,11 @@ public:
             // — VariantCost is the per-charge cost, in the variant's own tier
             // split. Finding or buying a potion always funds one refill of it.
             const RE::FormID    potForm = alch->GetFormID();
-            const FlaskCost     fc      = VariantCost(alch) * static_cast<std::uint32_t>(count);
+            const FlaskCost     fcOne   = VariantCost(alch);
             const char*         pcName  = alch->GetName();
             const std::string   potName(pcName ? pcName : "potion");
             const std::string   bpName(bpCName ? bpCName : "");
-            SKSE::GetTaskInterface()->AddTask([alch, count, bpKey, potForm, fc, potName,
+            SKSE::GetTaskInterface()->AddTask([alch, count, bpKey, potForm, fcOne, potName,
                                                bpName]() {
                 auto* player = RE::PlayerCharacter::GetSingleton();
                 if (!player) {
@@ -3757,7 +3777,34 @@ public:
                                  potName);
                     return;
                 }
-                player->RemoveItem(alch, count, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+                // LoTD museum: a potion an open display wants (unique/displayed only,
+                // never a common potion) keeps its reserved copies; the rest analyzes.
+                std::int32_t conv = count;
+                if (const std::uint32_t reserve = museum::Reserve(potForm)) {
+                    std::int32_t held = 0;
+                    for (const auto& [obj, n] : player->GetInventoryCounts(
+                             [alch](RE::TESBoundObject& o) { return &o == alch; })) {
+                        held = n;
+                    }
+                    const std::uint32_t before = held > count ? static_cast<std::uint32_t>(held - count) : 0;
+                    const std::int32_t  keep   = static_cast<std::int32_t>(
+                        std::min(static_cast<std::uint32_t>(count),
+                                 reserve > before ? reserve - before : 0u));
+                    if (keep) {
+                        conv -= keep;
+                        spdlog::info("[discover] MUSEUM wants '{}' — kept {} (display still open)",
+                                     potName, keep);
+                        if (g_notify) {
+                            RE::DebugNotification(
+                                std::format("{} kept for the museum", potName).c_str());
+                        }
+                        if (conv == 0) {
+                            return;
+                        }
+                    }
+                }
+                const FlaskCost fc = fcOne * static_cast<std::uint32_t>(conv);
+                player->RemoveItem(alch, conv, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
                 bool learned = false;
                 // Skip runtime-created (0xFF) forms — a potion crafted at a
                 // bench is ephemeral; persisting its FormID would dangle or be
@@ -4878,6 +4925,9 @@ public:
                     player->NotifyAnimationGraph("IdleForceDefaultState");
                 }
             });
+        } else if (a_event && !a_event->opening &&
+                   a_event->menuName == RE::ContainerMenu::MENU_NAME) {
+            museum::OnContainerClosed();
         } else if (a_event && !a_event->opening &&
                    a_event->menuName == RE::JournalMenu::MENU_NAME) {
             // MCM lives in the Journal (pause) menu; MCM Helper flushes settings
