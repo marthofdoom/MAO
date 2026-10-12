@@ -4127,9 +4127,20 @@ namespace menuhook {
                 spdlog::warn("[menu] {}", a_msg);
             }
         };
-        char buf[256];
-        std::snprintf(buf, sizeof(buf), "version=1\nwinX=%.5f\nwinY=%.5f\nwinW=%.5f\nwinH=%.5f\n",
-                      s_mem.lx, s_mem.ly, s_mem.lw, s_mem.lh);
+        // std::to_chars is locale-independent (printf would write "0,52" under a
+        // comma-decimal LC_NUMERIC and LoadWinMem's from_chars would reject it).
+        std::string buf = "version=1\n";
+        auto        put = [&](const char* a_key, float a_val) {
+            char        num[48];
+            const auto  r = std::to_chars(num, num + sizeof(num), a_val, std::chars_format::fixed, 5);
+            buf += a_key;
+            buf.append(num, r.ptr);
+            buf += '\n';
+        };
+        put("winX=", s_mem.lx);
+        put("winY=", s_mem.ly);
+        put("winW=", s_mem.lw);
+        put("winH=", s_mem.lh);
         const std::string tmp = std::string(kUiPath) + ".tmp";
         {
             std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
