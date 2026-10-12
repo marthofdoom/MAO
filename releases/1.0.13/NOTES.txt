@@ -1,0 +1,2 @@
+Controller navigation no longer gets stuck
+built from native run 38298103512
