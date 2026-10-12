@@ -1317,8 +1317,8 @@ struct Snapshot {
     // round 1 carve-out). Stale between rebuilds only until LOTD sorts (its sort fires
     // DBM DisplaySortComplete -> rebuild) or the next load. Stale-low (a copy deposited
     // since) keeps an extra copy — harmless. Stale-high (a copy taken BACK out of those
-    // containers) can let a still-wanted copy convert until then — accepted, rare (Opus
-    // review 2026-09-30, SEV-4).
+    // containers) is closed by ContainerSink: an item leaving the DropoffCrate or the
+    // display drop-off requests a rebuild (OnTakenFromMuseum).
     std::unordered_map<RE::FormID, std::int32_t> museumSide;
 };
 std::atomic<bool>               g_detected{ false };
@@ -1526,21 +1526,20 @@ void RequestRebuild(const char* a_reason) {
     std::string why = a_reason;
     mainthread::Post([why]() { Rebuild(why.c_str()); });
 }
-// A container menu closed (main thread): if it was the DropoffCrate or the display
-// drop-off, the player may have taken copies back out, so the cached museumSide count
-// is stale-high. Re-read the snapshot.
-void OnContainerClosed() {
-    if (!g_detected.load()) {
-        return;
+// True when a_container is the DropoffCrate or the display drop-off. Plain FormID compare.
+bool IsMuseumSide(RE::FormID a_container) {
+    return g_detected.load() && a_container &&
+           (a_container == g_dropoff || a_container == g_autosort);
+}
+// An item left a museum-side container (container-changed event): the cached museumSide
+// count is now stale-high, so re-read the snapshot. Logged once per session.
+void OnTakenFromMuseum(RE::FormID a_container) {
+    static std::atomic<bool> logged{ false };
+    if (!logged.exchange(true)) {
+        spdlog::info("[lotd] item taken out of museum container {:08X} — requesting snapshot rebuild",
+                     a_container);
     }
-    const auto ref = RE::TESObjectREFR::LookupByHandle(RE::ContainerMenu::GetTargetRefHandle());
-    if (!ref) {
-        return;
-    }
-    const auto id = ref->GetFormID();
-    if ((g_dropoff && id == g_dropoff) || (g_autosort && id == g_autosort)) {
-        RequestRebuild("container menu closed");
-    }
+    RequestRebuild("taken from museum container");
 }
 // Revert (main thread): the museum's state belongs to the save being left.
 void Reset() {
@@ -1605,7 +1604,7 @@ void Detect() {
     if (auto* src = SKSE::GetModCallbackEventSource()) {
         src->AddEventSink(ModEventSink::GetSingleton());
     }
-    spdlog::info("[lotd] detected Legacy of the Dragonborn v{} — museum-wanted ingredients are "
+    spdlog::info("[lotd] detected Legacy of the Dragonborn v{} — museum-wanted ingredients and potions are "
                  "kept (one per open display)",
                  maj);
 }
@@ -3508,6 +3507,13 @@ public:
         }
         const int count = a_event->itemCount;
 
+        // Taken back out of the museum's DropoffCrate / display drop-off: the player did
+        // that deliberately, so do NOT auto-convert it; just refresh the museum count.
+        if (museum::IsMuseumSide(a_event->oldContainer)) {
+            museum::OnTakenFromMuseum(a_event->oldContainer);
+            return RE::BSEventNotifyControl::kContinue;
+        }
+
         // ── Ingredients ── (M1 gathering). Auto-convert gated by its OWN toggle.
         if (auto* ingr = form->As<RE::IngredientItem>()) {
             if (!g_autoConvertIngredients.load()) {
@@ -3799,6 +3805,25 @@ public:
                                 std::format("{} kept for the museum", potName).c_str());
                         }
                         if (conv == 0) {
+                            // Kept whole: still learn the variant (discovery must not depend
+                            // on what happens to the item), but no removal, no essence.
+                            const bool eph = (potForm & 0xFF000000) == 0xFF000000;
+                            bool learnedKept = false;
+                            if (bpKey && !eph) {
+                                std::scoped_lock lk(g_discoveredLock);
+                                learnedKept = g_discovered.insert(potForm).second;
+                            }
+                            if (learnedKept) {
+                                AwardAlchemyXP(kDiscoverXp);
+                                spdlog::info("[discover] '{}' studied (item kept for the museum)",
+                                             potName);
+                                if (g_notify) {
+                                    RE::DebugNotification(
+                                        std::format("Discovered: {}", potName).c_str());
+                                }
+                            } else {
+                                spdlog::info("[discover] '{}' kept (known variant)", potName);
+                            }
                             return;
                         }
                     }
@@ -4925,9 +4950,6 @@ public:
                     player->NotifyAnimationGraph("IdleForceDefaultState");
                 }
             });
-        } else if (a_event && !a_event->opening &&
-                   a_event->menuName == RE::ContainerMenu::MENU_NAME) {
-            museum::OnContainerClosed();
         } else if (a_event && !a_event->opening &&
                    a_event->menuName == RE::JournalMenu::MENU_NAME) {
             // MCM lives in the Journal (pause) menu; MCM Helper flushes settings
