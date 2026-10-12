@@ -17,8 +17,9 @@ Version string lives in ONE place: `kPluginVersion` in `native/plugin.cpp`
   "<ingredient> kept for the museum". Once the display is filled, that
   ingredient converts normally again.
 - The alchemy station's **Convert to essence** list never offers (or converts)
-  those museum copies either, so "Convert ALL" can't eat them. In ingredient
-  mode, flasks don't spend them either.
+  those museum copies either, so "Convert ALL" can't eat them. A fully
+  kept ingredient shows as a greyed "(kept for museum)" row instead of
+  vanishing. In ingredient mode, flasks don't spend them either.
 - Detection reads the museum's own display table (the method MFO uses), so
   displays added by LoTD patches and add-ons are covered. Without LoTD nothing
   changes. MAO.log reports what it found under `[lotd]`.

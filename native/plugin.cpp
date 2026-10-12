@@ -2039,6 +2039,7 @@ struct ConvertEntry {
     std::uint32_t yield;  // total essence for the whole stack
     Tier          tier;
     std::string   name;
+    bool          kept = false;  // fully reserved for the LoTD museum: shown, never convertible
 };
 std::mutex                g_convertLock;
 std::vector<ConvertEntry> g_convertList;
@@ -2077,8 +2078,10 @@ void RefreshConvertList() {
             continue;
         }
         // LoTD museum: the copies an open display still wants are never offered.
+        // A fully reserved stack stays listed as a "(kept for museum)" row.
         const std::uint32_t reserve = museum::Reserve(ingr->GetFormID());
         if (static_cast<std::uint32_t>(cnt) <= reserve) {
+            fresh.push_back({ ingr->GetFormID(), 0, 0, TierOfForm(ingr), std::move(name), true });
             continue;
         }
         const std::uint32_t avail = static_cast<std::uint32_t>(cnt) - reserve;
@@ -4336,6 +4339,9 @@ namespace menuhook {
                         std::vector<std::pair<RE::FormID, std::uint32_t>> all;
                         all.reserve(g_convertList.size());
                         for (const auto& e : g_convertList) {
+                            if (e.kept) {
+                                continue;
+                            }
                             all.emplace_back(e.form, e.count);
                         }
                         SKSE::GetTaskInterface()->AddTask([all]() {
@@ -4361,6 +4367,10 @@ namespace menuhook {
                                   ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 6.0f),
                                   ImGuiChildFlags_Borders);
                 for (const auto& e : g_convertList) {
+                    if (e.kept) {  // reserved for the museum: greyed, not clickable
+                        ImGui::TextDisabled("  %-28.60s  (kept for museum)", e.name.c_str());
+                        continue;
+                    }
                     char label[224];
                     std::snprintf(label, sizeof(label), "%-28.60s  x%u    +%u %s##cv%08X",
                                   e.name.c_str(), e.count, e.yield, TierName(e.tier), e.form);
